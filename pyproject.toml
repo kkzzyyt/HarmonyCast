@@ -1,0 +1,28 @@
+[project]
+name = "harmonycast"
+version = "1.4.1"
+description = "A macOS screen mirroring and HiLog workbench for OpenHarmony"
+readme = "README.md"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md", "licenses/*"]
+requires-python = ">=3.12"
+dependencies = ["PyQt5==5.15.11", "av==16.1.0", "numpy>=2,<3"]
+
+[project.urls]
+Homepage = "https://github.com/kkzzyyt/HarmonyCast"
+Repository = "https://github.com/kkzzyyt/HarmonyCast"
+Issues = "https://github.com/kkzzyyt/HarmonyCast/issues"
+
+[project.optional-dependencies]
+dev = ["pyinstaller>=6.11,<7", "pytest>=8", "pytest-cov>=6"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.coverage.run]
+source = ["harmonycast"]
+omit = ["harmonycast/upstream/*", "harmonycast/ui.py", "harmonycast/__main__.py"]
+
+[tool.coverage.report]
+show_missing = true

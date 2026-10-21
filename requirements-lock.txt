@@ -1,0 +1,17 @@
+altgraph==0.17.5
+av==16.1.0
+coverage==7.16.2
+iniconfig==2.3.1
+macholib==1.16.4
+numpy==2.5.4
+packaging==26.3
+pluggy==1.7.0
+Pygments==2.21.0
+pyinstaller==6.22.3
+pyinstaller-hooks-contrib==2026.9
+PyQt5==5.15.11
+PyQt5-Qt5==5.15.19
+PyQt5_sip==12.20.0
+pytest==9.1.1
+pytest-cov==7.1.0
+setuptools==84.2.1

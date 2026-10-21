@@ -1,0 +1,15 @@
+HarmonyCast
+Copyright (C) 2026 HarmonyCast contributors
+
+First-party HarmonyCast source is licensed under GNU GPL version 3 or later.
+See LICENSE. Third-party files retain their original notices and licenses.
+
+This project includes components from OpenHarmony_Scrcpy v2.3:
+https://gitcode.com/OpenHarmony_Tools/OpenHarmony_Scrcpy
+Snapshot: 85890e693fb5b3e4b3ef50a16af688787ca85070
+Copyright (c) 2026 luodh0157.
+Licensed under the Apache License, Version 2.0.
+
+HarmonyCast is an independently maintained desktop workbench. It is not an
+official release of OpenHarmony_Scrcpy, Huawei, or the OpenHarmony project.
+See THIRD_PARTY_NOTICES.md and licenses/ for component details.

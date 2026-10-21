@@ -1,0 +1,4 @@
+# Retain the formatting of attributed upstream payloads.
+harmonycast/upstream/** -whitespace
+licenses/** -whitespace
+resources/servers/ohscrcpy_server.cfg -whitespace
