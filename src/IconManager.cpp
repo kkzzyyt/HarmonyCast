@@ -227,7 +227,7 @@ QLabel#Brand { font-size: 17px; font-weight: 600; }
 QLabel#Muted { color: #8295a9; font-size: 12px; }
 QLabel#Section { color: #98acbe; font-size: 11px; font-weight: 600; }
 QLabel#Badge { color: #5ce0c1; background: #12352f; padding: 4px 10px; border-radius: 9px; font-size: 12px; }
-QPushButton { background: #1d2938; border: 1px solid #304257; border-radius: 5px; padding: 4px 8px; font-size: 12px; }
+QPushButton { background: #1d2938; border: 1px solid #304257; border-radius: 5px; padding: 4px 10px; font-size: 12px; }
 QPushButton:hover { background: #293b4e; border-color: #5f829a; }
 QPushButton:pressed { background: #33495e; }
 QPushButton:disabled { color: #526375; border-color: #233141; background: #16212d; }
@@ -272,8 +272,8 @@ QComboBox QAbstractItemView::item:selected { background-color: #1b3e35; color: #
 QComboBox QAbstractItemView::item:hover { background-color: #1c2b3d; color: #ffffff; }
 QFrame#MirrorToolbar { background: #0c131c; border-bottom: 1px solid #1c2b3d; }
 QTextEdit, QPlainTextEdit { background: #0a1119; color: #c2d1df; border: 1px solid #25354a; border-radius: 7px; padding: 8px; selection-background-color: #245546; }
-QCheckBox { background: transparent; spacing: 5px; font-size: 12px; }
-QCheckBox::indicator { width: 13px; height: 13px; border: 1px solid #4b6176; border-radius: 3px; background: #0c131c; }
+QCheckBox { background: transparent; spacing: 6px; font-size: 12px; }
+QCheckBox::indicator { width: 14px; height: 14px; border: 1px solid #4b6176; border-radius: 3px; background: #0c131c; }
 QCheckBox::indicator:hover { border-color: #53d6b5; }
 QCheckBox::indicator:checked { background: #53d6b5; border-color: #53d6b5; image: url("__CHECK__"); }
 QCheckBox::indicator:checked:hover { background: #78ebcb; border-color: #78ebcb; }

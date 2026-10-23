@@ -1188,10 +1188,18 @@ QWidget* MainWindow::buildHiLogWidget() {
     auto* widget = new QWidget();
     auto* log_layout = new QVBoxLayout(widget);
     log_layout->setContentsMargins(0, 2, 0, 2);
-    log_layout->setSpacing(4);
+    log_layout->setSpacing(6);
 
-    // Toolbar (FlowLayout)
-    auto* toolbar = new FlowLayout(nullptr, 0, 6, 4);
+    // Toolbar Container: 2-row structured layout with clear hierarchy & generous spacing
+    auto* toolbar_container = new QWidget();
+    auto* tb_vlayout = new QVBoxLayout(toolbar_container);
+    tb_vlayout->setContentsMargins(0, 2, 0, 4);
+    tb_vlayout->setSpacing(6);
+
+    // Row 1: Filters & Search (Data Querying)
+    auto* row1 = new QHBoxLayout();
+    row1->setContentsMargins(0, 0, 0, 0);
+    row1->setSpacing(6);
 
     // 1. Package combo
     m_package_combo = new QComboBox();
@@ -1201,7 +1209,7 @@ QWidget* MainWindow::buildHiLogWidget() {
     m_package_combo->setFixedHeight(28);
     IconManager::setupComboBoxPopup(m_package_combo, 260);
     connect(m_package_combo, &QComboBox::currentTextChanged, this, &MainWindow::renderHiLog);
-    toolbar->addWidget(m_package_combo);
+    row1->addWidget(m_package_combo);
 
     // 2. Level combo
     m_level_combo = new QComboBox();
@@ -1210,44 +1218,56 @@ QWidget* MainWindow::buildHiLogWidget() {
     m_level_combo->setFixedWidth(96);
     IconManager::setupComboBoxPopup(m_level_combo, 120);
     connect(m_level_combo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &MainWindow::renderHiLog);
-    toolbar->addWidget(m_level_combo);
+    row1->addWidget(m_level_combo);
 
     // 3. Search lineEdit
     m_search_input = new QLineEdit();
     m_search_input->setPlaceholderText("搜索日志内容、Tag 或 PID…");
     m_search_input->addAction(IconManager::getIcon("search"), QLineEdit::LeadingPosition);
-    m_search_input->setMinimumWidth(180);
+    m_search_input->setClearButtonEnabled(true);
+    m_search_input->setMinimumWidth(100);
     m_search_input->setFixedHeight(28);
-    m_search_input->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     connect(m_search_input, &QLineEdit::textChanged, this, &MainWindow::renderHiLog);
-    toolbar->addWidget(m_search_input);
+    row1->addWidget(m_search_input, 1);
 
-    // 4. Autoscroll & Pause
-    m_autoscroll_cb = new QCheckBox("滚动");
+    tb_vlayout->addLayout(row1);
+
+    // Row 2: Stream Controls & Action Buttons (Generous spacing & breathing room)
+    auto* row2 = new QHBoxLayout();
+    row2->setContentsMargins(0, 0, 0, 0);
+    row2->setSpacing(14);
+
+    m_autoscroll_cb = new QCheckBox("自动滚动");
     m_autoscroll_cb->setChecked(true);
     m_autoscroll_cb->setToolTip("新日志到达时自动滚动到底部");
-    m_autoscroll_cb->setFixedHeight(28);
+    m_autoscroll_cb->setFixedHeight(26);
+    m_autoscroll_cb->setCursor(Qt::PointingHandCursor);
 
-    m_pause_cb = new QCheckBox("暂停");
+    m_pause_cb = new QCheckBox("暂停刷新");
     m_pause_cb->setToolTip("暂停日志刷新显示");
-    m_pause_cb->setFixedHeight(28);
+    m_pause_cb->setFixedHeight(26);
+    m_pause_cb->setCursor(Qt::PointingHandCursor);
 
-    toolbar->addWidget(m_autoscroll_cb);
-    toolbar->addWidget(m_pause_cb);
+    row2->addWidget(m_autoscroll_cb);
+    row2->addWidget(m_pause_cb);
 
-    // 5. Actions
+    row2->addStretch(1);
+
     m_clear_log_btn = IconManager::button("清空", "", "clear");
-    m_clear_log_btn->setFixedHeight(28);
+    m_clear_log_btn->setFixedHeight(26);
+    m_clear_log_btn->setToolTip("清空当前所有日志缓存");
     connect(m_clear_log_btn, &QPushButton::clicked, this, &MainWindow::clearHiLog);
 
     m_export_log_btn = IconManager::button("导出日志", "", "export");
-    m_export_log_btn->setFixedHeight(28);
+    m_export_log_btn->setFixedHeight(26);
+    m_export_log_btn->setToolTip("导出当前日志到本地文本文件");
     connect(m_export_log_btn, &QPushButton::clicked, this, &MainWindow::exportHiLog);
 
-    toolbar->addWidget(m_clear_log_btn);
-    toolbar->addWidget(m_export_log_btn);
+    row2->addWidget(m_clear_log_btn);
+    row2->addWidget(m_export_log_btn);
 
-    log_layout->addLayout(toolbar);
+    tb_vlayout->addLayout(row2);
+    log_layout->addWidget(toolbar_container);
 
     // Log View
     m_log_view = new QPlainTextEdit();
@@ -1286,56 +1306,73 @@ QWidget* MainWindow::buildWebViewPanel() {
     auto* panel = new QWidget();
     auto* layout = new QVBoxLayout(panel);
     layout->setContentsMargins(0, 2, 0, 2);
-    layout->setSpacing(4);
+    layout->setSpacing(6);
 
-    // Single-row toolbar
-    auto* toolbar = new QHBoxLayout();
-    toolbar->setContentsMargins(0, 0, 0, 0);
-    toolbar->setSpacing(6);
+    // Toolbar Container: 2-row clean structured layout
+    auto* wv_toolbar_container = new QWidget();
+    auto* wv_tb_vlayout = new QVBoxLayout(wv_toolbar_container);
+    wv_tb_vlayout->setContentsMargins(0, 2, 0, 4);
+    wv_tb_vlayout->setSpacing(6);
+
+    // Row 1: Subtabs & Search
+    auto* wv_row1 = new QHBoxLayout();
+    wv_row1->setContentsMargins(0, 0, 0, 0);
+    wv_row1->setSpacing(6);
 
     m_btn_subtab_console = new QPushButton("控制台");
     m_btn_subtab_console->setObjectName("Primary");
     m_btn_subtab_console->setFixedHeight(28);
     m_btn_subtab_console->setCursor(Qt::PointingHandCursor);
     connect(m_btn_subtab_console, &QPushButton::clicked, this, [this]{ setWebViewSubtab(0); });
-    toolbar->addWidget(m_btn_subtab_console);
+    wv_row1->addWidget(m_btn_subtab_console);
 
     m_btn_subtab_network = new QPushButton("接口网络");
     m_btn_subtab_network->setFixedHeight(28);
     m_btn_subtab_network->setCursor(Qt::PointingHandCursor);
     connect(m_btn_subtab_network, &QPushButton::clicked, this, [this]{ setWebViewSubtab(1); });
-    toolbar->addWidget(m_btn_subtab_network);
+    wv_row1->addWidget(m_btn_subtab_network);
 
     m_wv_filter_combo = new QComboBox();
     m_wv_filter_combo->addItems({"全部级别", "日志", "警告", "错误"});
     m_wv_filter_combo->setFixedHeight(28);
-    m_wv_filter_combo->setFixedWidth(112);
+    m_wv_filter_combo->setFixedWidth(100);
     IconManager::setupComboBoxPopup(m_wv_filter_combo, 112);
-    toolbar->addWidget(m_wv_filter_combo);
+    wv_row1->addWidget(m_wv_filter_combo);
 
     m_wv_filter_input = new QLineEdit();
     m_wv_filter_input->setPlaceholderText("过滤日志内容或请求 URL…");
     m_wv_filter_input->addAction(IconManager::getIcon("search"), QLineEdit::LeadingPosition);
     m_wv_filter_input->setFixedHeight(28);
     m_wv_filter_input->setClearButtonEnabled(true);
-    toolbar->addWidget(m_wv_filter_input, 1);
+    wv_row1->addWidget(m_wv_filter_input, 1);
 
-    m_wv_autoscroll = new QCheckBox("滚动");
+    wv_tb_vlayout->addLayout(wv_row1);
+
+    // Row 2: Controls & Actions (Generous spacing & breathing room)
+    auto* wv_row2 = new QHBoxLayout();
+    wv_row2->setContentsMargins(0, 0, 0, 0);
+    wv_row2->setSpacing(14);
+
+    m_wv_autoscroll = new QCheckBox("自动滚动");
     m_wv_autoscroll->setChecked(true);
-    m_wv_autoscroll->setFixedHeight(28);
-    toolbar->addWidget(m_wv_autoscroll);
+    m_wv_autoscroll->setFixedHeight(26);
+    m_wv_autoscroll->setCursor(Qt::PointingHandCursor);
 
-    m_wv_pause = new QCheckBox("暂停");
-    m_wv_pause->setFixedHeight(28);
-    toolbar->addWidget(m_wv_pause);
+    m_wv_pause = new QCheckBox("暂停刷新");
+    m_wv_pause->setFixedHeight(26);
+    m_wv_pause->setCursor(Qt::PointingHandCursor);
+
+    wv_row2->addWidget(m_wv_autoscroll);
+    wv_row2->addWidget(m_wv_pause);
+
+    wv_row2->addStretch(1);
 
     m_wv_clear_btn = IconManager::button("清空", "", "clear");
-    m_wv_clear_btn->setFixedHeight(28);
+    m_wv_clear_btn->setFixedHeight(26);
     connect(m_wv_clear_btn, &QPushButton::clicked, this, &MainWindow::clearWebViewConsole);
-    toolbar->addWidget(m_wv_clear_btn);
 
     m_wv_export_btn = IconManager::button("导出日志", "", "export");
-    m_wv_export_btn->setFixedHeight(28);
+    m_wv_export_btn->setFixedHeight(26);
     connect(m_wv_export_btn, &QPushButton::clicked, this, [this]{
         QString content = m_wv_console_view->toPlainText();
         QString path = QFileDialog::getSaveFileName(this, "导出 WebView 日志", QDir::homePath() + "/Downloads/webview.log", "Log Files (*.log)");
@@ -1347,15 +1384,18 @@ QWidget* MainWindow::buildWebViewPanel() {
             }
         }
     });
-    toolbar->addWidget(m_wv_export_btn);
 
-    m_wv_chrome_btn = IconManager::button("Chrome", "", "chrome");
-    m_wv_chrome_btn->setFixedHeight(28);
+    m_wv_chrome_btn = IconManager::button("Chrome DevTools", "", "chrome");
+    m_wv_chrome_btn->setFixedHeight(26);
     m_wv_chrome_btn->setToolTip("在系统 Chrome 浏览器中打开 DevTools 调试");
     connect(m_wv_chrome_btn, &QPushButton::clicked, this, &MainWindow::openChromeInspect);
-    toolbar->addWidget(m_wv_chrome_btn);
 
-    layout->addLayout(toolbar);
+    wv_row2->addWidget(m_wv_clear_btn);
+    wv_row2->addWidget(m_wv_export_btn);
+    wv_row2->addWidget(m_wv_chrome_btn);
+
+    wv_tb_vlayout->addLayout(wv_row2);
+    layout->addWidget(wv_toolbar_container);
 
     m_wv_right_stack = new QStackedWidget();
 
