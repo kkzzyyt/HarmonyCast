@@ -73,6 +73,7 @@ private slots:
     // WebView controls
     void switchLogSubtab(int index);
     void setWebViewSubtab(int index);
+    void autoConnectWebView();
     void onWebConsoleMessage(const WebConsoleMessage& msg);
     void onWebNetworkRequest(const WebNetworkRequest& req);
     void onWebNetworkResponse(const QString& reqId, int status, const QString& mimeType);
@@ -117,6 +118,8 @@ private:
 
     void renderEmptyInfo(const QString& hint = "未检测到已连接的设备");
     void renderDeviceInfo(const DeviceInfo& info);
+    bool isLogMatch(const HiLogEntry& e, const QString& filterPkg, const QString& filterLvl, const QString& query) const;
+    static QString formatLogLine(const HiLogEntry& e);
     void showToast(const QString& msg);
     [[nodiscard]] std::string currentSerial() const;
 
@@ -253,6 +256,7 @@ private:
     std::string m_pending_auto_start_serial;
     int m_wv_console_count{0};
     int m_wv_network_count{0};
+    int m_visible_log_count{0};
 };
 
 } // namespace harmonycast

@@ -8,6 +8,7 @@
 #include "harmonycast/HiLogParser.h"
 #include "harmonycast/VideoDecoder.h"
 #include "harmonycast/StreamSession.h"
+#include "harmonycast/WebViewDebugger.h"
 #include "harmonycast/HdcClient.h"
 
 using namespace harmonycast;
@@ -161,6 +162,26 @@ void test_stream_session_and_types() {
     std::cout << "[PASS] test_stream_session_and_types passed!" << std::endl;
 }
 
+void test_webview_and_filters() {
+    std::cout << "[RUN] test_webview_and_filters..." << std::endl;
+    // 1. Package wildcard matching
+    assert(HiLogParser::packageMatches("com.yarward.etnroomoh", "com.yarward.*"));
+    assert(HiLogParser::packageMatches("com.yarward.bedside", "com.yarward.*"));
+    assert(!HiLogParser::packageMatches("com.huawei.browser", "com.yarward.*"));
+
+    // 2. cURL generation
+    WebNetworkRequest req;
+    req.method = "POST";
+    req.url = "https://api.example.com/login";
+    req.headers["Content-Type"] = "application/json";
+    req.post_data = "{\"user\":\"admin\"}";
+    QString curl = WebViewDebugger::generateCurl(req);
+    assert(curl.contains("curl -X POST 'https://api.example.com/login'"));
+    assert(curl.contains("-H 'Content-Type: application/json'"));
+    assert(curl.contains("--data-raw '{\"user\":\"admin\"}'"));
+    std::cout << "[PASS] test_webview_and_filters passed!" << std::endl;
+}
+
 int main() {
     std::cout << "========================================" << std::endl;
     std::cout << "   HarmonyCast C++ Core Verification    " << std::endl;
@@ -170,6 +191,7 @@ int main() {
     test_hilog_parser();
     test_video_decoder();
     test_stream_session_and_types();
+    test_webview_and_filters();
 
     std::cout << "\n>>> ALL C++ CORE TESTS PASSED! <<<" << std::endl;
     return 0;

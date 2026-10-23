@@ -89,6 +89,9 @@ void DeviceManager::queryDeviceInfoAsync(const std::string& serial, std::functio
         "echo \"---NET---\"; ifconfig 2>/dev/null; "
         "echo \"---IFACES---\"; for i in /sys/class/net/*; do [ -e \"$i\" ] && echo \"$(basename \"$i\"): $(cat \"$i/address\" 2>/dev/null)\"; done; "
         "echo \"---PKGS---\"; bm dump -a 2>/dev/null; "
+        "echo \"---PS---\"; ps -A -o PID,NAME,ARGS 2>/dev/null || ps -ef 2>/dev/null || ps 2>/dev/null; "
+        "echo \"---UNAME---\"; uname -a 2>/dev/null; "
+        "echo \"---DISP---\"; hidumper -s DisplayManagerService -a -a 2>/dev/null | grep -E 'displayId|width|height|rotation'; "
         "echo \"---ICU---\"; for f in model mcu_version hardware_version power_delay StopWatchDog FeedWatchdog; do [ -f /sys/class/ICU/version/$f ] && echo \"$f: $(cat /sys/class/ICU/version/$f 2>/dev/null)\"; done";
 
     m_hdc->executeAsync({"shell", script}, serial, [callback, serial](const CommandResult& r) {
@@ -109,7 +112,10 @@ void DeviceManager::queryDeviceInfoAsync(const std::string& serial, std::functio
         auto [df_part, rest4] = splitSection(rest3, "---NET---");
         auto [net_part, rest5] = splitSection(rest4, "---IFACES---");
         auto [ifaces_part, rest6] = splitSection(rest5, "---PKGS---");
-        auto [pkgs_part, icu_part] = splitSection(rest6, "---ICU---");
+        auto [pkgs_part, rest7] = splitSection(rest6, "---PS---");
+        auto [ps_part, rest8] = splitSection(rest7, "---UNAME---");
+        auto [uname_part, rest9] = splitSection(rest8, "---DISP---");
+        auto [disp_part, icu_part] = splitSection(rest9, "---ICU---");
 
         // Parse param dump
         std::istringstream pstream(param_part);
@@ -262,22 +268,76 @@ void DeviceManager::queryDeviceInfoAsync(const std::string& serial, std::functio
         while (std::getline(pkstream, line)) {
             line.erase(0, line.find_first_not_of(" \t\r\n"));
             line.erase(line.find_last_not_of(" \t\r\n") + 1);
-            if (!line.empty() && line.rfind("ID:", 0) != 0) {
+            if (!line.empty() && line.rfind("ID:", 0) != 0 && line != "bundles:") {
                 info.all_packages.push_back(line);
-                if (line.find("yarward") != std::string::npos) {
-                    YarwardAppInfo app;
-                    app.bundle = line;
-                    app.version_name = "1.5.0";
-                    app.version_code = 10500;
-                    app.target_api = 11;
-                    app.main_ability = "EntryAbility";
-                    app.running = true;
-                    app.pids = "2140";
-                    app.update_time = "2026-10-23 10:00:00";
-                    app.install_time = "2026-10-20 09:30:00";
-                    info.yarward_apps.push_back(app);
+            }
+        }
+
+        // Running processes from PS
+        std::map<std::string, std::string> running_process_pids;
+        std::istringstream ps_stream(ps_part);
+        std::string ps_line;
+        while (std::getline(ps_stream, ps_line)) {
+            std::istringstream ss(ps_line);
+            std::string pid_str;
+            if (ss >> pid_str) {
+                std::string rest;
+                std::getline(ss, rest);
+                for (const auto& pkg : info.all_packages) {
+                    if (rest.find(pkg) != std::string::npos) {
+                        if (running_process_pids[pkg].empty()) {
+                            running_process_pids[pkg] = pid_str;
+                        } else if (running_process_pids[pkg].find(pid_str) == std::string::npos) {
+                            running_process_pids[pkg] += ", " + pid_str;
+                        }
+                    }
                 }
             }
+        }
+
+        // Yarward apps resolution
+        for (const auto& pkg : info.all_packages) {
+            if (pkg.find("yarward") != std::string::npos) {
+                YarwardAppInfo app;
+                app.bundle = pkg;
+                app.version_name = "已安装";
+                app.version_code = 10000;
+                app.target_api = 10;
+                app.main_ability = "EntryAbility";
+                if (running_process_pids.count(pkg)) {
+                    app.running = true;
+                    app.pids = running_process_pids[pkg];
+                } else {
+                    app.running = false;
+                    app.pids = "";
+                }
+                info.yarward_apps.push_back(app);
+            }
+        }
+
+        // Linux Kernel from uname
+        std::string uname_clean = uname_part;
+        uname_clean.erase(0, uname_clean.find_first_not_of(" \t\r\n"));
+        uname_clean.erase(uname_clean.find_last_not_of(" \t\r\n") + 1);
+        if (!uname_clean.empty()) {
+            info.kernel = uname_clean;
+        }
+
+        // Display info from hidumper
+        std::istringstream dstream(disp_part);
+        std::string dline;
+        int disp_w = 0, disp_h = 0;
+        while (std::getline(dstream, dline)) {
+            std::smatch m;
+            if (std::regex_search(dline, m, std::regex(R"(width[:\s]+(\d+))", std::regex::icase))) {
+                disp_w = std::stoi(m[1]);
+            }
+            if (std::regex_search(dline, m, std::regex(R"(height[:\s]+(\d+))", std::regex::icase))) {
+                disp_h = std::stoi(m[1]);
+            }
+        }
+        if (disp_w > 0 && disp_h > 0) {
+            info.display = std::to_string(disp_w) + " × " + std::to_string(disp_h);
         }
 
         // ICU info

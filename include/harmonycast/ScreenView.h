@@ -30,6 +30,7 @@ public:
     [[nodiscard]] bool isActive() const { return m_active; }
 
     void setStatusMessage(const QString& msg) { m_status_msg = msg; update(); }
+    [[nodiscard]] const QImage& image() const { return m_image; }
 
     std::pair<int, int> mapToDevice(const QPoint& pos) const;
 

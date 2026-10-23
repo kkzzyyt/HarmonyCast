@@ -49,6 +49,14 @@ MainWindow::MainWindow(QWidget* parent)
     connect(m_webview.get(), &WebViewDebugger::consoleMessageReceived, this, &MainWindow::onWebConsoleMessage);
     connect(m_webview.get(), &WebViewDebugger::networkRequestReceived, this, &MainWindow::onWebNetworkRequest);
     connect(m_webview.get(), &WebViewDebugger::networkResponseReceived, this, &MainWindow::onWebNetworkResponse);
+    connect(m_webview.get(), &WebViewDebugger::pagesLoaded, this, [this](const std::vector<WebViewPage>& pages){
+        if (pages.empty()) {
+            showToast("检测到 WebView 调试端口，但暂未发现活跃网页");
+        } else {
+            m_webview->connectPage(pages[0]);
+            showToast(QString("已连接 WebView 页面: %1").arg(QString::fromStdString(pages[0].title.empty() ? pages[0].url : pages[0].title)));
+        }
+    });
 
     m_dev_mgr->startPolling(1500);
     switchModule(0);
@@ -958,6 +966,34 @@ void MainWindow::renderDeviceInfo(const DeviceInfo& data) {
         m_pkg_table->setCellWidget(static_cast<int>(idx), 2, btn_copy);
     }
     m_packages_layout->addWidget(m_pkg_table);
+
+    // Sync packages to HiLog package filter combo
+    if (m_package_combo) {
+        QString curPkg = m_package_combo->currentText().trimmed();
+        m_package_combo->blockSignals(true);
+        m_package_combo->clear();
+        m_package_combo->addItem(DEFAULT_PACKAGE_FILTER);
+        for (const auto& pkg : data.all_packages) {
+            QString qpkg = QString::fromStdString(pkg);
+            if (qpkg.contains("yarward", Qt::CaseInsensitive)) {
+                m_package_combo->addItem(qpkg);
+            }
+        }
+        m_package_combo->addItem("全部应用");
+        for (const auto& pkg : data.all_packages) {
+            QString qpkg = QString::fromStdString(pkg);
+            if (!qpkg.contains("yarward", Qt::CaseInsensitive)) {
+                m_package_combo->addItem(qpkg);
+            }
+        }
+        int idx = m_package_combo->findText(curPkg);
+        if (idx >= 0) {
+            m_package_combo->setCurrentIndex(idx);
+        } else {
+            m_package_combo->setCurrentIndex(0);
+        }
+        m_package_combo->blockSignals(false);
+    }
 }
 
 void MainWindow::filterPackageTable(const QString& query) {
@@ -1047,19 +1083,45 @@ void MainWindow::stopYarwardApp(const QString& bundle) {
 
 void MainWindow::fetchAppLogsAction(const QString& bundle) {
     std::string s = currentSerial();
-    if (s.empty()) return;
+    if (s.empty()) {
+        showToast("请先选择已连接的设备");
+        return;
+    }
+
+    QString realBundle = bundle;
+    if (realBundle.contains("*") || realBundle.isEmpty()) {
+        if (!m_cached_info.yarward_apps.empty()) {
+            realBundle = QString::fromStdString(m_cached_info.yarward_apps[0].bundle);
+        } else {
+            for (const auto& pkg : m_cached_info.all_packages) {
+                QString qpkg = QString::fromStdString(pkg);
+                if (qpkg.startsWith("com.yarward.")) {
+                    realBundle = qpkg;
+                    break;
+                }
+            }
+        }
+    }
+
+    if (realBundle.contains("*") || realBundle.isEmpty()) {
+        bool ok = false;
+        realBundle = QInputDialog::getText(this, "拉取应用日志", "请输入目标应用真实包名:", QLineEdit::Normal, "com.yarward.etnroomoh", &ok);
+        if (!ok || realBundle.isEmpty()) return;
+    }
+
     QString destDir = QFileDialog::getExistingDirectory(this, "选择保存应用日志的本地目录", QDir::homePath() + "/Downloads");
     if (destDir.isEmpty()) return;
 
-    showToast(QString("正在拉取应用日志: %1…").arg(bundle));
-    m_hdc->executeAsync({"file", "recv", "/data/app/el2/100/base/" + bundle.toStdString() + "/", destDir.toStdString()}, s, [this, destDir](const CommandResult& r){
+    showToast(QString("正在拉取应用数据与日志: %1…").arg(realBundle));
+    std::string remote_dir = "/data/app/el2/100/base/" + realBundle.toStdString() + "/";
+    m_hdc->executeAsync({"file", "recv", remote_dir, destDir.toStdString()}, s, [this, destDir, realBundle](const CommandResult& r){
         if (r.success()) {
-            int ret = QMessageBox::information(this, "应用日志拉取成功", QString("日志已保存到:\n%1").arg(destDir), QMessageBox::Open | QMessageBox::Ok);
+            int ret = QMessageBox::information(this, "应用日志拉取成功", QString("应用 [%1] 的本地数据与日志已保存到:\n%2\n\n是否打开所在目录？").arg(realBundle, destDir), QMessageBox::Open | QMessageBox::Ok);
             if (ret == QMessageBox::Open) {
                 QDesktopServices::openUrl(QUrl::fromLocalFile(destDir));
             }
         } else {
-            showToast("拉取日志失败或设备端无对应日志");
+            showToast("拉取日志失败或设备端该应用尚未生成持久化日志");
         }
     });
 }
@@ -1905,6 +1967,36 @@ void MainWindow::switchLogSubtab(int index) {
     m_log_subtab_stack->setCurrentIndex(index);
     m_btn_log_tab_device->setChecked(index == 0);
     m_btn_log_tab_webview->setChecked(index == 1);
+    if (index == 1) {
+        autoConnectWebView();
+    }
+}
+
+void MainWindow::autoConnectWebView() {
+    std::string s = currentSerial();
+    if (s.empty()) {
+        showToast("请先选择已连接的设备");
+        return;
+    }
+
+    showToast("正在检测设备中的 WebView 实例…");
+    std::thread([this, s]() {
+        auto instances = m_webview->scanInstances(s);
+        QMetaObject::invokeMethod(this, [this, s, instances]() {
+            if (instances.empty()) {
+                showToast("当前设备未检测到运行中的 WebView 界面");
+                return;
+            }
+
+            int localPort = 9222;
+            if (m_webview->forwardInstance(s, instances[0], localPort)) {
+                showToast(QString("已建立 WebView 调试端口映射 (PID %1)").arg(instances[0].pid));
+                m_webview->fetchPages(localPort);
+            } else {
+                showToast("WebView 调试端口映射失败");
+            }
+        });
+    }).detach();
 }
 
 void MainWindow::setWebViewSubtab(int index) {
@@ -2214,74 +2306,224 @@ void MainWindow::sendKey(const QString& key) {
 }
 
 void MainWindow::launchPrimaryAppShortcut() {
-    startYarwardApp(DEFAULT_PACKAGE_FILTER, "EntryAbility");
+    std::string s = currentSerial();
+    if (s.empty()) {
+        showToast("请先选择已连接的设备");
+        return;
+    }
+
+    QString targetBundle;
+    QString targetAbility = "EntryAbility";
+
+    if (!m_cached_info.yarward_apps.empty()) {
+        targetBundle = QString::fromStdString(m_cached_info.yarward_apps[0].bundle);
+        if (!m_cached_info.yarward_apps[0].main_ability.empty()) {
+            targetAbility = QString::fromStdString(m_cached_info.yarward_apps[0].main_ability);
+        }
+    } else {
+        for (const auto& pkg : m_cached_info.all_packages) {
+            QString qpkg = QString::fromStdString(pkg);
+            if (qpkg.startsWith("com.yarward.") && !qpkg.contains("test")) {
+                targetBundle = qpkg;
+                break;
+            }
+        }
+    }
+
+    if (targetBundle.isEmpty()) {
+        bool ok = false;
+        targetBundle = QInputDialog::getText(this, "启动主程序", "未在设备上检测到 Yarward 业务包，请输入 Bundle 名称:", QLineEdit::Normal, "com.yarward.etnroomoh", &ok);
+        if (!ok || targetBundle.isEmpty()) return;
+    }
+
+    startYarwardApp(targetBundle, targetAbility);
 }
 
 void MainWindow::exportFaultReport() {
-    fetchAppLogsAction(DEFAULT_PACKAGE_FILTER);
+    std::string s = currentSerial();
+    if (s.empty()) {
+        showToast("请先选择已连接的设备");
+        return;
+    }
+
+    QString defaultName = QString("HarmonyCast_Fault_%1_%2.md")
+                              .arg(QString::fromStdString(s).replace(':', '_').replace('.', '_'))
+                              .arg(QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss"));
+    QString dest = QFileDialog::getSaveFileName(this, "导出故障现场诊断报告", QDir::homePath() + "/Downloads/" + defaultName, "Markdown 报告 (*.md);;所有文件 (*.*)");
+    if (dest.isEmpty()) return;
+
+    QFile file(dest);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        showToast("无法创建目标文件");
+        return;
+    }
+
+    QTextStream out(&file);
+    out << "# HarmonyCast 故障现场诊断报告\n\n";
+    out << "- **导出时间**: " << QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss") << "\n";
+    out << "- **设备序列号**: `" << QString::fromStdString(s) << "`\n";
+    out << "- **设备型号**: " << QString::fromStdString(m_cached_info.model.empty() ? "未知" : m_cached_info.model) << "\n";
+    out << "- **系统版本**: " << QString::fromStdString(m_cached_info.os_fullname.empty() ? "OpenHarmony" : m_cached_info.os_fullname) << "\n";
+    out << "- **开机时长**: " << QString::fromStdString(m_cached_info.uptime.empty() ? "未知" : m_cached_info.uptime) << "\n";
+    out << "- **内存情况**: " << QString::fromStdString(m_cached_info.memory.empty() ? "未知" : m_cached_info.memory) << "\n";
+    out << "- **存储空间**: " << QString::fromStdString(m_cached_info.storage.empty() ? "未知" : m_cached_info.storage) << "\n\n";
+
+    out << "## 业务应用状态\n\n";
+    if (m_cached_info.yarward_apps.empty()) {
+        out << "未发现 Yarward 业务应用。\n\n";
+    } else {
+        out << "| 包名 | 版本 | 运行状态 | PID |\n";
+        out << "| :--- | :--- | :--- | :--- |\n";
+        for (const auto& app : m_cached_info.yarward_apps) {
+            out << "| `" << QString::fromStdString(app.bundle) << "` | "
+                << QString::fromStdString(app.version_name) << " | "
+                << (app.running ? "**运行中**" : "未运行") << " | "
+                << QString::fromStdString(app.pids) << " |\n";
+        }
+        out << "\n";
+    }
+
+    out << "## 最近 HiLog 日志快照 (共 " << m_cached_logs.size() << " 条)\n\n";
+    out << "```text\n";
+    for (const auto& log : m_cached_logs) {
+        out << QString::fromStdString(log.format()) << "\n";
+    }
+    out << "```\n";
+    file.close();
+
+    // Save screenshot if available
+    QString shotPath = dest;
+    shotPath.replace(QRegularExpression("\\.md$"), ".png");
+    if (m_screen && !m_screen->image().isNull()) {
+        m_screen->image().save(shotPath, "PNG");
+    }
+
+    int ret = QMessageBox::information(this, "诊断报告导出完成", QString("故障现场报告已保存至:\n%1\n\n是否打开所在目录？").arg(dest), QMessageBox::Open | QMessageBox::Ok);
+    if (ret == QMessageBox::Open) {
+        QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(dest).absolutePath()));
+    }
 }
 
 // ==========================================
 // HiLog Management
 // ==========================================
+bool MainWindow::isLogMatch(const HiLogEntry& e, const QString& filterPkg, const QString& filterLvl, const QString& query) const {
+    if (filterLvl != "全部级别" && !filterLvl.isEmpty()) {
+        if (QString::fromStdString(e.levelString()) != filterLvl) return false;
+    }
+
+    if (filterPkg != "全部应用" && !filterPkg.isEmpty()) {
+        std::string pkgStr = filterPkg.toStdString();
+        bool match = false;
+        if (!e.bundle.empty()) {
+            match = HiLogParser::packageMatches(e.bundle, pkgStr);
+        } else if (pkgStr == "com.yarward.*" || pkgStr.find("yarward") != std::string::npos) {
+            if (e.category == "app" || (!e.domain.empty() && e.domain[0] == 'A')) {
+                match = true;
+            } else if (QString::fromStdString(e.tag).contains("yarward", Qt::CaseInsensitive) ||
+                       QString::fromStdString(e.message).contains("yarward", Qt::CaseInsensitive) ||
+                       QString::fromStdString(e.tag).contains("MVP", Qt::CaseInsensitive) ||
+                       QString::fromStdString(e.tag).contains("ETN", Qt::CaseInsensitive)) {
+                match = true;
+            }
+        } else {
+            match = QString::fromStdString(e.tag).contains(filterPkg, Qt::CaseInsensitive) ||
+                    QString::fromStdString(e.message).contains(filterPkg, Qt::CaseInsensitive);
+        }
+        if (!match) return false;
+    }
+
+    if (!query.isEmpty()) {
+        bool queryMatch = QString::fromStdString(e.tag).contains(query, Qt::CaseInsensitive) ||
+                          QString::fromStdString(e.message).contains(query, Qt::CaseInsensitive) ||
+                          QString::number(e.pid).contains(query) ||
+                          QString::fromStdString(e.bundle).contains(query, Qt::CaseInsensitive);
+        if (!queryMatch) return false;
+    }
+
+    return true;
+}
+
+QString MainWindow::formatLogLine(const HiLogEntry& e) {
+    QString tag = QString::fromStdString(e.tag);
+    QString msg = QString::fromStdString(e.message);
+    if (!tag.isEmpty() && msg.startsWith("[" + tag + "] ")) {
+        msg = msg.mid(tag.length() + 3);
+    }
+    return QString("%1  %2  %3/%4 %5: %6\n")
+        .arg(QString::fromStdString(e.timestamp),
+             QString::fromStdString(e.levelString()),
+             QString::number(e.pid),
+             QString::number(e.tid),
+             tag,
+             msg);
+}
+
 void MainWindow::onHiLogEntries(const std::vector<HiLogEntry>& entries) {
     if (m_pause_cb && m_pause_cb->isChecked()) return;
+
+    QString filterPkg = m_package_combo ? m_package_combo->currentText().trimmed() : "";
+    QString filterLvl = m_level_combo ? m_level_combo->currentText() : "";
+    QString query = m_search_input ? m_search_input->text().trimmed() : "";
+
+    QString newLines;
+    int matchedNew = 0;
 
     for (const auto& e : entries) {
         m_cached_logs.push_back(e);
         if (m_cached_logs.size() > 10000) {
             m_cached_logs.erase(m_cached_logs.begin(), m_cached_logs.begin() + 1000);
         }
+
+        if (isLogMatch(e, filterPkg, filterLvl, query)) {
+            newLines += formatLogLine(e);
+            matchedNew++;
+        }
     }
-    renderHiLog();
+
+    if (!newLines.isEmpty() && m_log_view) {
+        bool wasAtBottom = (m_log_view->verticalScrollBar()->value() >= m_log_view->verticalScrollBar()->maximum() - 20);
+        m_log_view->appendPlainText(newLines.trimmed());
+        if (m_autoscroll_cb && m_autoscroll_cb->isChecked() && wasAtBottom) {
+            m_log_view->verticalScrollBar()->setValue(m_log_view->verticalScrollBar()->maximum());
+        }
+        m_visible_log_count += matchedNew;
+        if (m_log_count) {
+            m_log_count->setText(QString("%1 条日志").arg(m_visible_log_count));
+        }
+    }
 }
 
 void MainWindow::renderHiLog() {
     if (!m_log_view) return;
 
-    QString filterPkg = m_package_combo->currentText().trimmed();
-    QString filterLvl = m_level_combo->currentText();
-    QString query = m_search_input->text().trimmed();
+    QString filterPkg = m_package_combo ? m_package_combo->currentText().trimmed() : "";
+    QString filterLvl = m_level_combo ? m_level_combo->currentText() : "";
+    QString query = m_search_input ? m_search_input->text().trimmed() : "";
 
     QString buffer;
     int visibleCount = 0;
 
     for (const auto& e : m_cached_logs) {
-        QString tag = QString::fromStdString(e.tag);
-        QString msg = QString::fromStdString(e.message);
-
-        if (filterPkg != "全部应用" && !filterPkg.isEmpty()) {
-            if (!tag.contains(filterPkg, Qt::CaseInsensitive) && !msg.contains(filterPkg, Qt::CaseInsensitive)) {
-                continue;
-            }
+        if (isLogMatch(e, filterPkg, filterLvl, query)) {
+            buffer += formatLogLine(e);
+            visibleCount++;
         }
-
-        if (filterLvl != "全部级别") {
-            QString lvlStr = QString::fromStdString(e.levelString());
-            if (lvlStr != filterLvl) continue;
-        }
-
-        if (!query.isEmpty()) {
-            if (!tag.contains(query, Qt::CaseInsensitive) && !msg.contains(query, Qt::CaseInsensitive)) {
-                continue;
-            }
-        }
-
-        buffer += QString("%1 %2 %3/%4 %5: %6\n")
-                      .arg(QString::fromStdString(e.timestamp), QString::fromStdString(e.levelString()),
-                           QString::number(e.pid), QString::number(e.tid), tag, msg);
-        visibleCount++;
     }
 
+    m_visible_log_count = visibleCount;
     m_log_view->setPlainText(buffer);
-    if (m_autoscroll_cb->isChecked()) {
+    if (m_autoscroll_cb && m_autoscroll_cb->isChecked()) {
         m_log_view->verticalScrollBar()->setValue(m_log_view->verticalScrollBar()->maximum());
     }
-    m_log_count->setText(QString("%1 条日志").arg(visibleCount));
+    if (m_log_count) {
+        m_log_count->setText(QString("%1 条日志").arg(visibleCount));
+    }
 }
 
 void MainWindow::clearHiLog() {
     m_cached_logs.clear();
+    m_visible_log_count = 0;
     m_log_view->clear();
     m_log_count->setText("0 条日志");
 }
@@ -2373,7 +2615,13 @@ void MainWindow::executeWebViewJs() {
     if (js.isEmpty()) return;
     m_wv_console_view->appendPlainText(QString("JS > %1").arg(js));
     m_wv_js_input->clear();
-    showToast("已向 WebView 发送执行指令");
+
+    if (m_webview->isConnected()) {
+        m_webview->evaluateJs(js);
+        showToast("已向页面发送 JS 指令");
+    } else {
+        showToast("WebView 调试器未连接，请先确保应用中有加载网页");
+    }
 }
 
 void MainWindow::openChromeInspect() {
@@ -2446,9 +2694,13 @@ void MainWindow::executeCustomHdc() {
 
     m_hdc_terminal->append(QString("\n$ hdc %1 %2").arg(s.empty() ? "" : QString("-t %1").arg(QString::fromStdString(s)), input));
 
-    QStringList tokens = input.split(QRegularExpression("\\s+"), Qt::SkipEmptyParts);
     std::vector<std::string> args;
-    for (const auto& t : tokens) args.push_back(t.toStdString());
+    if (input.startsWith("shell ") || input.startsWith("shell\t")) {
+        args = {"shell", input.mid(6).trimmed().toStdString()};
+    } else {
+        QStringList tokens = QProcess::splitCommand(input);
+        for (const auto& t : tokens) args.push_back(t.toStdString());
+    }
 
     m_hdc->executeAsync(args, s, [this](const CommandResult& r){
         m_btn_run_hdc->setEnabled(true);

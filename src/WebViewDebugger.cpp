@@ -132,6 +132,15 @@ bool WebViewDebugger::isConnected() const {
     return m_ws && m_ws->isValid();
 }
 
+void WebViewDebugger::evaluateJs(const QString& js) {
+    if (!isConnected()) return;
+    QJsonObject params;
+    params["expression"] = js;
+    params["includeCommandLineAPI"] = true;
+    params["returnByValue"] = true;
+    sendCdpCommand("Runtime.evaluate", params);
+}
+
 void WebViewDebugger::sendCdpCommand(const QString& method, const QJsonObject& params) {
     if (!isConnected()) return;
 
@@ -163,6 +172,25 @@ void WebViewDebugger::onWsTextMessage(const QString& message) {
 
     QString method = obj["method"].toString();
     QJsonObject params = obj["params"].toObject();
+
+    // 0. Command Result (e.g. Runtime.evaluate)
+    if (obj.contains("result") && obj["result"].isObject()) {
+        QJsonObject res = obj["result"].toObject();
+        if (res.contains("result")) {
+            QJsonObject evalResult = res["result"].toObject();
+            QString valStr = evalResult["value"].toVariant().toString();
+            if (valStr.isEmpty() && evalResult.contains("description")) {
+                valStr = evalResult["description"].toString();
+            }
+            if (!valStr.isEmpty()) {
+                WebConsoleMessage msg;
+                msg.timestamp = QDateTime::currentDateTime().toString("HH:mm:ss.zzz").toStdString();
+                msg.level = "info";
+                msg.text = "← " + valStr.toStdString();
+                emit consoleMessageReceived(msg);
+            }
+        }
+    }
 
     // 1. Console API Call
     if (method == "Runtime.consoleAPICalled") {

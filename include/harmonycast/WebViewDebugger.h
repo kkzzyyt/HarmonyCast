@@ -67,6 +67,9 @@ public:
     void disconnectPage();
     [[nodiscard]] bool isConnected() const;
 
+    // Execute JavaScript via Chrome DevTools Protocol
+    void evaluateJs(const QString& js);
+
     // Generate cURL command from request
     static QString generateCurl(const WebNetworkRequest& req);
 
