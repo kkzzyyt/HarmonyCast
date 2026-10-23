@@ -2,13 +2,13 @@ name: Build Native C++ App (macOS & Windows)
 
 on:
   push:
+    branches:
+      - main
     tags:
       - 'v*'
-    paths:
-      - 'src/**'
-      - 'include/**'
-      - 'CMakeLists.txt'
-      - '.github/workflows/build_native.yml'
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
 
 jobs:
