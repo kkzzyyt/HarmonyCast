@@ -91,7 +91,7 @@ if(APPLE)
 endif()
 
 # Application Executable / Bundle
-set(APP_ICON_MACOS "${CMAKE_CURRENT_SOURCE_DIR}/../resources/app-icon.icns")
+set(APP_ICON_MACOS "${CMAKE_CURRENT_SOURCE_DIR}/resources/app-icon.icns")
 set(APP_SOURCES src/main.cpp)
 
 if(APPLE)
@@ -107,6 +107,14 @@ if(APPLE)
         ${APP_ICON_MACOS}
     )
     set_source_files_properties(${APP_ICON_MACOS} PROPERTIES MACOSX_PACKAGE_LOCATION "Resources")
+    set_target_properties(HarmonyCast PROPERTIES
+        BUILD_WITH_INSTALL_RPATH TRUE
+        INSTALL_RPATH "@executable_path/../Frameworks;@loader_path/../Frameworks;/opt/homebrew/opt/qt/lib;/opt/homebrew/opt/ffmpeg/lib;/opt/homebrew/lib"
+    )
+    add_custom_command(TARGET HarmonyCast POST_BUILD
+        COMMAND codesign --force --deep --sign - "$<TARGET_BUNDLE_DIR:HarmonyCast>"
+        COMMENT "Applying ad-hoc code signature to HarmonyCast.app"
+    )
 else()
     add_executable(HarmonyCast WIN32 ${APP_SOURCES})
 endif()

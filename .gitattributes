@@ -1,4 +1,7 @@
+# Mark legacy Python implementation as vendored so GitHub recognizes HarmonyCast as a C++ project
+legacy/** linguist-vendored
+legacy/** -diff
+
 # Retain the formatting of attributed upstream payloads.
-harmonycast/upstream/** -whitespace
 licenses/** -whitespace
 resources/servers/ohscrcpy_server.cfg -whitespace
