@@ -6,6 +6,7 @@
 #include <QColor>
 #include <QByteArray>
 #include <QAbstractItemView>
+#include <QListView>
 #include <QWidget>
 #include <QLayout>
 #include <QHash>
@@ -157,16 +158,19 @@ QLabel* IconManager::label(const QString& text, const QString& name, bool wrap) 
 
 void IconManager::setupComboBoxPopup(QComboBox* combo, int minWidth) {
     if (!combo) return;
-    auto* view = combo->view();
-    if (!view) return;
+
+    // Explicitly set QListView to bypass macOS Cocoa native NSMenu and ensure unified dark styling
+    auto* listView = new QListView(combo);
+    combo->setView(listView);
+
     if (minWidth > 0) {
-        view->setMinimumWidth(minWidth);
+        listView->setMinimumWidth(minWidth);
     }
-    view->setStyleSheet(
+    listView->setStyleSheet(
         "background-color: #141f2c; color: #e7edf4; border: 1px solid #304257; "
         "border-radius: 6px; selection-background-color: #1b3e35; outline: none; padding: 2px;"
     );
-    auto* container = view->window();
+    auto* container = listView->window();
     if (container && container != combo) {
         container->setAttribute(Qt::WA_TranslucentBackground, true);
         container->setStyleSheet(
@@ -176,6 +180,12 @@ void IconManager::setupComboBoxPopup(QComboBox* combo, int minWidth) {
         if (layout) {
             layout->setContentsMargins(0, 0, 0, 0);
             layout->setSpacing(0);
+            while (layout->count() > 0 && layout->itemAt(0)->spacerItem()) {
+                layout->takeAt(0);
+            }
+            while (layout->count() > 0 && layout->itemAt(layout->count() - 1)->spacerItem()) {
+                layout->takeAt(layout->count() - 1);
+            }
         }
     }
 }
@@ -270,6 +280,8 @@ QComboBox QAbstractItemView { background-color: #141f2c; color: #e7edf4; border:
 QComboBox QAbstractItemView::item { min-height: 24px; padding: 4px 8px; border-radius: 4px; color: #cdd9e5; }
 QComboBox QAbstractItemView::item:selected { background-color: #1b3e35; color: #5ce0c1; font-weight: 600; }
 QComboBox QAbstractItemView::item:hover { background-color: #1c2b3d; color: #ffffff; }
+QComboBoxPrivateContainer { background-color: #141f2c; border: 1px solid #304257; border-radius: 6px; color: #e7edf4; }
+QComboBoxPrivateScroller { background-color: #141f2c; color: #8295a9; height: 16px; }
 QFrame#MirrorToolbar { background: #0c131c; border-bottom: 1px solid #1c2b3d; }
 QTextEdit, QPlainTextEdit { background: #0a1119; color: #c2d1df; border: 1px solid #25354a; border-radius: 7px; padding: 8px; selection-background-color: #245546; }
 QCheckBox { background: transparent; spacing: 6px; font-size: 12px; }
