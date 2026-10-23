@@ -272,6 +272,18 @@ void MainWindow::setupShortcuts() {
             sendKey("back");
         }
     });
+
+    // Font zoom shortcuts: ⌘+, ⌘=, ⌘-, ⌘0
+    auto* zoomIn1 = new QShortcut(QKeySequence("Ctrl++"), this);
+    connect(zoomIn1, &QShortcut::activated, this, [this]{ setLogFontSize(m_log_font_size_val + 1); });
+    auto* zoomIn2 = new QShortcut(QKeySequence("Ctrl+="), this);
+    connect(zoomIn2, &QShortcut::activated, this, [this]{ setLogFontSize(m_log_font_size_val + 1); });
+
+    auto* zoomOut = new QShortcut(QKeySequence("Ctrl+-"), this);
+    connect(zoomOut, &QShortcut::activated, this, [this]{ setLogFontSize(m_log_font_size_val - 1); });
+
+    auto* zoomReset = new QShortcut(QKeySequence("Ctrl+0"), this);
+    connect(zoomReset, &QShortcut::activated, this, [this]{ setLogFontSize(11); });
 }
 
 void MainWindow::switchModule(int index) {
@@ -325,6 +337,22 @@ void MainWindow::keyPressEvent(QKeyEvent* event) {
         }
     }
     QMainWindow::keyPressEvent(event);
+}
+
+bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
+    if ((watched == m_log_view || watched == m_wv_console_view) && event->type() == QEvent::Wheel) {
+        auto* wheelEvent = static_cast<QWheelEvent*>(event);
+        if (wheelEvent->modifiers() & (Qt::ControlModifier | Qt::MetaModifier)) {
+            int delta = wheelEvent->angleDelta().y();
+            if (delta > 0) {
+                setLogFontSize(m_log_font_size_val + 1);
+            } else if (delta < 0) {
+                setLogFontSize(m_log_font_size_val - 1);
+            }
+            return true;
+        }
+    }
+    return QMainWindow::eventFilter(watched, event);
 }
 
 // ==========================================
@@ -1275,6 +1303,7 @@ QWidget* MainWindow::buildHiLogWidget() {
     m_log_view->setFont(QFont("Menlo", 11));
     m_log_view->setLineWrapMode(QPlainTextEdit::NoWrap);
     m_log_view->setMaximumBlockCount(10000);
+    m_log_view->installEventFilter(this);
     log_layout->addWidget(m_log_view, 1);
 
     // Footer
@@ -1286,17 +1315,46 @@ QWidget* MainWindow::buildHiLogWidget() {
     log_footer->addWidget(m_log_count);
     log_footer->addStretch(1);
 
-    auto* font_hint = IconManager::label("字号  ⌘+/⌘−", "Muted");
-    font_hint->setToolTip("⌘ + 放大 · ⌘ − 缩小 · ⌘ 0 恢复默认字号");
-    log_footer->addWidget(font_hint);
+    auto* font_box = new QHBoxLayout();
+    font_box->setContentsMargins(0, 0, 0, 0);
+    font_box->setSpacing(4);
+
+    auto* font_lbl = IconManager::label("字号", "Muted");
+    font_lbl->setToolTip("快捷键: ⌘ + 放大 · ⌘ − 缩小 · ⌘ 0 恢复默认字号 (支持 ⌘ + 滚轮缩放)");
+    font_box->addWidget(font_lbl);
+
+    auto* btn_zoom_out = new QPushButton("−");
+    btn_zoom_out->setFixedSize(26, 26);
+    btn_zoom_out->setToolTip("缩小字体 (快捷键: ⌘ −)");
+    btn_zoom_out->setCursor(Qt::PointingHandCursor);
+    connect(btn_zoom_out, &QPushButton::clicked, this, [this]{ setLogFontSize(m_log_font_size_val - 1); });
+    font_box->addWidget(btn_zoom_out);
 
     m_log_font_size = new QSpinBox();
-    m_log_font_size->setRange(8, 28);
+    m_log_font_size->setRange(8, 32);
     m_log_font_size->setSuffix(" pt");
-    m_log_font_size->setFixedWidth(82);
+    m_log_font_size->setFixedWidth(78);
+    m_log_font_size->setFixedHeight(26);
+    m_log_font_size->setAlignment(Qt::AlignCenter);
     m_log_font_size->setValue(11);
     connect(m_log_font_size, QOverload<int>::of(&QSpinBox::valueChanged), this, &MainWindow::setLogFontSize);
-    log_footer->addWidget(m_log_font_size);
+    font_box->addWidget(m_log_font_size);
+
+    auto* btn_zoom_in = new QPushButton("+");
+    btn_zoom_in->setFixedSize(26, 26);
+    btn_zoom_in->setToolTip("放大字体 (快捷键: ⌘ +)");
+    btn_zoom_in->setCursor(Qt::PointingHandCursor);
+    connect(btn_zoom_in, &QPushButton::clicked, this, [this]{ setLogFontSize(m_log_font_size_val + 1); });
+    font_box->addWidget(btn_zoom_in);
+
+    auto* btn_reset_font = new QPushButton("默认");
+    btn_reset_font->setFixedHeight(26);
+    btn_reset_font->setToolTip("恢复默认字号 11 pt (快捷键: ⌘ 0)");
+    btn_reset_font->setCursor(Qt::PointingHandCursor);
+    connect(btn_reset_font, &QPushButton::clicked, this, [this]{ setLogFontSize(11); });
+    font_box->addWidget(btn_reset_font);
+
+    log_footer->addLayout(font_box);
 
     log_layout->addLayout(log_footer);
     return widget;
@@ -1411,6 +1469,7 @@ QWidget* MainWindow::buildWebViewPanel() {
     m_wv_console_view->setStyleSheet(
         "background: #090e15; color: #c2d1df; border: 1px solid #1e2c3d; border-radius: 7px; padding: 8px; font-family: 'Menlo', monospace;"
     );
+    m_wv_console_view->installEventFilter(this);
     c_layout->addWidget(m_wv_console_view, 1);
 
     auto* js_bar = new QHBoxLayout();
@@ -1470,17 +1529,46 @@ QWidget* MainWindow::buildWebViewPanel() {
     net_bottom_bar->addWidget(m_wv_net_status_label);
     net_bottom_bar->addStretch(1);
 
-    auto* font_hint = IconManager::label("字号  ⌘+/⌘−", "Muted");
-    font_hint->setToolTip("⌘ + 放大 · ⌘ − 缩小 · ⌘ 0 恢复默认字号");
-    net_bottom_bar->addWidget(font_hint);
+    auto* wv_font_box = new QHBoxLayout();
+    wv_font_box->setContentsMargins(0, 0, 0, 0);
+    wv_font_box->setSpacing(4);
+
+    auto* wv_font_lbl = IconManager::label("字号", "Muted");
+    wv_font_lbl->setToolTip("快捷键: ⌘ + 放大 · ⌘ − 缩小 · ⌘ 0 恢复默认字号 (支持 ⌘ + 滚轮缩放)");
+    wv_font_box->addWidget(wv_font_lbl);
+
+    auto* btn_wv_zoom_out = new QPushButton("−");
+    btn_wv_zoom_out->setFixedSize(26, 26);
+    btn_wv_zoom_out->setToolTip("缩小字体 (快捷键: ⌘ −)");
+    btn_wv_zoom_out->setCursor(Qt::PointingHandCursor);
+    connect(btn_wv_zoom_out, &QPushButton::clicked, this, [this]{ setLogFontSize(m_log_font_size_val - 1); });
+    wv_font_box->addWidget(btn_wv_zoom_out);
 
     m_wv_font_size = new QSpinBox();
-    m_wv_font_size->setRange(8, 28);
+    m_wv_font_size->setRange(8, 32);
     m_wv_font_size->setSuffix(" pt");
-    m_wv_font_size->setFixedWidth(82);
+    m_wv_font_size->setFixedWidth(78);
+    m_wv_font_size->setFixedHeight(26);
+    m_wv_font_size->setAlignment(Qt::AlignCenter);
     m_wv_font_size->setValue(11);
     connect(m_wv_font_size, QOverload<int>::of(&QSpinBox::valueChanged), this, &MainWindow::setLogFontSize);
-    net_bottom_bar->addWidget(m_wv_font_size);
+    wv_font_box->addWidget(m_wv_font_size);
+
+    auto* btn_wv_zoom_in = new QPushButton("+");
+    btn_wv_zoom_in->setFixedSize(26, 26);
+    btn_wv_zoom_in->setToolTip("放大字体 (快捷键: ⌘ +)");
+    btn_wv_zoom_in->setCursor(Qt::PointingHandCursor);
+    connect(btn_wv_zoom_in, &QPushButton::clicked, this, [this]{ setLogFontSize(m_log_font_size_val + 1); });
+    wv_font_box->addWidget(btn_wv_zoom_in);
+
+    auto* btn_wv_reset_font = new QPushButton("默认");
+    btn_wv_reset_font->setFixedHeight(26);
+    btn_wv_reset_font->setToolTip("恢复默认字号 11 pt (快捷键: ⌘ 0)");
+    btn_wv_reset_font->setCursor(Qt::PointingHandCursor);
+    connect(btn_wv_reset_font, &QPushButton::clicked, this, [this]{ setLogFontSize(11); });
+    wv_font_box->addWidget(btn_wv_reset_font);
+
+    net_bottom_bar->addLayout(wv_font_box);
 
     layout->addLayout(net_bottom_bar);
     return panel;
@@ -2120,12 +2208,19 @@ void MainWindow::exportHiLog() {
 }
 
 void MainWindow::setLogFontSize(int size) {
+    size = std::clamp(size, 8, 32);
     m_log_font_size_val = size;
     QFont f("Menlo", size);
     if (m_log_view) m_log_view->setFont(f);
     if (m_wv_console_view) m_wv_console_view->setFont(f);
-    if (m_log_font_size) m_log_font_size->setValue(size);
-    if (m_wv_font_size) m_wv_font_size->setValue(size);
+    if (m_log_font_size && m_log_font_size->value() != size) {
+        QSignalBlocker b(m_log_font_size);
+        m_log_font_size->setValue(size);
+    }
+    if (m_wv_font_size && m_wv_font_size->value() != size) {
+        QSignalBlocker b(m_wv_font_size);
+        m_wv_font_size->setValue(size);
+    }
 }
 
 // ==========================================
