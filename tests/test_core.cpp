@@ -7,6 +7,7 @@
 #include "harmonycast/PacketDemuxer.h"
 #include "harmonycast/HiLogParser.h"
 #include "harmonycast/VideoDecoder.h"
+#include "harmonycast/StreamSession.h"
 #include "harmonycast/HdcClient.h"
 
 using namespace harmonycast;
@@ -142,6 +143,24 @@ void test_video_decoder() {
     std::cout << "[PASS] test_video_decoder passed!" << std::endl;
 }
 
+void test_stream_session_and_types() {
+    std::cout << "[RUN] test_stream_session_and_types..." << std::endl;
+    // 1. Verify DecodedFrame metatype
+    int typeId = qMetaTypeId<DecodedFrame>();
+    assert(typeId != QMetaType::UnknownType);
+
+    // 2. StreamSession fallback state
+    auto hdc = std::make_shared<HdcClient>();
+    Device dev;
+    dev.serial = "127.0.0.1:8710";
+    dev.is_network = true;
+    StreamSession session(hdc, dev);
+    assert(!session.isRunning());
+    assert(!session.isFallbackSnapshot());
+    assert(session.device().serial == "127.0.0.1:8710");
+    std::cout << "[PASS] test_stream_session_and_types passed!" << std::endl;
+}
+
 int main() {
     std::cout << "========================================" << std::endl;
     std::cout << "   HarmonyCast C++ Core Verification    " << std::endl;
@@ -150,6 +169,7 @@ int main() {
     test_packet_demuxer();
     test_hilog_parser();
     test_video_decoder();
+    test_stream_session_and_types();
 
     std::cout << "\n>>> ALL C++ CORE TESTS PASSED! <<<" << std::endl;
     return 0;

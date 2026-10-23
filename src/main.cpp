@@ -7,6 +7,8 @@ int main(int argc, char* argv[]) {
     QApplication::setHighDpiScaleFactorRoundingPolicy(Qt::HighDpiScaleFactorRoundingPolicy::PassThrough);
 
     QApplication app(argc, argv);
+    qRegisterMetaType<harmonycast::DecodedFrame>("harmonycast::DecodedFrame");
+    qRegisterMetaType<harmonycast::DecodedFrame>("DecodedFrame");
     app.setApplicationName("HarmonyCast");
     app.setApplicationDisplayName("HarmonyCast · 鸿蒙投屏工作台");
     app.setOrganizationName("HarmonyCast");

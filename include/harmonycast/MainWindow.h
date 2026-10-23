@@ -248,6 +248,9 @@ private:
     bool m_projecting{false};
     bool m_info_loading{false};
     bool m_hdc_running{false};
+    bool m_auto_start_mirror{true};
+    bool m_user_stopped_mirror{false};
+    std::string m_pending_auto_start_serial;
     int m_wv_console_count{0};
     int m_wv_network_count{0};
 };

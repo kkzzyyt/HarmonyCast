@@ -34,6 +34,8 @@ MainWindow::MainWindow(QWidget* parent)
       m_webview(std::make_unique<WebViewDebugger>(m_hdc, this)),
       m_settings(std::make_unique<QSettings>("HarmonyCast", "HarmonyCast")) {
 
+    m_auto_start_mirror = m_settings->value("auto_start_mirror", true).toBool();
+
     setWindowTitle("鸿蒙投屏 · HarmonyCast");
     resize(1120, 800);
     setMinimumSize(880, 600);
@@ -124,7 +126,39 @@ void MainWindow::setupUi() {
 
     m_settings_btn = IconManager::iconButton("settings", "系统设置", "IconBtnSettings", 30, 30);
     connect(m_settings_btn, &QPushButton::clicked, this, [this] {
-        QMessageBox::information(this, "系统设置", "HarmonyCast v2.0.0\n高性能 C++20 + Qt6 原生引擎\n硬件加速: Apple VideoToolbox / Direct3D 11");
+        auto* dlg = new QDialog(this);
+        dlg->setWindowTitle("系统偏好设置 · HarmonyCast");
+        dlg->resize(450, 260);
+        auto* l = new QVBoxLayout(dlg);
+        l->setSpacing(12);
+
+        auto* cb_auto = new QCheckBox("连接设备后默认自动开启投屏", dlg);
+        cb_auto->setChecked(m_auto_start_mirror);
+        cb_auto->setStyleSheet("color: #e6edf3; font-size: 13px; font-weight: 500;");
+        l->addWidget(cb_auto);
+
+        auto* hint = IconManager::label("开启后，插拔 USB 或通过网络直连设备时，将自动建立连接并启动投屏。", "Muted");
+        hint->setWordWrap(true);
+        l->addWidget(hint);
+
+        l->addSpacing(8);
+        auto* engine_info = IconManager::label("投屏引擎: 高性能 C++20 + Qt6 原生引擎\n画面支持: 硬件加速 (VideoToolbox/D3D11) + 自动快照流降级 (snapshot_display)", "Muted");
+        engine_info->setWordWrap(true);
+        l->addWidget(engine_info);
+
+        l->addStretch();
+        auto* btn_box = new QHBoxLayout();
+        btn_box->addStretch();
+        auto* btn_ok = IconManager::button("确定", "Primary");
+        connect(btn_ok, &QPushButton::clicked, dlg, [this, cb_auto, dlg]() {
+            m_auto_start_mirror = cb_auto->isChecked();
+            m_settings->setValue("auto_start_mirror", m_auto_start_mirror);
+            dlg->accept();
+            showToast(QString("设置已保存: %1").arg(m_auto_start_mirror ? "自动开启投屏" : "手动开启投屏"));
+        });
+        btn_box->addWidget(btn_ok);
+        l->addLayout(btn_box);
+        dlg->exec();
     });
     bottom_box->addWidget(m_settings_btn, 0, Qt::AlignVCenter);
     side->addLayout(bottom_box);
@@ -1897,7 +1931,9 @@ void MainWindow::onDevicesUpdated(const std::vector<Device>& devices) {
         QString s = QString::fromStdString(devices[i].serial);
         QString m = QString::fromStdString(devices[i].model.empty() ? s.toStdString() : devices[i].model);
         m_device_combo->addItem(QString("%1 (%2)").arg(m, s), s);
-        if (s == currentSel) {
+        if (!m_pending_auto_start_serial.empty() && s.toStdString() == m_pending_auto_start_serial) {
+            foundIdx = static_cast<int>(i);
+        } else if (foundIdx < 0 && s == currentSel) {
             foundIdx = static_cast<int>(i);
         }
     }
@@ -1909,12 +1945,27 @@ void MainWindow::onDevicesUpdated(const std::vector<Device>& devices) {
     }
     m_device_combo->blockSignals(false);
 
+    if (!devices.empty()) {
+        onDeviceSelected(m_device_combo->currentIndex());
+    }
+
     if (devices.empty()) {
         renderEmptyInfo();
         m_state_badge->setText("待连接");
     } else {
         if (m_pages->currentIndex() == 0 && !m_info_loading) {
             refreshDeviceInfo();
+        }
+
+        bool pending = !m_pending_auto_start_serial.empty();
+        m_pending_auto_start_serial.clear();
+
+        if ((pending || (m_auto_start_mirror && !m_user_stopped_mirror)) && !m_projecting) {
+            QTimer::singleShot(150, this, [this]() {
+                if (!m_projecting && !currentSerial().empty() && !m_user_stopped_mirror) {
+                    startMirror();
+                }
+            });
         }
     }
 }
@@ -1968,8 +2019,10 @@ void MainWindow::openDeviceCenter() {
         if (ip_in->text().trimmed().isEmpty()) return;
         m_hdc->executeAsync({"tconn", target.toStdString()}, "", [this, target, dlg](const CommandResult& r){
             if (r.success()) {
-                showToast(QString("成功连接到设备: %1").arg(target));
-                refreshDevices();
+                showToast(QString("成功连接到设备: %1，正在开启投屏…").arg(target));
+                m_pending_auto_start_serial = target.toStdString();
+                m_user_stopped_mirror = false;
+                m_dev_mgr->refresh();
                 dlg->accept();
             } else {
                 showToast(QString("连接失败: %1").arg(QString::fromStdString(r.err.empty() ? r.out : r.err)));
@@ -2006,12 +2059,17 @@ void MainWindow::startMirror() {
         return;
     }
 
+    m_user_stopped_mirror = false;
+
     if (m_projecting) return;
     m_projecting = true;
     m_start_btn->hide();
     m_stop_btn->show();
     m_state_badge->setText("连接中…");
     m_screen->setActive(true);
+
+    // Wake up device screen
+    m_hdc->wakeup(s);
 
     int bitrates[] = {4000000, 1500000, 8000000};
     int br = bitrates[m_bitrate_idx];
@@ -2030,6 +2088,18 @@ void MainWindow::startMirror() {
     connect(m_stream.get(), &StreamSession::frameReady, this, [this](const DecodedFrame& f){
         m_screen->updateFrame(f);
         m_state_badge->setText(QString("投屏中 · %1x%2").arg(f.width).arg(f.height));
+    });
+
+    connect(m_stream.get(), &StreamSession::statusChanged, this, [this](const QString& status){
+        m_state_badge->setText(status);
+        statusBar()->showMessage(status, 4000);
+    });
+
+    connect(m_stream.get(), &StreamSession::streamFinished, this, [this](const QString& error){
+        if (m_projecting) {
+            showToast(QString("投屏断开: %1").arg(error));
+            stopMirror(false);
+        }
     });
 
     m_screen->setTouchCallback([this, s](TouchAction act, int x, int y, int dw, int dh){
@@ -2064,7 +2134,7 @@ void MainWindow::startMirror() {
     connect(m_hilog.get(), &HiLogSession::entriesReady, this, &MainWindow::onHiLogEntries);
     m_hilog->start();
 
-    showToast("已启动硬件加速投屏引擎");
+    showToast("已启动投屏引擎");
 }
 
 void MainWindow::stopMirror(bool userInitiated) {
@@ -2085,6 +2155,7 @@ void MainWindow::stopMirror(bool userInitiated) {
         m_hilog.reset();
     }
     if (userInitiated) {
+        m_user_stopped_mirror = true;
         showToast("投屏已停止");
     }
 }

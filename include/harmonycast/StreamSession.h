@@ -10,6 +10,7 @@
 #include <QTimer>
 #include <memory>
 #include <atomic>
+#include <thread>
 
 namespace harmonycast {
 
@@ -32,6 +33,7 @@ public:
     [[nodiscard]] std::shared_ptr<ControlChannel> controlChannel() const { return m_control; }
     [[nodiscard]] int deviceWidth() const { return m_dev_width; }
     [[nodiscard]] int deviceHeight() const { return m_dev_height; }
+    [[nodiscard]] bool isFallbackSnapshot() const { return m_fallback_snapshot; }
 
     void setBitrate(int b) { m_bitrate = b; }
     void setFps(int f) { m_fps = f; }
@@ -69,9 +71,13 @@ private:
     int m_dev_width{0};
     int m_dev_height{0};
 
+    std::atomic<bool> m_fallback_snapshot{false};
+    std::unique_ptr<std::thread> m_snapshot_thread;
+
     int pickFreePort();
     bool launchServer();
     void cleanup();
+    void startSnapshotFallback();
 };
 
 } // namespace harmonycast

@@ -6,6 +6,7 @@
 #include <chrono>
 #include <memory>
 #include <string_view>
+#include <QMetaType>
 
 namespace harmonycast {
 
@@ -173,3 +174,5 @@ struct DecodedFrame {
 };
 
 } // namespace harmonycast
+
+Q_DECLARE_METATYPE(harmonycast::DecodedFrame)
