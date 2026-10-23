@@ -18,5 +18,7 @@ coverage.xml
 *.pem
 *.key
 *.mobileprovision
+package_output/
+*.dmg
 /resources/hdc/hdc
 /resources/hdc/libusb_shared.dylib

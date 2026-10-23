@@ -10,7 +10,7 @@ if(APPLE)
 endif()
 
 # Find Qt 6
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Network Svg SvgWidgets)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Network Svg SvgWidgets WebSockets)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
@@ -46,6 +46,7 @@ set(CORE_HEADERS
     include/harmonycast/StreamSession.h
     include/harmonycast/FlowLayout.h
     include/harmonycast/ScreenView.h
+    include/harmonycast/WebViewDebugger.h
     include/harmonycast/MainWindow.h
 )
 
@@ -60,6 +61,7 @@ set(CORE_SOURCES
     src/StreamSession.cpp
     src/FlowLayout.cpp
     src/ScreenView.cpp
+    src/WebViewDebugger.cpp
     src/MainWindow.cpp
 )
 
@@ -80,6 +82,7 @@ target_link_libraries(harmonycast_core
         Qt6::Network
         Qt6::Svg
         Qt6::SvgWidgets
+        Qt6::WebSockets
     PRIVATE
         ${AVCODEC_LIBRARY}
         ${AVUTIL_LIBRARY}

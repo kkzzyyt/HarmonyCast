@@ -1,6 +1,9 @@
 #include "harmonycast/MainWindow.h"
 #include "harmonycast/FlowLayout.h"
 
+#include <QApplication>
+#include <QClipboard>
+#include <QStatusBar>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QFileDialog>
@@ -8,7 +11,10 @@
 #include <QScrollBar>
 #include <QDateTime>
 #include <QDir>
-#include <QStandardPaths>
+#include <QDesktopServices>
+#include <QUrl>
+#include <QHeaderView>
+#include <QRegularExpression>
 #include <iostream>
 
 namespace harmonycast {
@@ -16,24 +22,45 @@ namespace harmonycast {
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent),
       m_hdc(std::make_shared<HdcClient>()),
-      m_dev_mgr(std::make_shared<DeviceManager>(m_hdc, this)) {
+      m_dev_mgr(std::make_shared<DeviceManager>(m_hdc, this)),
+      m_webview(std::make_unique<WebViewDebugger>(m_hdc, this)) {
 
     setupUi();
     applyTheme();
 
     connect(m_dev_mgr.get(), &DeviceManager::devicesUpdated, this, &MainWindow::onDevicesUpdated);
+    connect(m_webview.get(), &WebViewDebugger::pagesLoaded, this, [this](const std::vector<WebViewPage>& pages) {
+        m_cached_pages = pages;
+        m_wv_page_combo->clear();
+        if (pages.empty()) {
+            m_wv_page_combo->addItem("当前无活跃 WebView 页面");
+            showToast("当前应用无活跃的 WebView 调试页面");
+        } else {
+            for (const auto& p : pages) {
+                QString title = QString::fromStdString(p.title.empty() ? p.url : p.title);
+                m_wv_page_combo->addItem(title, QString::fromStdString(p.id));
+            }
+            showToast(QString("成功发现 %1 个 WebView 调试目标").arg(pages.size()));
+        }
+    });
+
+    connect(m_webview.get(), &WebViewDebugger::consoleMessageReceived, this, &MainWindow::onWebConsoleMessage);
+    connect(m_webview.get(), &WebViewDebugger::networkRequestReceived, this, &MainWindow::onWebNetworkRequest);
+    connect(m_webview.get(), &WebViewDebugger::networkResponseReceived, this, &MainWindow::onWebNetworkResponse);
+
     m_dev_mgr->startPolling(1500);
 }
 
 MainWindow::~MainWindow() {
     onStopMirror();
     if (m_hilog) m_hilog->stop();
+    if (m_webview) m_webview->disconnectPage();
 }
 
 void MainWindow::setupUi() {
     setWindowTitle("HarmonyCast · 鸿蒙投屏工作台");
-    setMinimumSize(960, 680);
-    resize(1120, 780);
+    setMinimumSize(1020, 720);
+    resize(1200, 820);
 
     auto* central = new QWidget(this);
     setCentralWidget(central);
@@ -51,18 +78,20 @@ void MainWindow::setupUi() {
     body_layout->setSpacing(0);
 
     setupSidebar();
-    body_layout->addWidget(m_nav_mirror->parentWidget());
+    body_layout->addWidget(m_nav_info->parentWidget());
 
     m_pages = new QStackedWidget(body_widget);
-    setupMirrorPage();
-    setupHiLogPage();
     setupInfoPage();
+    setupWorkspace();
     setupHdcPage();
 
-    m_pages->addWidget(m_mirror_page);
-    m_pages->addWidget(m_hilog_page);
-    m_pages->addWidget(m_info_page);
-    m_pages->addWidget(m_hdc_page);
+    m_pages->addWidget(m_info_page);       // Index 0: 设备信息
+    m_pages->addWidget(m_workspace_page);  // Index 1: 投屏工作台 (同屏含投屏 + HiLog + WebView)
+    m_pages->addWidget(m_hdc_page);        // Index 2: 常用命令
+
+    // Default to Workspace
+    m_pages->setCurrentWidget(m_workspace_page);
+    m_nav_workspace->setChecked(true);
 
     body_layout->addWidget(m_pages, 1);
     root_layout->addWidget(body_widget, 1);
@@ -75,14 +104,48 @@ void MainWindow::setupHeader() {
 
     auto* layout = new QHBoxLayout(header);
     layout->setContentsMargins(16, 8, 16, 8);
-    layout->setSpacing(12);
+    layout->setSpacing(10);
 
     auto* title = new QLabel("HarmonyCast", header);
     title->setObjectName("appTitle");
     layout->addWidget(title);
 
+    layout->addSpacing(8);
+
+    // Layout Switcher: 左右 / 上下 / 仅投屏 / 仅日志
+    auto* switcher_card = new QWidget(header);
+    switcher_card->setObjectName("layoutSwitcherCard");
+    auto* s_layout = new QHBoxLayout(switcher_card);
+    s_layout->setContentsMargins(2, 2, 2, 2);
+    s_layout->setSpacing(2);
+
+    auto makeSwitchBtn = [this, switcher_card](const QString& text, const QString& mode) {
+        auto* btn = new QPushButton(text, switcher_card);
+        btn->setCheckable(true);
+        btn->setAutoExclusive(true);
+        btn->setFixedHeight(24);
+        btn->setObjectName("layoutBtn");
+        connect(btn, &QPushButton::clicked, this, [this, mode]() { setWorkspaceLayout(mode); });
+        return btn;
+    };
+
+    m_btn_layout_h = makeSwitchBtn("左右", "horizontal");
+    m_btn_layout_v = makeSwitchBtn("上下", "vertical");
+    m_btn_layout_screen = makeSwitchBtn("投屏", "screen_only");
+    m_btn_layout_logs = makeSwitchBtn("日志", "logs_only");
+
+    m_btn_layout_h->setChecked(true);
+    s_layout->addWidget(m_btn_layout_h);
+    s_layout->addWidget(m_btn_layout_v);
+    s_layout->addWidget(m_btn_layout_screen);
+    s_layout->addWidget(m_btn_layout_logs);
+
+    layout->addWidget(switcher_card);
+    layout->addSpacing(8);
+
     m_device_combo = new QComboBox(header);
-    m_device_combo->setMinimumWidth(220);
+    m_device_combo->setMinimumWidth(200);
+    m_device_combo->setMaximumWidth(280);
     m_device_combo->addItem("正在探测设备…");
     connect(m_device_combo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &MainWindow::onDeviceSelected);
     layout->addWidget(m_device_combo);
@@ -91,10 +154,16 @@ void MainWindow::setupHeader() {
     m_state_badge->setObjectName("stateBadge");
     layout->addWidget(m_state_badge);
 
-    m_refresh_btn = new QPushButton("刷新", header);
-    m_refresh_btn->setFixedWidth(64);
-    connect(m_refresh_btn, &QPushButton::clicked, this, &MainWindow::onRefreshClicked);
-    layout->addWidget(m_refresh_btn);
+    m_btn_refresh = new QPushButton("刷新", header);
+    m_btn_refresh->setFixedWidth(60);
+    connect(m_btn_refresh, &QPushButton::clicked, this, &MainWindow::onRefreshDevices);
+    layout->addWidget(m_btn_refresh);
+
+    m_btn_disconnect = new QPushButton("断开", header);
+    m_btn_disconnect->setFixedWidth(60);
+    m_btn_disconnect->setObjectName("dangerButton");
+    connect(m_btn_disconnect, &QPushButton::clicked, this, &MainWindow::onDisconnectDevice);
+    layout->addWidget(m_btn_disconnect);
 
     layout->addStretch();
 
@@ -109,7 +178,7 @@ void MainWindow::setupHeader() {
 
 void MainWindow::setupSidebar() {
     auto* sidebar = new QWidget(this);
-    sidebar->setFixedWidth(120);
+    sidebar->setFixedWidth(130);
     sidebar->setObjectName("sidebarWidget");
 
     auto* layout = new QVBoxLayout(sidebar);
@@ -125,67 +194,94 @@ void MainWindow::setupSidebar() {
         return btn;
     };
 
-    m_nav_mirror = makeNavBtn("投屏工作台");
-    m_nav_hilog = makeNavBtn("HiLog 日志");
+    m_nav_workspace = makeNavBtn("投屏工作台");
     m_nav_info = makeNavBtn("设备信息");
     m_nav_hdc = makeNavBtn("常用命令");
 
-    m_nav_mirror->setChecked(true);
-
-    layout->addWidget(m_nav_mirror);
-    layout->addWidget(m_nav_hilog);
+    layout->addWidget(m_nav_workspace);
     layout->addWidget(m_nav_info);
     layout->addWidget(m_nav_hdc);
     layout->addStretch();
 
-    connect(m_nav_mirror, &QPushButton::clicked, this, [this]() { m_pages->setCurrentWidget(m_mirror_page); });
-    connect(m_nav_hilog, &QPushButton::clicked, this, [this]() { m_pages->setCurrentWidget(m_hilog_page); });
+    auto* ver_label = new QLabel("HarmonyCast\nv1.5.0", sidebar);
+    ver_label->setObjectName("mutedLabel");
+    ver_label->setAlignment(Qt::AlignCenter);
+    layout->addWidget(ver_label);
+
+    connect(m_nav_workspace, &QPushButton::clicked, this, [this]() { m_pages->setCurrentWidget(m_workspace_page); });
     connect(m_nav_info, &QPushButton::clicked, this, [this]() { m_pages->setCurrentWidget(m_info_page); onRefreshDeviceInfo(); });
     connect(m_nav_hdc, &QPushButton::clicked, this, [this]() { m_pages->setCurrentWidget(m_hdc_page); });
 }
 
-void MainWindow::setupMirrorPage() {
-    m_mirror_page = new QWidget(this);
-    auto* layout = new QVBoxLayout(m_mirror_page);
-    layout->setContentsMargins(12, 12, 12, 12);
+void MainWindow::setupWorkspace() {
+    m_workspace_page = new QWidget(this);
+    auto* ws_layout = new QVBoxLayout(m_workspace_page);
+    ws_layout->setContentsMargins(0, 0, 0, 0);
+    ws_layout->setSpacing(0);
+
+    // QSplitter containing Left (Mirroring) and Right (HiLog + WebView Tabs)
+    m_workspace_splitter = new QSplitter(Qt::Horizontal, m_workspace_page);
+    m_workspace_splitter->setObjectName("workspaceSplitter");
+    m_workspace_splitter->setHandleWidth(8);
+    m_workspace_splitter->setChildrenCollapsible(false);
+
+    setupMirrorPanel();
+    setupRightTabPanel();
+
+    m_workspace_splitter->addWidget(m_mirror_container);
+    m_workspace_splitter->addWidget(m_log_container);
+    m_workspace_splitter->setStretchFactor(0, 5);
+    m_workspace_splitter->setStretchFactor(1, 5);
+
+    ws_layout->addWidget(m_workspace_splitter);
+}
+
+void MainWindow::setupMirrorPanel() {
+    m_mirror_container = new QWidget(m_workspace_splitter);
+    auto* layout = new QVBoxLayout(m_mirror_container);
+    layout->setContentsMargins(8, 8, 8, 8);
     layout->setSpacing(8);
 
-    // Toolbar with responsive FlowLayout
-    auto* toolbar = new QWidget(m_mirror_page);
-    auto* flow = new FlowLayout(toolbar, 0, 8, 8);
+    // Top action bar with FlowLayout
+    auto* tb = new QWidget(m_mirror_container);
+    auto* flow = new FlowLayout(tb, 0, 6, 6);
 
-    m_btn_toggle_mirror = new QPushButton("开始投屏", toolbar);
+    m_btn_toggle_mirror = new QPushButton("开始投屏", tb);
     m_btn_toggle_mirror->setObjectName("primaryButton");
     connect(m_btn_toggle_mirror, &QPushButton::clicked, this, &MainWindow::onToggleMirror);
     flow->addWidget(m_btn_toggle_mirror);
 
-    auto* btn_back = new QPushButton("返回", toolbar);
+    auto* btn_back = new QPushButton("返回", tb);
     connect(btn_back, &QPushButton::clicked, this, &MainWindow::onActionBack);
     flow->addWidget(btn_back);
 
-    auto* btn_home = new QPushButton("主页", toolbar);
+    auto* btn_home = new QPushButton("主页", tb);
     connect(btn_home, &QPushButton::clicked, this, &MainWindow::onActionHome);
     flow->addWidget(btn_home);
 
-    auto* btn_wake = new QPushButton("亮屏", toolbar);
+    auto* btn_wake = new QPushButton("亮屏", tb);
     connect(btn_wake, &QPushButton::clicked, this, &MainWindow::onActionWakeup);
     flow->addWidget(btn_wake);
 
-    auto* btn_rotate = new QPushButton("旋转", toolbar);
+    auto* btn_power = new QPushButton("电源", tb);
+    connect(btn_power, &QPushButton::clicked, this, &MainWindow::onActionPower);
+    flow->addWidget(btn_power);
+
+    auto* btn_rotate = new QPushButton("旋转", tb);
     connect(btn_rotate, &QPushButton::clicked, this, &MainWindow::onActionRotate);
     flow->addWidget(btn_rotate);
 
-    auto* btn_shot = new QPushButton("截图保存", toolbar);
+    auto* btn_shot = new QPushButton("截图", tb);
     connect(btn_shot, &QPushButton::clicked, this, &MainWindow::onActionScreenshot);
     flow->addWidget(btn_shot);
 
-    m_fps_label = new QLabel("就绪", toolbar);
+    m_fps_label = new QLabel("就绪", tb);
     m_fps_label->setObjectName("fpsLabel");
     flow->addWidget(m_fps_label);
 
-    layout->addWidget(toolbar);
+    layout->addWidget(tb);
 
-    m_screen_view = new ScreenView(m_mirror_page);
+    m_screen_view = new ScreenView(m_mirror_container);
     m_screen_view->setTouchCallback([this](TouchAction action, int x, int y, int dev_w, int dev_h) {
         if (m_stream && m_stream->controlChannel()) {
             m_stream->controlChannel()->sendTouch(action, x, y, dev_w, dev_h);
@@ -195,19 +291,33 @@ void MainWindow::setupMirrorPage() {
     layout->addWidget(m_screen_view, 1);
 }
 
-void MainWindow::setupHiLogPage() {
-    m_hilog_page = new QWidget(this);
-    auto* layout = new QVBoxLayout(m_hilog_page);
-    layout->setContentsMargins(12, 12, 12, 12);
-    layout->setSpacing(8);
+void MainWindow::setupRightTabPanel() {
+    m_log_container = new QWidget(m_workspace_splitter);
+    auto* layout = new QVBoxLayout(m_log_container);
+    layout->setContentsMargins(8, 8, 8, 8);
+    layout->setSpacing(6);
 
-    // Toolbar with FlowLayout
-    auto* tb = new QWidget(m_hilog_page);
-    auto* flow = new FlowLayout(tb, 0, 8, 8);
+    m_log_tabs = new QTabWidget(m_log_container);
+    m_log_tabs->setObjectName("workspaceTabs");
+
+    m_log_tabs->addTab(buildHiLogWidget(), "设备日志 (HiLog)");
+    m_log_tabs->addTab(buildWebViewWidget(), "WebView 控制台");
+
+    layout->addWidget(m_log_tabs);
+}
+
+QWidget* MainWindow::buildHiLogWidget() {
+    auto* page = new QWidget();
+    auto* layout = new QVBoxLayout(page);
+    layout->setContentsMargins(4, 8, 4, 4);
+    layout->setSpacing(6);
+
+    auto* tb = new QWidget(page);
+    auto* flow = new FlowLayout(tb, 0, 6, 6);
 
     m_search_input = new QLineEdit(tb);
     m_search_input->setPlaceholderText("搜索日志内容、Tag 或 PID…");
-    m_search_input->setMinimumWidth(200);
+    m_search_input->setMinimumWidth(180);
     connect(m_search_input, &QLineEdit::textChanged, this, &MainWindow::onHiLogFilterChanged);
     flow->addWidget(m_search_input);
 
@@ -244,28 +354,100 @@ void MainWindow::setupHiLogPage() {
 
     layout->addWidget(tb);
 
-    m_log_view = new QPlainTextEdit(m_hilog_page);
+    m_log_view = new QPlainTextEdit(page);
     m_log_view->setReadOnly(true);
     m_log_view->setMaximumBlockCount(10000);
     m_log_view->setFont(QFont("Menlo", 12));
     layout->addWidget(m_log_view, 1);
 
-    m_log_count_label = new QLabel("缓存 0 条", m_hilog_page);
+    m_log_count_label = new QLabel("缓存 0 条 · 设备日志自动流式采集", page);
     m_log_count_label->setObjectName("mutedLabel");
     layout->addWidget(m_log_count_label);
+
+    return page;
+}
+
+QWidget* MainWindow::buildWebViewWidget() {
+    auto* page = new QWidget();
+    auto* layout = new QVBoxLayout(page);
+    layout->setContentsMargins(4, 8, 4, 4);
+    layout->setSpacing(6);
+
+    // Toolbar
+    auto* tb = new QWidget(page);
+    auto* flow = new FlowLayout(tb, 0, 6, 6);
+
+    auto* btn_scan = new QPushButton("扫描 WebView", tb);
+    connect(btn_scan, &QPushButton::clicked, this, &MainWindow::onScanWebViewInstances);
+    flow->addWidget(btn_scan);
+
+    m_wv_instance_combo = new QComboBox(tb);
+    m_wv_instance_combo->addItem("请选择 WebView 实例…");
+    m_wv_instance_combo->setMinimumWidth(180);
+    connect(m_wv_instance_combo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &MainWindow::onWebViewInstanceSelected);
+    flow->addWidget(m_wv_instance_combo);
+
+    m_wv_page_combo = new QComboBox(tb);
+    m_wv_page_combo->addItem("等待获取页面列表…");
+    m_wv_page_combo->setMinimumWidth(200);
+    connect(m_wv_page_combo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &MainWindow::onWebViewPageSelected);
+    flow->addWidget(m_wv_page_combo);
+
+    m_btn_open_browser = new QPushButton("浏览器调试 ↗", tb);
+    m_btn_open_browser->setObjectName("primaryButton");
+    connect(m_btn_open_browser, &QPushButton::clicked, this, &MainWindow::onOpenInBrowser);
+    flow->addWidget(m_btn_open_browser);
+
+    m_btn_export_curl = new QPushButton("导出 cURL", tb);
+    connect(m_btn_export_curl, &QPushButton::clicked, this, &MainWindow::onExportCurl);
+    flow->addWidget(m_btn_export_curl);
+
+    layout->addWidget(tb);
+
+    // Splitter for Console (Top) and Network Requests (Bottom)
+    auto* wv_splitter = new QSplitter(Qt::Vertical, page);
+
+    auto* console_box = new QWidget(wv_splitter);
+    auto* c_layout = new QVBoxLayout(console_box);
+    c_layout->setContentsMargins(0, 0, 0, 0);
+    c_layout->addWidget(new QLabel("Console 日志", console_box));
+    m_wv_console_view = new QPlainTextEdit(console_box);
+    m_wv_console_view->setReadOnly(true);
+    m_wv_console_view->setFont(QFont("Menlo", 12));
+    c_layout->addWidget(m_wv_console_view);
+
+    auto* net_box = new QWidget(wv_splitter);
+    auto* n_layout = new QVBoxLayout(net_box);
+    n_layout->setContentsMargins(0, 0, 0, 0);
+    n_layout->addWidget(new QLabel("Network 接口请求 (点击可导出 cURL)", net_box));
+    m_wv_network_table = new QTableWidget(net_box);
+    m_wv_network_table->setColumnCount(4);
+    m_wv_network_table->setHorizontalHeaderLabels({"Method", "Status", "URL", "Time"});
+    m_wv_network_table->horizontalHeader()->setStretchLastSection(true);
+    m_wv_network_table->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
+    m_wv_network_table->setSelectionBehavior(QAbstractItemView::SelectRows);
+    n_layout->addWidget(m_wv_network_table);
+
+    wv_splitter->addWidget(console_box);
+    wv_splitter->addWidget(net_box);
+    wv_splitter->setStretchFactor(0, 5);
+    wv_splitter->setStretchFactor(1, 5);
+
+    layout->addWidget(wv_splitter, 1);
+    return page;
 }
 
 void MainWindow::setupInfoPage() {
     m_info_page = new QWidget(this);
     auto* layout = new QVBoxLayout(m_info_page);
-    layout->setContentsMargins(24, 24, 24, 24);
-    layout->setSpacing(16);
+    layout->setContentsMargins(20, 20, 20, 20);
+    layout->setSpacing(14);
 
     auto makeCard = [](const QString& label_text) {
         auto* card = new QWidget();
         card->setObjectName("infoCard");
         auto* l = new QVBoxLayout(card);
-        l->setContentsMargins(16, 12, 16, 12);
+        l->setContentsMargins(14, 10, 14, 10);
         auto* title = new QLabel(label_text, card);
         title->setObjectName("cardTitle");
         l->addWidget(title);
@@ -287,26 +469,51 @@ void MainWindow::setupInfoPage() {
     m_info_version = v3;
     layout->addWidget(c3);
 
-    auto [c4, v4] = makeCard("开机运行时长");
+    auto [c4, v4] = makeCard("开机运行时长 (超过 24 小时自动转换天数)");
     m_info_uptime = v4;
     layout->addWidget(c4);
 
-    auto [c5, v5] = makeCard("屏幕规格与方向");
+    auto [c5, v5] = makeCard("屏幕规格与旋转");
     m_info_display = v5;
     layout->addWidget(c5);
 
-    auto* mem_card = new QWidget(m_info_page);
-    mem_card->setObjectName("infoCard");
-    auto* m_layout = new QVBoxLayout(mem_card);
-    m_layout->setContentsMargins(16, 12, 16, 12);
-    m_layout->addWidget(new QLabel("内存使用情况", mem_card));
-    m_mem_bar = new QProgressBar(mem_card);
-    m_mem_bar->setRange(0, 100);
-    m_mem_bar->setValue(0);
-    m_layout->addWidget(m_mem_bar);
-    m_mem_label = new QLabel("总内存: —", mem_card);
-    m_layout->addWidget(m_mem_label);
-    layout->addWidget(mem_card);
+    // Wireless Connect Box
+    auto* wifi_box = new QWidget(m_info_page);
+    wifi_box->setObjectName("infoCard");
+    auto* w_layout = new QHBoxLayout(wifi_box);
+    w_layout->setContentsMargins(14, 10, 14, 10);
+    w_layout->addWidget(new QLabel("无线网络连接:", wifi_box));
+    m_wireless_ip = new QLineEdit(wifi_box);
+    m_wireless_ip->setPlaceholderText("设备 IP 地址 (如: 192.168.1.100)");
+    w_layout->addWidget(m_wireless_ip, 1);
+    m_wireless_port = new QLineEdit("8710", wifi_box);
+    m_wireless_port->setFixedWidth(60);
+    w_layout->addWidget(m_wireless_port);
+    auto* btn_tconn = new QPushButton("无线连接", wifi_box);
+    btn_tconn->setObjectName("primaryButton");
+    connect(btn_tconn, &QPushButton::clicked, this, &MainWindow::onWirelessConnect);
+    w_layout->addWidget(btn_tconn);
+    layout->addWidget(wifi_box);
+
+    // Application List
+    auto* app_box = new QWidget(m_info_page);
+    app_box->setObjectName("infoCard");
+    auto* a_layout = new QVBoxLayout(app_box);
+    a_layout->setContentsMargins(14, 10, 14, 10);
+    auto* a_header = new QHBoxLayout();
+    a_header->addWidget(new QLabel("已安装应用列表 (bm dump -a)", app_box));
+    auto* btn_refresh_app = new QPushButton("刷新应用列表", app_box);
+    connect(btn_refresh_app, &QPushButton::clicked, this, &MainWindow::onRefreshAppList);
+    a_header->addWidget(btn_refresh_app);
+    auto* btn_launch_app = new QPushButton("启动选中应用", app_box);
+    connect(btn_launch_app, &QPushButton::clicked, this, &MainWindow::onLaunchSelectedApp);
+    a_header->addWidget(btn_launch_app);
+    a_layout->addLayout(a_header);
+
+    m_app_list = new QListWidget(app_box);
+    m_app_list->setMaximumHeight(160);
+    a_layout->addWidget(m_app_list);
+    layout->addWidget(app_box);
 
     layout->addStretch();
 }
@@ -349,19 +556,42 @@ void MainWindow::setupHdcPage() {
 void MainWindow::applyTheme() {
     setStyleSheet(R"(
         QMainWindow, QWidget#headerWidget, QWidget#sidebarWidget {
-            background-color: #0d1520;
+            background-color: #0c1219;
             color: #dbe8f5;
         }
         QWidget#headerWidget {
-            border-bottom: 1px solid #1e2c3d;
+            border-bottom: 1px solid #1c2b3d;
         }
         QWidget#sidebarWidget {
-            border-right: 1px solid #1e2c3d;
+            border-right: 1px solid #1c2b3d;
         }
         QLabel#appTitle {
             font-size: 16px;
             font-weight: bold;
             color: #53d6b5;
+        }
+        QWidget#layoutSwitcherCard {
+            background: #091017;
+            border: 1px solid #1c2b3d;
+            border-radius: 6px;
+            padding: 2px;
+        }
+        QPushButton#layoutBtn {
+            background: transparent;
+            border: none;
+            border-radius: 4px;
+            padding: 2px 8px;
+            color: #7d8f9f;
+            font-size: 12px;
+        }
+        QPushButton#layoutBtn:hover {
+            background: #162436;
+            color: #c9d1d9;
+        }
+        QPushButton#layoutBtn:checked {
+            background: #1f3b60;
+            color: #53d6b5;
+            font-weight: bold;
         }
         QLabel#stateBadge {
             background-color: #102a24;
@@ -370,12 +600,6 @@ void MainWindow::applyTheme() {
             border-radius: 4px;
             font-size: 12px;
             font-weight: 500;
-        }
-        QLabel#fpsLabel {
-            color: #53d6b5;
-            font-size: 13px;
-            font-weight: bold;
-            padding: 2px 6px;
         }
         QPushButton {
             background-color: #1c2938;
@@ -398,6 +622,14 @@ void MainWindow::applyTheme() {
         QPushButton#primaryButton:hover {
             background-color: #63e2c3;
         }
+        QPushButton#dangerButton {
+            background-color: #3d1c1c;
+            color: #ff7b7b;
+            border-color: #542d2d;
+        }
+        QPushButton#dangerButton:hover {
+            background-color: #4d2424;
+        }
         QPushButton#navButton {
             text-align: left;
             padding-left: 12px;
@@ -417,7 +649,7 @@ void MainWindow::applyTheme() {
             border-radius: 6px;
             padding: 5px 10px;
         }
-        QPlainTextEdit {
+        QPlainTextEdit, QTableWidget, QListWidget {
             background-color: #09111a;
             color: #c9d8e8;
             border: 1px solid #1e2c3d;
@@ -437,7 +669,43 @@ void MainWindow::applyTheme() {
             font-size: 15px;
             font-weight: bold;
         }
+        QTabWidget#workspaceTabs::pane {
+            border: 1px solid #1e2c3d;
+            background: #09111a;
+            border-radius: 6px;
+        }
+        QTabBar::tab {
+            background: #141f2c;
+            color: #8b9bb4;
+            padding: 8px 16px;
+            border-top-left-radius: 6px;
+            border-top-right-radius: 6px;
+            margin-right: 4px;
+        }
+        QTabBar::tab:selected {
+            background: #1e2c3d;
+            color: #53d6b5;
+            font-weight: bold;
+        }
     )");
+}
+
+void MainWindow::setWorkspaceLayout(const QString& mode) {
+    if (mode == "horizontal") {
+        m_workspace_splitter->setOrientation(Qt::Horizontal);
+        m_mirror_container->show();
+        m_log_container->show();
+    } else if (mode == "vertical") {
+        m_workspace_splitter->setOrientation(Qt::Vertical);
+        m_mirror_container->show();
+        m_log_container->show();
+    } else if (mode == "screen_only") {
+        m_mirror_container->show();
+        m_log_container->hide();
+    } else if (mode == "logs_only") {
+        m_mirror_container->hide();
+        m_log_container->show();
+    }
 }
 
 std::optional<Device> MainWindow::currentDevice() const {
@@ -476,10 +744,25 @@ void MainWindow::onDeviceSelected(int) {
     auto dev = currentDevice();
     if (dev) {
         m_state_badge->setText(QString("目标: %1").arg(QString::fromStdString(dev->serial)));
+        // Auto start HiLog session for the selected device
+        if (m_hilog) m_hilog->stop();
+        m_hilog = std::make_unique<HiLogSession>(m_hdc->path(), dev->serial, "", "all", this);
+        connect(m_hilog.get(), &HiLogSession::entriesReady, this, &MainWindow::onHiLogEntriesReady);
+        m_hilog->start();
     }
 }
 
-void MainWindow::onRefreshClicked() {
+void MainWindow::onRefreshDevices() {
+    m_dev_mgr->refresh();
+}
+
+void MainWindow::onDisconnectDevice() {
+    auto dev = currentDevice();
+    if (!dev) return;
+    onStopMirror();
+    if (dev->is_network) {
+        m_hdc->run({"tconn", dev->serial, "-remove"});
+    }
     m_dev_mgr->refresh();
 }
 
@@ -580,7 +863,7 @@ void MainWindow::onActionScreenshot() {
     QString path = QFileDialog::getSaveFileName(this, "保存截图", default_path, "PNG Images (*.png)");
     if (!path.isEmpty()) {
         img.save(path);
-        QMessageBox::information(this, "保存成功", "截图已成功保存至：\n" + path);
+        showToast("截图已成功保存至:\n" + path);
     }
 }
 
@@ -612,13 +895,13 @@ void MainWindow::onHiLogEntriesReady(const std::vector<HiLogEntry>& entries) {
             m_log_view->verticalScrollBar()->setValue(m_log_view->verticalScrollBar()->maximum());
         }
     }
-    m_log_count_label->setText(QString("缓存 %1 条").arg(m_cached_entries.size()));
+    m_log_count_label->setText(QString("缓存 %1 条 · 设备日志自动流式采集").arg(m_cached_entries.size()));
 }
 
 void MainWindow::onHiLogClear() {
     m_cached_entries.clear();
     m_log_view->clear();
-    m_log_count_label->setText("缓存 0 条");
+    m_log_count_label->setText("缓存 0 条 · 设备日志自动流式采集");
 }
 
 void MainWindow::onHiLogFilterChanged() {
@@ -647,11 +930,118 @@ void MainWindow::onHiLogExport() {
         if (file.open(QIODevice::WriteOnly | QIODevice::Text)) {
             QTextStream out(&file);
             out << m_log_view->toPlainText();
-            QMessageBox::information(this, "导出完成", "日志已保存至：\n" + path);
+            showToast("日志已导出至: " + path);
         }
     }
 }
 
+// WebView Debugger Actions
+void MainWindow::onScanWebViewInstances() {
+    auto dev = currentDevice();
+    if (!dev) {
+        showToast("请先选择目标设备");
+        return;
+    }
+
+    m_cached_instances = m_webview->scanInstances(dev->serial);
+    m_wv_instance_combo->clear();
+    if (m_cached_instances.empty()) {
+        m_wv_instance_combo->addItem("未检测到运行中的 WebView 实例");
+        showToast("当前设备没有开启 Webview 调试的应用");
+    } else {
+        for (const auto& inst : m_cached_instances) {
+            m_wv_instance_combo->addItem(QString("PID %1 (%2)").arg(inst.pid).arg(QString::fromStdString(inst.socket_name)));
+        }
+        showToast(QString("检测到 %1 个 WebView 调试套接字").arg(m_cached_instances.size()));
+        onWebViewInstanceSelected(0);
+    }
+}
+
+void MainWindow::onWebViewInstanceSelected(int index) {
+    auto dev = currentDevice();
+    if (!dev || index < 0 || index >= static_cast<int>(m_cached_instances.size())) return;
+
+    const auto& inst = m_cached_instances[index];
+    if (m_webview->forwardInstance(dev->serial, inst, 9222)) {
+        onFetchWebViewPages();
+    }
+}
+
+void MainWindow::onFetchWebViewPages() {
+    m_webview->fetchPages(9222);
+}
+
+void MainWindow::onWebViewPageSelected(int index) {
+    if (index < 0 || index >= static_cast<int>(m_cached_pages.size())) return;
+    const auto& page = m_cached_pages[index];
+    m_webview->connectPage(page);
+    showToast("已连接页面 CDP 调试: " + QString::fromStdString(page.title));
+}
+
+void MainWindow::onOpenInBrowser() {
+    int idx = m_wv_page_combo->currentIndex();
+    if (idx < 0 || idx >= static_cast<int>(m_cached_pages.size())) {
+        showToast("当前无可用 WebView 页面");
+        return;
+    }
+    const auto& page = m_cached_pages[idx];
+    if (!page.devtools_frontend_url.empty()) {
+        QDesktopServices::openUrl(QUrl(QString::fromStdString(page.devtools_frontend_url)));
+    } else {
+        // Fallback to inspect edge/chrome frontend
+        QString fallback = QString("devtools://devtools/bundled/inspector.html?ws=127.0.0.1:9222/devtools/page/%1")
+                               .arg(QString::fromStdString(page.id));
+        QDesktopServices::openUrl(QUrl(fallback));
+    }
+}
+
+void MainWindow::onExportCurl() {
+    int row = m_wv_network_table->currentRow();
+    if (row < 0) {
+        showToast("请在表格中选择一条请求以导出 cURL");
+        return;
+    }
+    QString req_id = m_wv_network_table->item(row, 0)->data(Qt::UserRole).toString();
+    auto it = m_web_requests.find(req_id.toStdString());
+    if (it != m_web_requests.end()) {
+        QString curl = WebViewDebugger::generateCurl(it->second);
+        QApplication::clipboard()->setText(curl);
+        showToast("cURL 命令已复制到系统剪贴板！");
+    }
+}
+
+void MainWindow::onWebConsoleMessage(const WebConsoleMessage& msg) {
+    m_wv_console_view->appendPlainText(QString("[%1] %2: %3")
+                                           .arg(QString::fromStdString(msg.timestamp))
+                                           .arg(QString::fromStdString(msg.level).toUpper())
+                                           .arg(QString::fromStdString(msg.text)));
+}
+
+void MainWindow::onWebNetworkRequest(const WebNetworkRequest& req) {
+    m_web_requests[req.request_id] = req;
+
+    int row = m_wv_network_table->rowCount();
+    m_wv_network_table->insertRow(row);
+
+    auto* m_item = new QTableWidgetItem(QString::fromStdString(req.method));
+    m_item->setData(Qt::UserRole, QString::fromStdString(req.request_id));
+    m_wv_network_table->setItem(row, 0, m_item);
+    m_wv_network_table->setItem(row, 1, new QTableWidgetItem("Pending"));
+    m_wv_network_table->setItem(row, 2, new QTableWidgetItem(QString::fromStdString(req.url)));
+    m_wv_network_table->setItem(row, 3, new QTableWidgetItem(QString::fromStdString(req.timestamp)));
+}
+
+void MainWindow::onWebNetworkResponse(const QString& req_id, int status, const QString& mime) {
+    for (int r = 0; r < m_wv_network_table->rowCount(); ++r) {
+        if (m_wv_network_table->item(r, 0)->data(Qt::UserRole).toString() == req_id) {
+            m_wv_network_table->item(r, 1)->setText(QString::number(status));
+            m_wv_network_table->item(r, 2)->setToolTip(mime);
+            break;
+        }
+    }
+}
+
+// Device Center Actions
 void MainWindow::onRefreshDeviceInfo() {
     auto dev = currentDevice();
     if (!dev) return;
@@ -663,7 +1053,6 @@ void MainWindow::onRefreshDeviceInfo() {
     m_info_serial->setText(QString::fromStdString(info->serial));
     m_info_version->setText(QString::fromStdString(info->os_version.empty() ? "OpenHarmony 5.0" : info->os_version));
 
-    // Format uptime into Days / Hours / Minutes / Seconds
     int64_t up = info->uptime_seconds;
     int days = up / 86400;
     int hours = (up % 86400) / 3600;
@@ -685,6 +1074,64 @@ void MainWindow::onRefreshDeviceInfo() {
         m_mem_label->setText(QString("已用: %1 MB / 总计: %2 MB (%3%)")
                                  .arg(used_kb / 1024).arg(info->mem_total_kb / 1024).arg(pct));
     }
+
+    onRefreshAppList();
+}
+
+void MainWindow::onWirelessConnect() {
+    QString ip = m_wireless_ip->text().trimmed();
+    QString port = m_wireless_port->text().trimmed();
+    if (ip.isEmpty()) {
+        showToast("请输入设备 IP 地址");
+        return;
+    }
+    QString target = ip + ":" + port;
+    auto res = m_hdc->run({"tconn", target.toStdString()});
+    if (res.out.find("Connect OK") != std::string::npos || res.success()) {
+        showToast("无线连接成功: " + target);
+        m_dev_mgr->refresh();
+    } else {
+        showToast("连接失败: " + QString::fromStdString(res.err.empty() ? res.out : res.err));
+    }
+}
+
+void MainWindow::onRefreshAppList() {
+    auto dev = currentDevice();
+    if (!dev) return;
+
+    auto res = m_hdc->run({"shell", "bm dump -a 2>/dev/null"}, dev->serial);
+    m_app_list->clear();
+    if (res.success()) {
+        QStringList lines = QString::fromStdString(res.out).split("\n", Qt::SkipEmptyParts);
+        for (const auto& line : lines) {
+            QString trimmed = line.trimmed();
+            if (!trimmed.isEmpty() && !trimmed.contains("bm dump") && !trimmed.contains("error")) {
+                m_app_list->addItem(trimmed);
+            }
+        }
+    }
+}
+
+void MainWindow::onLaunchSelectedApp() {
+    auto dev = currentDevice();
+    auto* item = m_app_list->currentItem();
+    if (!dev || !item) {
+        showToast("请在列表中选择一个应用");
+        return;
+    }
+    QString bundle = item->text();
+    m_hdc->run({"shell", QString("aa start -b %1 -m default").arg(bundle).toStdString()}, dev->serial);
+    showToast("已发送启动请求: " + bundle);
+}
+
+void MainWindow::onUninstallSelectedApp() {
+    auto dev = currentDevice();
+    auto* item = m_app_list->currentItem();
+    if (!dev || !item) return;
+    QString bundle = item->text();
+    m_hdc->run({"shell", QString("bm uninstall -n %1").arg(bundle).toStdString()}, dev->serial);
+    showToast("已卸载应用: " + bundle);
+    onRefreshAppList();
 }
 
 void MainWindow::onHdcPresetSelected(int index) {
@@ -696,7 +1143,7 @@ void MainWindow::onHdcPresetSelected(int index) {
 void MainWindow::onHdcRunCommand() {
     auto dev = currentDevice();
     if (!dev) {
-        QMessageBox::warning(this, "提示", "请选择设备");
+        showToast("请选择目标设备");
         return;
     }
 
@@ -711,6 +1158,10 @@ void MainWindow::onHdcRunCommand() {
     auto res = m_hdc->run(args, dev->serial);
     if (!res.out.empty()) m_hdc_output->appendPlainText(QString::fromStdString(res.out));
     if (!res.err.empty()) m_hdc_output->appendPlainText("[STDERR] " + QString::fromStdString(res.err));
+}
+
+void MainWindow::showToast(const QString& message) {
+    statusBar()->showMessage(message, 3500);
 }
 
 } // namespace harmonycast
