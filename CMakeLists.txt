@@ -45,6 +45,7 @@ set(CORE_HEADERS
     include/harmonycast/HiLogSession.h
     include/harmonycast/StreamSession.h
     include/harmonycast/FlowLayout.h
+    include/harmonycast/IconManager.h
     include/harmonycast/ScreenView.h
     include/harmonycast/WebViewDebugger.h
     include/harmonycast/MainWindow.h
@@ -60,6 +61,7 @@ set(CORE_SOURCES
     src/HiLogSession.cpp
     src/StreamSession.cpp
     src/FlowLayout.cpp
+    src/IconManager.cpp
     src/ScreenView.cpp
     src/WebViewDebugger.cpp
     src/MainWindow.cpp
@@ -105,18 +107,21 @@ if(APPLE)
     set(MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}")
     set(MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}")
 
+    file(GLOB APP_RESOURCES "${CMAKE_CURRENT_SOURCE_DIR}/resources/*")
+
     add_executable(HarmonyCast MACOSX_BUNDLE
         ${APP_SOURCES}
-        ${APP_ICON_MACOS}
+        ${APP_RESOURCES}
     )
-    set_source_files_properties(${APP_ICON_MACOS} PROPERTIES MACOSX_PACKAGE_LOCATION "Resources")
+    set_source_files_properties(${APP_RESOURCES} PROPERTIES MACOSX_PACKAGE_LOCATION "Resources")
     set_target_properties(HarmonyCast PROPERTIES
         BUILD_WITH_INSTALL_RPATH TRUE
         INSTALL_RPATH "@executable_path/../Frameworks;@loader_path/../Frameworks;/opt/homebrew/opt/qt/lib;/opt/homebrew/opt/ffmpeg/lib;/opt/homebrew/lib"
     )
     add_custom_command(TARGET HarmonyCast POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/resources" "$<TARGET_BUNDLE_DIR:HarmonyCast>/Contents/Resources"
         COMMAND codesign --force --deep --sign - "$<TARGET_BUNDLE_DIR:HarmonyCast>"
-        COMMENT "Applying ad-hoc code signature to HarmonyCast.app"
+        COMMENT "Copying resources and applying ad-hoc code signature to HarmonyCast.app"
     )
 else()
     add_executable(HarmonyCast WIN32 ${APP_SOURCES})

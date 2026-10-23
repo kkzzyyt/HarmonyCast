@@ -21,6 +21,7 @@ public:
 
     [[nodiscard]] std::vector<Device> devices() const;
     [[nodiscard]] std::optional<Device> findDevice(const std::string& serial) const;
+    void queryDeviceInfoAsync(const std::string& serial, std::function<void(DeviceInfo)> callback);
 
 public slots:
     void refresh();

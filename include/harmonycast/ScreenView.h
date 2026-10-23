@@ -33,6 +33,9 @@ public:
 
     std::pair<int, int> mapToDevice(const QPoint& pos) const;
 
+signals:
+    void startRequested();
+
 protected:
     void paintEvent(QPaintEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;

@@ -4,8 +4,10 @@
 #include <QFileInfo>
 #include <QDir>
 #include <QRegularExpression>
+#include <QCoreApplication>
 #include <sstream>
 #include <iostream>
+#include <thread>
 
 namespace harmonycast {
 
@@ -215,6 +217,19 @@ std::optional<DeviceInfo> HdcClient::getDeviceInfo(const std::string& serial) co
     }
 
     return info;
+}
+
+void HdcClient::executeAsync(const std::vector<std::string>& args,
+                             const std::string& serial,
+                             std::function<void(CommandResult)> callback) const {
+    std::thread([this, args, serial, callback]() {
+        CommandResult res = run(args, serial);
+        if (callback) {
+            QMetaObject::invokeMethod(QCoreApplication::instance(), [callback, res]() {
+                callback(res);
+            });
+        }
+    }).detach();
 }
 
 } // namespace harmonycast

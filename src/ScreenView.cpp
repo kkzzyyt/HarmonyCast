@@ -194,6 +194,10 @@ void ScreenView::paintEvent(QPaintEvent*) {
 
 void ScreenView::mousePressEvent(QMouseEvent* event) {
     if (event->button() == Qt::LeftButton) {
+        if (m_image.isNull()) {
+            emit startRequested();
+            return;
+        }
         m_touch_active = true;
         m_touch_pos = event->pos();
         m_trail.clear();

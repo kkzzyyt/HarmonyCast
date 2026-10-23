@@ -31,6 +31,10 @@ public:
                       const std::string& serial = "",
                       int timeout_ms = 10000) const;
 
+    void executeAsync(const std::vector<std::string>& args,
+                      const std::string& serial,
+                      std::function<void(CommandResult)> callback) const;
+
     std::vector<Device> listDevices() const;
 
     bool forwardPort(const std::string& serial, int local_port, int remote_port) const;

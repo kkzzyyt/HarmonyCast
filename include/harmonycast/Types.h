@@ -54,10 +54,57 @@ struct Device {
     }
 };
 
+struct NetworkInterfaceInfo {
+    std::string interface_name;
+    std::string name;
+    std::string mac;
+    std::string ip;
+    bool connected{false};
+};
+
+struct YarwardAppInfo {
+    std::string bundle;
+    std::string version_name;
+    int version_code{0};
+    int target_api{0};
+    std::string main_ability;
+    std::string update_time;
+    std::string install_time;
+    bool running{false};
+    std::string pids;
+};
+
 struct DeviceInfo {
     std::string serial;
+    std::string brand;
     std::string model;
+    std::string model_code;
+    std::string manufacturer;
+    std::string hardware_version;
+    std::string software_version;
+    std::string os_fullname;
     std::string os_version;
+    std::string api_version;
+    std::string security_patch;
+    std::string cpu_abi;
+    std::string udid;
+    std::string kernel;
+    std::string uptime;
+    std::string memory;
+    std::string storage;
+    std::string display;
+
+    std::vector<NetworkInterfaceInfo> networks;
+    std::vector<YarwardAppInfo> yarward_apps;
+    std::vector<std::string> all_packages;
+
+    bool icu_available{false};
+    std::string icu_model;
+    std::string icu_version;
+    std::string watchdog_desc;
+    bool watchdog_stopped{false};
+    std::string power_delay;
+
     int64_t uptime_seconds{0};
     uint64_t mem_total_kb{0};
     uint64_t mem_free_kb{0};
