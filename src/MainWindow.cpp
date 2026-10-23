@@ -119,12 +119,12 @@ void MainWindow::setupUi() {
     bottom_box->setContentsMargins(0, 0, 0, 0);
     bottom_box->setSpacing(6);
 
-    auto* version_label = IconManager::label("HarmonyCast\nv1.5.0", "Muted");
+    auto* version_label = IconManager::label("HarmonyCast\nv2.0.0", "Muted");
     bottom_box->addWidget(version_label, 1);
 
     m_settings_btn = IconManager::iconButton("settings", "系统设置", "IconBtnSettings", 30, 30);
     connect(m_settings_btn, &QPushButton::clicked, this, [this] {
-        QMessageBox::information(this, "系统设置", "HarmonyCast v1.5.0\n高性能 C++20 + Qt6 原生引擎\n硬件加速: Apple VideoToolbox / Direct3D 11");
+        QMessageBox::information(this, "系统设置", "HarmonyCast v2.0.0\n高性能 C++20 + Qt6 原生引擎\n硬件加速: Apple VideoToolbox / Direct3D 11");
     });
     bottom_box->addWidget(m_settings_btn, 0, Qt::AlignVCenter);
     side->addLayout(bottom_box);

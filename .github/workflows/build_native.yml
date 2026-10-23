@@ -90,3 +90,29 @@ jobs:
         with:
           name: HarmonyCast-Windows-x64
           path: build/HarmonyCast-Windows-x64.zip
+
+  release:
+    name: Publish GitHub Release
+    needs: [build-macos, build-windows]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download macOS Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: HarmonyCast-macOS-arm64
+          path: release-artifacts
+
+      - name: Download Windows Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: HarmonyCast-Windows-x64
+          path: release-artifacts
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-artifacts/*
+          generate_release_notes: true
