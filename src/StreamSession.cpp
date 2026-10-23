@@ -1,6 +1,10 @@
 #include "harmonycast/StreamSession.h"
 #include <QTcpServer>
 #include <QThread>
+#include <QCoreApplication>
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
 #include <iostream>
 
 namespace harmonycast {
@@ -34,6 +38,20 @@ StreamSession::StreamSession(std::shared_ptr<HdcClient> hdc,
                                .arg(w).arg(h).arg(QString::fromStdString(name)));
     });
 
+    m_demuxer.setRawFrameCallback([this](const DecodedFrame& frame) {
+        m_dev_width = frame.width;
+        m_dev_height = frame.height;
+        emit frameReady(frame);
+    });
+
+    m_demuxer.setHandshakeCallback([this](const std::string&) {
+        if (m_socket && m_socket->isOpen()) {
+            m_socket->write("CONFIG_ACK\n");
+            m_socket->flush();
+        }
+        emit statusChanged("设备握手成功，开始接收流");
+    });
+
     m_demuxer.setPacketCallback([this](const StreamPacket& pkt) {
         if (!m_decoder || !m_decoder->isReady()) return;
         if (pkt.type == 3 || pkt.type == 4 || pkt.type == 1 || pkt.type == 2) {
@@ -61,7 +79,41 @@ int StreamSession::pickFreePort() {
 }
 
 bool StreamSession::launchServer() {
-    std::string cmd = QString("/system/bin/ohscrcpy_server -p %1 -f %2 -b %3%4 --log &")
+    std::string arch = "arm64";
+    auto res_uname = m_hdc->run({"shell", "uname", "-m"}, m_device.serial, 2000);
+    if (res_uname.success() && res_uname.out.find("riscv") != std::string::npos) {
+        arch = "riscv64";
+    }
+
+    QString bin_name = (arch == "riscv64") ? "harmonycast_capture_riscv64" : "harmonycast_capture_arm64";
+
+    QStringList candidates = {
+        QCoreApplication::applicationDirPath() + "/../Resources/capture/" + bin_name,
+        QCoreApplication::applicationDirPath() + "/resources/capture/" + bin_name,
+        QDir::currentPath() + "/resources/capture/" + bin_name,
+        QDir::currentPath() + "/../resources/capture/" + bin_name
+    };
+
+    QString local_bin;
+    for (const auto& path : candidates) {
+        if (QFile::exists(path)) {
+            local_bin = QFileInfo(path).canonicalFilePath();
+            break;
+        }
+    }
+
+    std::string remote_bin = "/data/local/tmp/harmonycast_capture";
+    if (!local_bin.isEmpty()) {
+        m_hdc->fileSend(m_device.serial, local_bin.toStdString(), remote_bin);
+        m_hdc->run({"shell", "chmod", "755", remote_bin}, m_device.serial, 3000);
+    }
+
+    // Kill any previous capture instances
+    m_hdc->run({"shell", "killall", "-9", "harmonycast_capture", "harmonycast_capture_arm64", "2>/dev/null"}, m_device.serial, 1000);
+
+    // Launch remote capture server in background
+    std::string cmd = QString("%1 -p %2 -f %3 -b %4%5 &")
+                          .arg(QString::fromStdString(remote_bin))
                           .arg(m_remote_port)
                           .arg(m_fps)
                           .arg(m_bitrate)
@@ -112,9 +164,6 @@ bool StreamSession::start() {
         return false;
     }
 
-    // 5. Connect control channel
-    m_control->connectToHost("127.0.0.1", m_local_port);
-
     m_heartbeat_timer->start(2000);
     return true;
 }
@@ -143,6 +192,9 @@ void StreamSession::cleanup() {
     if (m_forwarded && m_hdc && !m_device.serial.empty()) {
         m_hdc->removeForward(m_device.serial, m_local_port, m_remote_port);
         m_forwarded = false;
+    }
+    if (m_hdc && !m_device.serial.empty()) {
+        m_hdc->run({"shell", "killall", "-9", "harmonycast_capture", "2>/dev/null"}, m_device.serial, 1000);
     }
 }
 

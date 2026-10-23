@@ -59,6 +59,31 @@ void test_packet_demuxer() {
     assert(packets[0].payload.size() == 4);
     assert(packets[0].payload[3] == 0x01);
 
+    // 3. Test HCR2 raw RGBA frame parsing
+    DecodedFrame raw_frame;
+    demuxer.setRawFrameCallback([&](const DecodedFrame& f) {
+        raw_frame = f;
+    });
+
+    std::vector<uint8_t> hcr2_buf(32 + 16, 0);
+    hcr2_buf[0] = 'H'; hcr2_buf[1] = 'C'; hcr2_buf[2] = 'R'; hcr2_buf[3] = '2';
+    hcr2_buf[7] = 2;  // Width = 2
+    hcr2_buf[11] = 2; // Height = 2
+    hcr2_buf[15] = 8; // Stride = 8
+    hcr2_buf[19] = 16; // Length = 16
+    hcr2_buf[23] = 2; // Source W = 2
+    hcr2_buf[27] = 2; // Source H = 2
+    hcr2_buf[31] = 0; // Rotation = 0
+    for (int i = 0; i < 16; ++i) hcr2_buf[32 + i] = static_cast<uint8_t>(i + 1);
+
+    demuxer.feed(hcr2_buf);
+    assert(raw_frame.width == 2);
+    assert(raw_frame.height == 2);
+    assert(raw_frame.stride == 8);
+    assert(raw_frame.data.size() == 16);
+    assert(raw_frame.data[0] == 1);
+    assert(raw_frame.data[15] == 16);
+
     std::cout << "[PASS] test_packet_demuxer passed!" << std::endl;
 }
 

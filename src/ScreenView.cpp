@@ -37,8 +37,13 @@ void ScreenView::setImage(const QImage& img, int dev_w, int dev_h) {
 void ScreenView::updateFrame(const DecodedFrame& frame) {
     if (frame.data.empty()) return;
 
+    QImage::Format fmt = QImage::Format_RGB888;
+    if (frame.stride == frame.width * 4 || frame.format == 12 || frame.format == 26) {
+        fmt = QImage::Format_RGBA8888;
+    }
+
     // Zero-copy wrapping: create QImage directly referencing frame data
-    QImage img(frame.data.data(), frame.width, frame.height, frame.stride, QImage::Format_RGB888);
+    QImage img(frame.data.data(), frame.width, frame.height, frame.stride, fmt);
     m_image = img.copy(); // shallow copy if shared or deep copy once to survive callback
     m_dev_width = frame.width;
     m_dev_height = frame.height;

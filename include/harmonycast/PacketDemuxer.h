@@ -20,12 +20,16 @@ class PacketDemuxer {
 public:
     using PacketCallback = std::function<void(const StreamPacket&)>;
     using HeaderCallback = std::function<void(const std::string& device_name, int width, int height)>;
+    using RawFrameCallback = std::function<void(const DecodedFrame&)>;
+    using HandshakeCallback = std::function<void(const std::string&)>;
 
     PacketDemuxer();
     ~PacketDemuxer() = default;
 
     void setPacketCallback(PacketCallback cb) { m_packet_cb = std::move(cb); }
     void setHeaderCallback(HeaderCallback cb) { m_header_cb = std::move(cb); }
+    void setRawFrameCallback(RawFrameCallback cb) { m_raw_frame_cb = std::move(cb); }
+    void setHandshakeCallback(HandshakeCallback cb) { m_handshake_cb = std::move(cb); }
 
     // Feeds incoming raw TCP bytes from socket
     void feed(std::span<const uint8_t> data);
@@ -45,6 +49,8 @@ private:
 
     PacketCallback m_packet_cb;
     HeaderCallback m_header_cb;
+    RawFrameCallback m_raw_frame_cb;
+    HandshakeCallback m_handshake_cb;
 
     void processBuffer();
 };

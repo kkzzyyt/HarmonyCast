@@ -2032,9 +2032,28 @@ void MainWindow::startMirror() {
         m_state_badge->setText(QString("投屏中 · %1x%2").arg(f.width).arg(f.height));
     });
 
-    m_screen->setTouchCallback([this](TouchAction act, int x, int y, int dw, int dh){
-        if (m_stream && m_stream->controlChannel()) {
-            m_stream->controlChannel()->sendTouch(act, x, y, dw, dh);
+    m_screen->setTouchCallback([this, s](TouchAction act, int x, int y, int dw, int dh){
+        static QPoint down_pt;
+        static int64_t down_time = 0;
+
+        if (act == TouchAction::Down) {
+            down_pt = QPoint(x, y);
+            down_time = QDateTime::currentMSecsSinceEpoch();
+        } else if (act == TouchAction::Up) {
+            int64_t dur = std::max(50LL, QDateTime::currentMSecsSinceEpoch() - down_time);
+            int dx = std::abs(x - down_pt.x());
+            int dy = std::abs(y - down_pt.y());
+
+            if (dx < 10 && dy < 10) {
+                // Single touch click
+                m_hdc->executeAsync({"shell", "uinput", "-T", "-c", std::to_string(x), std::to_string(y)}, s, nullptr);
+            } else {
+                // Drag or swipe gesture
+                m_hdc->executeAsync({"shell", "uinput", "-T", "-m",
+                    std::to_string(down_pt.x()), std::to_string(down_pt.y()),
+                    std::to_string(x), std::to_string(y),
+                    std::to_string(std::clamp(static_cast<int>(dur), 100, 800))}, s, nullptr);
+            }
         }
     });
 

@@ -147,42 +147,45 @@ bool VideoDecoder::decode(std::span<const uint8_t> data, bool is_keyframe, int64
 void VideoDecoder::emitFrame(AVFrame* frame) {
     if (!m_frame_cb) return;
 
-    DecodedFrame out;
-    out.width = frame->width;
-    out.height = frame->height;
-    out.pts = frame->pts;
-    out.is_keyframe = (frame->flags & AV_FRAME_FLAG_KEY) != 0;
-    out.format = frame->format;
-
-    // 1. Hardware texture pass-through (Zero-Copy!)
+    AVFrame* render_frame = frame;
     if (frame->format == s_hw_pix_fmt) {
-        // macOS: frame->data[3] is CVPixelBufferRef
-        out.hw_surface = reinterpret_cast<void*>(frame->data[3]);
-        m_decoded_count++;
-        m_frame_cb(out);
-        return;
+        int ret = av_hwframe_transfer_data(m_sw_frame, frame, 0);
+        if (ret < 0) {
+            char err[128];
+            av_strerror(ret, err, sizeof(err));
+            std::cerr << "[VideoDecoder] av_hwframe_transfer_data failed: " << err << std::endl;
+            return;
+        }
+        render_frame = m_sw_frame;
     }
 
-    // 2. CPU RGB24 fallback conversion
-    if (!m_sws_ctx || m_width != frame->width || m_height != frame->height) {
+    DecodedFrame out;
+    out.width = render_frame->width;
+    out.height = render_frame->height;
+    out.pts = frame->pts;
+    out.is_keyframe = (frame->flags & AV_FRAME_FLAG_KEY) != 0;
+    out.format = AV_PIX_FMT_RGB24;
+
+    // CPU RGB24 conversion
+    if (!m_sws_ctx || m_width != render_frame->width || m_height != render_frame->height) {
         if (m_sws_ctx) sws_freeContext(m_sws_ctx);
-        m_width = frame->width;
-        m_height = frame->height;
+        m_width = render_frame->width;
+        m_height = render_frame->height;
         m_sws_ctx = sws_getContext(
-            frame->width, frame->height, static_cast<AVPixelFormat>(frame->format),
-            frame->width, frame->height, AV_PIX_FMT_RGB24,
+            render_frame->width, render_frame->height, static_cast<AVPixelFormat>(render_frame->format),
+            render_frame->width, render_frame->height, AV_PIX_FMT_RGB24,
             SWS_FAST_BILINEAR, nullptr, nullptr, nullptr);
     }
 
     if (!m_sws_ctx) return;
 
-    out.stride = frame->width * 3;
-    out.data.resize(out.stride * frame->height);
+    out.stride = render_frame->width * 3;
+    out.data.resize(out.stride * render_frame->height);
 
     uint8_t* dst_data[4] = { out.data.data(), nullptr, nullptr, nullptr };
     int dst_linesize[4] = { out.stride, 0, 0, 0 };
 
-    sws_scale(m_sws_ctx, frame->data, frame->linesize, 0, frame->height, dst_data, dst_linesize);
+    sws_scale(m_sws_ctx, render_frame->data, render_frame->linesize, 0, render_frame->height, dst_data, dst_linesize);
 
     m_decoded_count++;
     m_frame_cb(out);
