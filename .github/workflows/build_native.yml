@@ -1,0 +1,94 @@
+name: Build Native C++ App (macOS & Windows)
+
+on:
+  push:
+    tags:
+      - 'v*'
+    paths:
+      - 'cpp/**'
+      - '.github/workflows/build_native.yml'
+  workflow_dispatch:
+
+jobs:
+  build-macos:
+    name: Build macOS DMG (Universal/Apple Silicon)
+    runs-on: macos-14
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install Qt6 and FFmpeg
+        run: |
+          brew update
+          brew install qt ffmpeg
+
+      - name: Configure CMake
+        run: |
+          cd cpp
+          cmake -B build -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="/opt/homebrew/opt/qt;/opt/homebrew/opt/ffmpeg"
+
+      - name: Build HarmonyCast Executable
+        run: |
+          cd cpp
+          cmake --build build --config Release -j$(sysctl -n hw.ncpu)
+
+      - name: Run C++ Core Verification Tests
+        run: |
+          ./cpp/build/test_harmonycast_core
+
+      - name: Package Standalone macOS DMG
+        run: |
+          /opt/homebrew/bin/macdeployqt cpp/build/HarmonyCast.app -dmg
+          mv cpp/build/HarmonyCast.dmg cpp/build/HarmonyCast-macOS-arm64.dmg
+
+      - name: Upload macOS Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: HarmonyCast-macOS-arm64
+          path: cpp/build/HarmonyCast-macOS-arm64.dmg
+
+  build-windows:
+    name: Build Windows x64 Executable & ZIP
+    runs-on: windows-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install Qt6
+        uses: jurplel/install-qt-action@v3
+        with:
+          version: '6.6.3'
+          host: 'windows'
+          target: 'desktop'
+          arch: 'win64_msvc2019_64'
+
+      - name: Install FFmpeg via vcpkg
+        run: |
+          vcpkg install ffmpeg:x64-windows
+
+      - name: Configure CMake
+        run: |
+          cd cpp
+          cmake -B build -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
+
+      - name: Build HarmonyCast
+        run: |
+          cd cpp
+          cmake --build build --config Release
+
+      - name: Deploy Qt Dependencies with windeployqt
+        run: |
+          windeployqt cpp/build/Release/HarmonyCast.exe --no-translations --compiler-runtime
+
+      - name: Create Windows ZIP Package
+        shell: pwsh
+        run: |
+          Compress-Archive -Path cpp/build/Release/* -DestinationPath cpp/build/HarmonyCast-Windows-x64.zip
+
+      - name: Upload Windows Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: HarmonyCast-Windows-x64
+          path: cpp/build/HarmonyCast-Windows-x64.zip
