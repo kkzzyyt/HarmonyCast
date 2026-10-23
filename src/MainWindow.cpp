@@ -2192,8 +2192,38 @@ void MainWindow::executeWebViewJs() {
 }
 
 void MainWindow::openChromeInspect() {
-    QDesktopServices::openUrl(QUrl("chrome://inspect/#devices"));
-    showToast("已在浏览器中请求打开 Chrome DevTools");
+    QString targetUrl = "chrome://inspect/#devices";
+    copyToClipboard(targetUrl, "Chrome 调试地址");
+
+    bool opened = false;
+#if defined(Q_OS_MACOS)
+    // On macOS, chrome:// is an internal browser protocol and not registered with OS LaunchServices.
+    // Launch Google Chrome (or Edge/Chromium) directly via open -a.
+    if (QProcess::startDetached("open", {"-a", "Google Chrome", targetUrl})) {
+        opened = true;
+    } else if (QProcess::startDetached("open", {"-a", "Microsoft Edge", targetUrl})) {
+        opened = true;
+    } else if (QProcess::startDetached("open", {"-a", "Chromium", targetUrl})) {
+        opened = true;
+    }
+#elif defined(Q_OS_WIN)
+    if (QProcess::startDetached("cmd", {"/c", "start", "chrome", targetUrl})) {
+        opened = true;
+    } else if (QProcess::startDetached("cmd", {"/c", "start", "msedge", targetUrl})) {
+        opened = true;
+    }
+#else
+    if (QProcess::startDetached("google-chrome", {targetUrl})) {
+        opened = true;
+    } else if (QProcess::startDetached("chromium-browser", {targetUrl})) {
+        opened = true;
+    }
+#endif
+
+    if (!opened) {
+        QDesktopServices::openUrl(QUrl(targetUrl));
+    }
+    showToast("已唤起 Chrome 调试页 (chrome://inspect/#devices 已复制)");
 }
 
 void MainWindow::onNetworkTableContextMenu(const QPoint& pos) {
