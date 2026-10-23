@@ -38,31 +38,87 @@ class DeviceTools:
     def __init__(self, hdc: HDC):
         self.hdc = hdc
 
-    def capture(self, serial: str) -> bytes:
-        remote = f"/data/local/tmp/harmonycast_{uuid.uuid4().hex}.jpeg"
+    def wakeup(self, serial: str) -> None:
+        """唤醒屏幕/点亮显示"""
         try:
-            self.hdc.run(["shell", "snapshot_display", "-f", remote], serial, timeout=12)
-            with tempfile.TemporaryDirectory(prefix="harmonycast-") as directory:
-                local = Path(directory) / "screen.jpeg"
-                self.hdc.run(["file", "recv", remote, str(local)], serial, timeout=12)
-                if not local.is_file() or local.stat().st_size == 0:
-                    raise HDCError("截图未生成，请检查设备的截图权限")
-                return local.read_bytes()
-        finally:
+            if hasattr(self.hdc, "run"):
+                self.hdc.run(["shell", "power-shell wakeup || uinput -K -d 18 -u 18"], serial, timeout=3)
+        except Exception:
+            pass
+
+    def clean_capture(self, serial: str) -> None:
+        """清理流式截图遗留的临时文件"""
+        try:
+            if hasattr(self.hdc, "run"):
+                self.hdc.run(["shell", "rm", "-f", "/data/local/tmp/harmonycast_stream.jpeg"], serial, timeout=2)
+        except Exception:
+            pass
+
+    _capture_cache_dir: Path | None = None
+
+    @classmethod
+    def _get_capture_dir(cls) -> Path:
+        if cls._capture_cache_dir is None:
+            cls._capture_cache_dir = Path(tempfile.gettempdir()) / "harmonycast_capture"
+            cls._capture_cache_dir.mkdir(parents=True, exist_ok=True)
+        return cls._capture_cache_dir
+
+    def capture(self, serial: str, fast: bool = False, stop_event: threading.Event | None = None) -> bytes:
+        if not hasattr(self.hdc, "run"):
+            return b""
+        if stop_event and stop_event.is_set():
+            return b""
+        remote = f"/data/local/tmp/harmonycast_{'stream' if fast else uuid.uuid4().hex}.jpeg"
+        local = self._get_capture_dir() / f"screen_{serial.replace(':', '_')}_{'stream' if fast else uuid.uuid4().hex}.jpeg"
+        cmd_timeout = 4.0 if fast else 12.0
+        try:
+            self.hdc.run(["shell", "snapshot_display", "-f", remote], serial, timeout=cmd_timeout)
+            if stop_event and stop_event.is_set():
+                return b""
+            if local.is_file():
+                try:
+                    local.unlink(missing_ok=True)
+                except Exception:
+                    pass
             try:
-                self.hdc.run(["shell", "rm", "-f", remote], serial, timeout=2)
+                self.hdc.run(["file", "recv", remote, str(local)], serial, timeout=cmd_timeout)
             except HDCError:
-                logger.debug("临时截图清理失败：%s", remote)
+                pass
+            if not local.is_file() or local.stat().st_size == 0:
+                if stop_event and stop_event.is_set():
+                    return b""
+                # 尝试唤醒屏幕后再次重试截图
+                self.wakeup(serial)
+                time.sleep(0.1)
+                self.hdc.run(["shell", "snapshot_display", "-f", remote], serial, timeout=cmd_timeout)
+                if local.is_file():
+                    try:
+                        local.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                self.hdc.run(["file", "recv", remote, str(local)], serial, timeout=cmd_timeout)
+            if not local.is_file() or local.stat().st_size == 0:
+                raise HDCError("截图未生成，请检查设备的截图权限或屏幕状态")
+            return local.read_bytes()
+        finally:
+            if not fast:
+                try:
+                    self.hdc.run(["shell", "rm", "-f", remote], serial, timeout=2)
+                except HDCError:
+                    logger.debug("临时截图清理失败：%s", remote)
+                try:
+                    if local.is_file():
+                        local.unlink(missing_ok=True)
+                except Exception:
+                    pass
 
     def home(self, serial: str) -> str:
-        """返回桌面: 深度兼容通用应用、全屏沉浸应用及注册为系统 Home 的定制 Kiosk 业务分机 (如 ohsmartward)"""
+        """返回主页: 安全发送 HOME 键事件；对标准设备拉起 Launcher，对定制终端避免无界面黑屏"""
         cmd = (
             "sh -c '"
-            "aa start -b com.ohos.launcher -a com.ohos.launcher.settings.MainAbility >/dev/null 2>&1; "
-            "sleep 0.15; "
-            "uinput -K -d 2 -u 2 >/dev/null 2>&1; "
             "uinput -K -d 1 -u 1 >/dev/null 2>&1; "
             "which uitest >/dev/null 2>&1 && uitest uiInput keyEvent Home >/dev/null 2>&1; "
+            "pidof com.ohos.launcher >/dev/null 2>&1 && aa start -b com.ohos.launcher -a com.ohos.launcher.MainAbility >/dev/null 2>&1; "
             "echo ok'"
         )
         return self.hdc.run(["shell", cmd], serial, timeout=4)
@@ -160,7 +216,11 @@ class DeviceTools:
                 seconds = float(uptime_str.split()[0])
                 hours, rem = divmod(int(seconds), 3600)
                 minutes, secs = divmod(rem, 60)
-                uptime_formatted = f"{hours} 小时 {minutes} 分钟 {secs} 秒"
+                if hours >= 24:
+                    days, hours = divmod(hours, 24)
+                    uptime_formatted = f"{days} 天 {hours} 小时 {minutes} 分钟 {secs} 秒"
+                else:
+                    uptime_formatted = f"{hours} 小时 {minutes} 分钟 {secs} 秒"
             except (ValueError, IndexError):
                 pass
 
@@ -327,11 +387,44 @@ class DeviceTools:
             "pids": pids,
         }
 
+    def get_main_ability(self, serial: str, bundle: str) -> str:
+        """解析应用的入口 Ability 名称 (未指定时智能提取)"""
+        try:
+            out = self.hdc.run(["shell", f"bm dump -n {bundle}"], serial, timeout=4)
+            idx = out.find("{")
+            if idx != -1:
+                data = json.loads(out[idx:])
+                main = data.get("mainAbility") or data.get("mainElementName")
+                if not main and data.get("hapModuleInfos"):
+                    mod = data["hapModuleInfos"][0]
+                    main = mod.get("mainAbility") or mod.get("mainElementName")
+                    if not main and mod.get("abilityInfos"):
+                        main = mod["abilityInfos"][0].get("name")
+                if main:
+                    return str(main)
+        except Exception:
+            pass
+        return "EntryAbility"
+
     def start_application(self, serial: str, bundle: str, ability: str = "") -> str:
-        cmd = ["shell", "aa", "start", "-b", bundle]
-        if ability:
-            cmd.extend(["-a", ability])
+        if not ability:
+            ability = self.get_main_ability(serial, bundle)
+        cmd = ["shell", "aa", "start", "-b", bundle, "-a", ability]
         return self.hdc.run(cmd, serial, timeout=5)
+
+    def launch_primary_app(self, serial: str) -> str:
+        """拉起/恢复设备的主要业务应用 (如 com.yarward.etnroomoh / com.yarward.etnbedsideoh)"""
+        try:
+            apps = self.hdc.applications(serial)
+            yarward_apps = [a for a in apps if a.startswith("com.yarward.") and "test" not in a]
+            if yarward_apps:
+                return self.start_application(serial, yarward_apps[0])
+            for app in apps:
+                if any(k in app for k in ["kiosk", "main", "launcher", "smartward"]):
+                    return self.start_application(serial, app)
+        except Exception:
+            pass
+        return ""
 
     def stop_application(self, serial: str, bundle: str) -> str:
         return self.hdc.run(["shell", "aa", "force-stop", bundle], serial, timeout=5)
@@ -685,7 +778,7 @@ class HiLogSession:
         self.on_package_line = on_package_line
         self.process: subprocess.Popen | None = None
         self.reader_thread: threading.Thread | None = None
-        self.poll_interval = 1.0
+        self.poll_interval = 3.0
         self.package_refresh_interval = 10.0
         self.stopped = threading.Event()
         self.lock = threading.Lock()
@@ -782,8 +875,7 @@ class HiLogSession:
                 self._stop_process()
                 if pids:
                     self._start_process(pids, packages)
-                    self.on_status(f"采集中 · {len(set(packages.values()))} 个应用 / {len(pids)} 个进程" if prefix
-                                   else f"采集中 · {len(pids)} 个进程")
+                    self.on_status("采集中")
                 else:
                     self.on_status("等待匹配应用安装" if prefix and not applications else "等待应用启动")
                 previous = packages
@@ -859,7 +951,10 @@ class StreamSession:
         logger.info("投屏服务部署完成")
 
     def installed(self) -> bool:
-        return self.hdc.run(["shell", "if test -x /system/bin/ohscrcpy_server; then echo installed; fi"], self.device.serial) == "installed"
+        try:
+            return self.hdc.run(["shell", "if test -x /system/bin/ohscrcpy_server; then echo installed; fi"], self.device.serial) == "installed"
+        except (HDCError, OSError):
+            return False
 
     def prepare(self) -> None:
         pass

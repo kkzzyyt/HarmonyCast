@@ -21,6 +21,8 @@ import time
 import traceback
 from typing import Optional, Any
 
+import av
+
 from .constants import LogLevel
 from .log_adapter import print_log
 from .config import VideoStreamConfig
@@ -78,7 +80,6 @@ class VideoDecoder:
             if self.codec_ctx is not None:
                 self.codec_ctx = None
             
-            import av
             codec_type = self._get_codec_type()
             self.codec_ctx = av.CodecContext.create(codec_type, 'r')
             # Protocol packets are complete access units. Avoid frame-thread and
@@ -230,7 +231,6 @@ class VideoDecoder:
                 print_log(LogLevel.DEBUG, self.log_title, f"帧数据前16字节: {processed_data[:16].hex()}")
             
             try:
-                import av
                 packets = [av.Packet(processed_data)]
                 
             except Exception as parse_error:

@@ -4,7 +4,8 @@ from pathlib import Path
 import pytest
 
 from harmonycast.core import (
-    HDC, HDCError, LogStore, map_coordinates, parse_devices,
+    DEFAULT_NETWORK_PORT, HDC, HDCError, LogStore, delete_saved_device,
+    load_saved_devices, map_coordinates, parse_devices, save_device,
     server_variant, validate_endpoint, validated_server_logs, hilog_category,
 )
 
@@ -53,6 +54,74 @@ def test_valid_network_addresses(value):
 def test_invalid_network_addresses(value):
     with pytest.raises(ValueError):
         validate_endpoint(value)
+
+
+def test_validate_endpoint_default_port():
+    assert validate_endpoint("192.168.1.100", default_port=DEFAULT_NETWORK_PORT) == "192.168.1.100:8710"
+    assert validate_endpoint("192.168.1.100:5555", default_port=DEFAULT_NETWORK_PORT) == "192.168.1.100:5555"
+    assert validate_endpoint("device.local", default_port=8710) == "device.local:8710"
+
+
+def test_saved_devices_crud(tmp_path, monkeypatch):
+    monkeypatch.setattr("harmonycast.core.data_dir", lambda: tmp_path)
+    # 初始状态为空
+    assert load_saved_devices() == []
+
+    # 保存第一个设备
+    devices = save_device("192.168.1.101", name="1床监控屏")
+    assert len(devices) == 1
+    assert devices[0]["ip"] == "192.168.1.101"
+    assert devices[0]["name"] == "1床监控屏"
+    assert devices[0]["port"] == 8710
+
+    # 重复保存同一 IP 更新名称
+    devices = save_device("192.168.1.101", name="1床主屏")
+    assert len(devices) == 1
+    assert devices[0]["name"] == "1床主屏"
+
+    # 保存第二个设备，端口含在输入中
+    devices = save_device("192.168.1.102:8710", name="2床分机")
+    assert len(devices) == 2
+    assert devices[0]["ip"] == "192.168.1.102"
+    assert devices[0]["name"] == "2床分机"
+    assert devices[0]["port"] == 8710
+
+    # 验证从文件持久化读取
+    loaded = load_saved_devices()
+    assert len(loaded) == 2
+    assert loaded[0]["ip"] == "192.168.1.102"
+
+    # 删除设备
+    remained = delete_saved_device("192.168.1.101")
+    assert len(remained) == 1
+    assert remained[0]["ip"] == "192.168.1.102"
+    assert len(load_saved_devices()) == 1
+
+    # 无效 IP 抛出异常且不保存
+    with pytest.raises(ValueError):
+        save_device("999.999.1.1")
+    assert len(load_saved_devices()) == 1
+
+
+def test_hdc_disconnect_and_reconnect(tmp_path):
+    executable = tmp_path / "fake_hdc"
+    executable.write_text("#!/bin/sh\ncase \"$*\" in\n*'-remove') echo \"Remove target success\";;\n*'tconn'*) echo \"Connect OK\";;\nesac\n")
+    executable.chmod(0o755)
+    hdc = HDC(executable)
+
+    res_disconn = hdc.disconnect("192.168.1.100")
+    assert "Remove target success" in res_disconn
+
+    res_reconn = hdc.reconnect("192.168.1.100")
+    assert "Connect OK" in res_reconn
+
+
+def test_hdc_disconnect_ignores_not_found(tmp_path):
+    executable = tmp_path / "fake_hdc_err"
+    executable.write_text("#!/bin/sh\necho \"[Fail]No target available\"\n")
+    executable.chmod(0o755)
+    hdc = HDC(executable)
+    assert hdc.disconnect("192.168.1.100") == "disconnected"
 
 
 def test_coordinate_mapping_ignores_letterboxing_and_clamps_edges():
@@ -123,3 +192,33 @@ def test_log_category_combines_with_search_level_source_and_export(tmp_path):
     assert "app error" in destination.read_text()
     assert "system error" not in destination.read_text()
     assert "needle info" not in destination.read_text()
+
+
+def test_hilog_streamlined_format_and_device_timestamp():
+    store = LogStore()
+    raw = "10-23 11:24:45.913  1162  1162 D A06666/MVP_RealClientProcessor: MVP_PROTOCOL#[MVP_RealClientProcessor] 收到CallInfo消息 [connectAfterLost: false]，回调业务..."
+    entry_no_bundle = store.append("DEBUG", "HiLog", raw)
+    assert entry_no_bundle.timestamp == "11:24:45.913"
+    assert entry_no_bundle.level == "DEBUG"
+    assert entry_no_bundle.text() == "11:24:45.913  DEBUG  [MVP_RealClientProcessor] MVP_PROTOCOL#[MVP_RealClientProcessor] 收到CallInfo消息 [connectAfterLost: false]，回调业务..."
+
+    entry_bundle = store.append("DEBUG", "HiLog", raw, bundle="com.yarward.etnroomoh")
+    assert entry_bundle.text() == "11:24:45.913  DEBUG  [com.yarward.etnroomoh]  [MVP_RealClientProcessor] MVP_PROTOCOL#[MVP_RealClientProcessor] 收到CallInfo消息 [connectAfterLost: false]，回调业务..."
+
+
+def test_make_hilog_entry_and_log_store_append_entry():
+    from harmonycast.core import make_hilog_entry
+    raw = "10-23 11:24:45.913  1162  1162 D A06666/MVP_RealClientProcessor: test msg"
+    entry = make_hilog_entry(raw, bundle="com.yarward.demo")
+    assert entry.timestamp == "11:24:45.913"
+    assert entry.level == "DEBUG"
+    assert entry.category == "app"
+    assert entry.bundle == "com.yarward.demo"
+    assert "test msg" in entry.text()
+
+    store = LogStore()
+    store.append_entry(entry)
+    assert len(store.entries) == 1
+    assert store.entries[0] is entry
+    assert len(store.filtered(keyword="test", category="app")) == 1
+

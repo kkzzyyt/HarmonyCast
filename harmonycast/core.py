@@ -18,6 +18,68 @@ class HDCError(RuntimeError):
     """An HDC command failed, including failures returned with exit status zero."""
 
 
+DEFAULT_NETWORK_PORT = 8710
+
+
+def saved_devices_file() -> Path:
+    return data_dir() / "saved_devices.json"
+
+
+def load_saved_devices() -> list[dict]:
+    path = saved_devices_file()
+    if not path.is_file():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, list):
+            valid = []
+            for item in data:
+                if isinstance(item, dict) and "ip" in item:
+                    ip = str(item["ip"]).strip()
+                    if ip:
+                        valid.append({
+                            "ip": ip,
+                            "name": str(item.get("name", "")).strip(),
+                            "port": int(item.get("port", DEFAULT_NETWORK_PORT)),
+                            "updated_at": item.get("updated_at", 0),
+                        })
+            return valid
+    except Exception:
+        pass
+    return []
+
+
+def save_device(ip: str, name: str = "", port: int = DEFAULT_NETWORK_PORT) -> list[dict]:
+    ip = ip.strip()
+    if ":" in ip:
+        host_part, port_part = ip.rsplit(":", 1)
+        if port_part.isdigit():
+            port = int(port_part)
+            ip = host_part
+    validate_endpoint(f"{ip}:{port}")
+    devices = load_saved_devices()
+    devices = [d for d in devices if d["ip"] != ip]
+    devices.insert(0, {
+        "ip": ip,
+        "name": name.strip(),
+        "port": port,
+        "updated_at": int(time.time()),
+    })
+    path = saved_devices_file()
+    path.write_text(json.dumps(devices, ensure_ascii=False, indent=2), encoding="utf-8")
+    return devices
+
+
+def delete_saved_device(ip: str) -> list[dict]:
+    ip = ip.strip()
+    if ":" in ip:
+        ip = ip.rsplit(":", 1)[0]
+    devices = [d for d in load_saved_devices() if d["ip"] != ip]
+    path = saved_devices_file()
+    path.write_text(json.dumps(devices, ensure_ascii=False, indent=2), encoding="utf-8")
+    return devices
+
+
 def resource_dir() -> Path:
     return Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent)) / "resources"
 
@@ -76,13 +138,6 @@ class HDC:
             if _retry < 2 and ("E000004" in combined or "communication channel is being established" in combined):
                 time.sleep(0.5 * (_retry + 1))
                 return self.run(args, device, timeout=timeout, _retry=_retry + 1)
-            if _retry < 1 and ("E001005" in combined or "Device not found or connected" in combined) and args[:1] != ["kill"]:
-                try:
-                    subprocess.run([str(self.executable), "kill"], capture_output=True, timeout=3)
-                except Exception:
-                    pass
-                time.sleep(0.8)
-                return self.run(args, device, timeout=timeout, _retry=_retry + 1)
             raise HDCError(combined.strip() or f"HDC 退出码：{result.returncode}")
         return result.stdout.strip()
 
@@ -93,6 +148,25 @@ class HDC:
             return []
 
     def info(self, serial: str) -> Device:
+        cmd = (
+            "param get const.product.model 2>/dev/null; echo __HCAST__; "
+            "param get const.product.manufacturer 2>/dev/null; echo __HCAST__; "
+            "param get const.product.software.version 2>/dev/null; echo __HCAST__; "
+            "uname -m 2>/dev/null"
+        )
+        try:
+            output = self.run(["shell", cmd], serial, timeout=4)
+            if "__HCAST__" in output:
+                parts = output.split("__HCAST__")
+                if len(parts) >= 4:
+                    model = parts[0].strip() or "OpenHarmony 设备"
+                    vendor = parts[1].strip()
+                    version = parts[2].strip()
+                    architecture = parts[3].strip()
+                    return Device(serial, model, vendor, version, architecture)
+        except HDCError:
+            pass
+
         def property_value(name: str) -> str:
             try:
                 return self.run(["shell", "param", "get", name], serial, timeout=3)
@@ -106,7 +180,24 @@ class HDC:
         return Device(serial, model, vendor, version, architecture)
 
     def connect(self, address: str) -> str:
-        return self.run(["tconn", validate_endpoint(address)], timeout=12)
+        return self.run(["tconn", validate_endpoint(address, default_port=DEFAULT_NETWORK_PORT)], timeout=12)
+
+    def disconnect(self, address: str) -> str:
+        try:
+            return self.run(["tconn", validate_endpoint(address, default_port=DEFAULT_NETWORK_PORT), "-remove"], timeout=8)
+        except HDCError as error:
+            msg = str(error).lower()
+            if "no target available" in msg or "not found" in msg or "unknown" in msg:
+                return "disconnected"
+            raise
+
+    def reconnect(self, address: str) -> str:
+        try:
+            self.disconnect(address)
+        except Exception:
+            pass
+        time.sleep(0.4)
+        return self.connect(address)
 
     def applications(self, serial: str) -> list[str]:
         return parse_applications(self.run(["shell", "bm", "dump", "-a"], serial))
@@ -212,11 +303,11 @@ def parse_devices(output: str) -> list[str]:
     return result
 
 
-def validate_endpoint(value: str) -> str:
+def validate_endpoint(value: str, default_port: int | None = None) -> str:
     value = value.strip()
     match = re.fullmatch(r"([A-Za-z0-9][A-Za-z0-9.-]*)(?::([0-9]{1,5}))?", value)
     if not match:
-        raise ValueError("请输入设备 IP 或主机名，例如 192.168.1.20:5555")
+        raise ValueError("请输入设备 IP 或主机名，例如 192.168.1.20:8710")
     host, port = match.groups()
     if port is not None and not 1 <= int(port) <= 65535:
         raise ValueError("端口必须在 1–65535 之间")
@@ -227,6 +318,8 @@ def validate_endpoint(value: str) -> str:
             raise ValueError("IP 地址格式不正确") from error
     elif any(not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?", label) for label in host.split(".")):
         raise ValueError("主机名格式不正确")
+    if port is None and default_port is not None:
+        return f"{host}:{default_port}"
     return value
 
 
@@ -267,6 +360,17 @@ _HILOG_HEADER = re.compile(
     r"\s+(?P<pid>\d+)\s+\d+\s+[DIWEF]\s+(?P<type>[ACIKP])[0-9a-fA-F]{5,8}/"
 )
 
+_HILOG_LINE_RE = re.compile(
+    r"^\s*(?:(?:\d{4}-)?(?P<date>\d{2}-\d{2})\s+)?(?P<time>\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?)\s+"
+    r"(?P<pid>\d+)\s+(?P<tid>\d+)\s+"
+    r"(?P<level>[DIWEF])\s+"
+    r"(?:(?P<domain>[ACIKP0-9a-fA-F]{3,10})/)?\s*"
+    r"(?P<tag>[^:\s][^:]*?):\s*"
+    r"(?P<msg>.*)$"
+)
+
+_HILOG_LEVELS = {"D": "DEBUG", "I": "INFO", "W": "WARN", "E": "ERROR", "F": "FATAL"}
+
 
 def hilog_category(message: str) -> str:
     """Classify the HiLog type in its header, independent of tag/message text."""
@@ -293,11 +397,22 @@ class LogEntry:
     message: str
     category: str = ""
     bundle: str = ""
-    _text: str = field(init=False, default="")
+    _text: str = ""
+    _text_folded: str = ""
 
     def __post_init__(self):
-        bundle_label = f" [{self.bundle}]" if self.bundle else ""
-        object.__setattr__(self, "_text", f"{self.timestamp}  {self.level:<5}  [{self.source}]{bundle_label} {self.message}")
+        if not self._text:
+            clean = re.sub(r"\x1b\[[0-9;]*m", "", self.message) if "\x1b" in self.message else self.message
+            m = _HILOG_LINE_RE.match(clean) if self.source == "HiLog" else None
+            if m:
+                bundle_label = f"  [{self.bundle}]" if self.bundle else ""
+                text = f"{self.timestamp}  {self.level:<5}{bundle_label}  [{m.group('tag')}] {m.group('msg')}"
+            else:
+                bundle_label = f" [{self.bundle}]" if self.bundle else ""
+                text = f"{self.timestamp}  {self.level:<5}  [{self.source}]{bundle_label} {self.message}"
+            object.__setattr__(self, "_text", text)
+        if not self._text_folded:
+            object.__setattr__(self, "_text_folded", f"{self._text} {self.bundle} {self.message}".casefold())
 
     def text(self) -> str:
         return self._text
@@ -307,16 +422,50 @@ class LogEntry:
                 and (not source or self.source == source)
                 and (not category or self.category == category)
                 and package_matches(self.bundle, bundle)
-                and (not keyword or keyword.casefold() in self._text.casefold()))
+                and (not keyword or keyword.casefold() in self._text_folded))
+
+
+def make_hilog_entry(message: str, bundle: str = "", default_level: str = "INFO") -> LogEntry:
+    clean = re.sub(r"\x1b\[[0-9;]*m", "", message) if "\x1b" in message else message
+    m = _HILOG_LINE_RE.match(clean)
+    if m:
+        timestamp = m.group("time")[:12]
+        level = _HILOG_LEVELS.get(m.group("level"), default_level)
+        domain = m.group("domain") or ""
+        category = "app" if (domain and domain.startswith("A")) else "system"
+        bundle_label = f"  [{bundle}]" if bundle else ""
+        text = f"{timestamp}  {level:<5}{bundle_label}  [{m.group('tag')}] {m.group('msg')}"
+    else:
+        timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        match = re.search(r"\s([DIWEF])\s", clean)
+        level = {"D": "DEBUG", "I": "INFO", "W": "WARN", "E": "ERROR", "F": "FATAL"}.get(match.group(1) if match else "", default_level)
+        if clean.startswith("[Fail]"):
+            level = "ERROR"
+        category = hilog_category(clean)
+        bundle_label = f" [{bundle}]" if bundle else ""
+        text = f"{timestamp}  {level:<5}  [HiLog]{bundle_label} {message}"
+    text_folded = f"{text} {bundle} {message}".casefold()
+    return LogEntry(timestamp, level, "HiLog", message, category=category, bundle=bundle, _text=text, _text_folded=text_folded)
 
 
 class LogStore:
-    def __init__(self, limit: int = 5000):
+    def __init__(self, limit: int = 10000):
         self.entries: deque[LogEntry] = deque(maxlen=limit)
 
+    def append_entry(self, entry: LogEntry) -> LogEntry:
+        self.entries.append(entry)
+        return entry
+
     def append(self, level: str, source: str, message: str, bundle: str = "") -> LogEntry:
-        category = hilog_category(message) if source == "HiLog" else ""
-        entry = LogEntry(datetime.now().strftime("%H:%M:%S.%f")[:-3], level, source, message, category, bundle)
+        if source == "HiLog":
+            entry = make_hilog_entry(message, bundle=bundle, default_level=level)
+        else:
+            timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+            clean = re.sub(r"\x1b\[[0-9;]*m", "", message) if "\x1b" in message else message
+            bundle_label = f" [{bundle}]" if bundle else ""
+            text = f"{timestamp}  {level:<5}  [{source}]{bundle_label} {clean}"
+            text_folded = f"{text} {bundle} {clean}".casefold()
+            entry = LogEntry(timestamp, level, source, clean, "", bundle, _text=text, _text_folded=text_folded)
         self.entries.append(entry)
         return entry
 

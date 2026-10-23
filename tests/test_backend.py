@@ -260,3 +260,23 @@ def test_list_app_logs_and_fetch(tmp_path):
     assert any("hiappevent_app_event_20261015.log" == p.name for p in fetched)
     for p in fetched:
         assert p.read_bytes() == log_file_content
+
+
+def test_device_uptime_formatting():
+    class MockHDC:
+        def __init__(self, uptime_val):
+            self.uptime_val = uptime_val
+        def run(self, args, serial, timeout=6):
+            if "param dump" in args[1]:
+                return ""
+            return f"5.10.0 aarch64\n---UPTIME---\n{self.uptime_val}\n---MEMINFO---\n---DF---\n---NET---\n---IFACES---\n"
+
+    # > 24 hours (120,000 seconds = 1 day, 9 hours, 20 mins, 0 secs)
+    tools = DeviceTools(MockHDC("120000.00 240000.00"))
+    details = tools.get_device_details("SERIAL_1")
+    assert details["uptime"] == "1 天 9 小时 20 分钟 0 秒"
+
+    # < 24 hours (3661 seconds = 1 hour, 1 min, 1 sec)
+    tools = DeviceTools(MockHDC("3661.00 7000.00"))
+    details = tools.get_device_details("SERIAL_2")
+    assert details["uptime"] == "1 小时 1 分钟 1 秒"
