@@ -152,8 +152,8 @@ NetworkDeviceDialog::NetworkDeviceDialog(
     , m_current_target(current_target)
 {
     setWindowTitle("设备维护与连接中心");
-    setMinimumSize(580, 440);
-    resize(640, 480);
+    setMinimumSize(600, 440);
+    resize(660, 480);
     initUi();
     refreshData();
 }
@@ -179,14 +179,14 @@ void NetworkDeviceDialog::initUi() {
     m_table->setColumnCount(4);
     m_table->setHorizontalHeaderLabels({"设备 IP", "端口", "状态", "操作"});
     auto* header = m_table->horizontalHeader();
-    header->setSectionResizeMode(0, QHeaderView::Interactive);
+    header->setSectionResizeMode(0, QHeaderView::Stretch);
     header->setSectionResizeMode(1, QHeaderView::Interactive);
     header->setSectionResizeMode(2, QHeaderView::Interactive);
-    header->setStretchLastSection(true);
+    header->setSectionResizeMode(3, QHeaderView::Interactive);
     header->setDefaultAlignment(Qt::AlignCenter);
-    m_table->setColumnWidth(0, 210);
     m_table->setColumnWidth(1, 85);
     m_table->setColumnWidth(2, 105);
+    m_table->setColumnWidth(3, 140);
     m_table->verticalHeader()->setVisible(false);
     m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_table->setSelectionMode(QAbstractItemView::SingleSelection);

@@ -12,8 +12,63 @@
 #include <QHash>
 #include <QDir>
 #include <QCoreApplication>
+#include <QEvent>
+#include <QFontMetrics>
+#include <QScreen>
+#include <QGuiApplication>
 
 namespace harmonycast {
+
+namespace {
+
+class ComboPopupFilter : public QObject {
+public:
+    ComboPopupFilter(QComboBox* combo, int minWidth, QObject* parent = nullptr)
+        : QObject(parent), m_combo(combo), m_minWidth(minWidth) {}
+
+protected:
+    bool eventFilter(QObject* watched, QEvent* event) override {
+        if ((event->type() == QEvent::Show || event->type() == QEvent::Polish) && m_combo) {
+            auto* view = m_combo->view();
+            if (view) {
+                QFontMetrics fm = view->fontMetrics();
+                int max_w = m_minWidth;
+                for (int i = 0; i < m_combo->count(); ++i) {
+                    // Item text width + icon + item padding + scrollbar space + safety margin
+                    int w = fm.horizontalAdvance(m_combo->itemText(i)) + 56;
+                    if (w > max_w) {
+                        max_w = w;
+                    }
+                }
+                if (m_combo->width() > max_w) {
+                    max_w = m_combo->width();
+                }
+                view->setMinimumWidth(max_w);
+                auto* container = view->window();
+                if (container && container != m_combo) {
+                    container->setMinimumWidth(max_w);
+                    container->resize(qMax(container->width(), max_w), container->height());
+
+                    // Prevent container from extending outside the available screen boundary
+                    if (auto* screen = m_combo->screen()) {
+                        QRect avail = screen->availableGeometry();
+                        if (!avail.isEmpty() && (container->x() + container->width() > avail.right())) {
+                            int new_x = qMax(avail.left(), avail.right() - container->width() - 4);
+                            container->move(new_x, container->y());
+                        }
+                    }
+                }
+            }
+        }
+        return QObject::eventFilter(watched, event);
+    }
+
+private:
+    QComboBox* m_combo;
+    int m_minWidth;
+};
+
+} // anonymous namespace
 
 static QHash<QString, QIcon> s_iconCache;
 
@@ -165,6 +220,8 @@ void IconManager::setupComboBoxPopup(QComboBox* combo, int minWidth) {
 
     // Explicitly set QListView to bypass macOS Cocoa native NSMenu and ensure unified dark styling
     auto* listView = new QListView(combo);
+    listView->setTextElideMode(Qt::ElideNone);
+    listView->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     combo->setView(listView);
 
     if (minWidth > 0) {
@@ -191,6 +248,13 @@ void IconManager::setupComboBoxPopup(QComboBox* combo, int minWidth) {
                 layout->takeAt(layout->count() - 1);
             }
         }
+    }
+
+    // Dynamic auto-sizing filter to calculate maximum required item width upon popup display
+    auto* filter = new ComboPopupFilter(combo, minWidth, combo);
+    listView->installEventFilter(filter);
+    if (container && container != combo) {
+        container->installEventFilter(filter);
     }
 }
 

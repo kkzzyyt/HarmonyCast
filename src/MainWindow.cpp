@@ -258,10 +258,12 @@ void MainWindow::setupUi() {
 
     // Device combo
     m_device_combo = new QComboBox();
-    m_device_combo->setMinimumWidth(140);
-    m_device_combo->setMaximumWidth(280);
+    m_device_combo->setSizeAdjustPolicy(QComboBox::AdjustToContents);
+    m_device_combo->setMinimumWidth(220);
+    m_device_combo->setMaximumWidth(340);
     m_device_combo->setFixedHeight(28);
-    IconManager::setupComboBoxPopup(m_device_combo, 180);
+    m_device_combo->setToolTip("选择已连接或保存的设备 (支持网络 IP 及 USB 连接)");
+    IconManager::setupComboBoxPopup(m_device_combo, 280);
     connect(m_device_combo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &MainWindow::onDeviceSelected);
     connect(m_device_combo, QOverload<int>::of(&QComboBox::activated), this, &MainWindow::onDeviceComboActivated);
     heading->addWidget(m_device_combo);
@@ -2351,6 +2353,12 @@ void MainWindow::onDeviceSelected(int index) {
         }
     }
 
+    m_device_combo->setToolTip(
+        QString("当前设备: %1%2")
+            .arg(QString::fromStdString(s))
+            .arg(is_connected ? " (已连接)" : " (离线目标，选择将自动连接)")
+    );
+
     if (is_connected) {
         bool device_changed = (m_active_device_serial != s);
         m_active_device_serial = s;
@@ -2385,6 +2393,12 @@ void MainWindow::onDeviceComboActivated(int index) {
             break;
         }
     }
+
+    m_device_combo->setToolTip(
+        QString("当前设备: %1%2")
+            .arg(QString::fromStdString(s))
+            .arg(is_connected ? " (已连接)" : " (离线目标，选择将自动连接)")
+    );
 
     if (!is_connected && s.find(':') != std::string::npos) {
         m_active_device_serial = s;
