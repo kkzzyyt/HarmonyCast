@@ -288,15 +288,26 @@ void StreamSession::onSocketDisconnected() {
     }
 }
 
+void StreamSession::setQuality(int quality_idx, int bitrate) {
+    m_quality_idx = std::clamp(quality_idx, 0, 3);
+    m_bitrate = bitrate;
+    updateSnapshotTargetSize();
+}
+
 void StreamSession::setBitrate(int b) {
     m_bitrate = b;
+    if (b >= 20000000) m_quality_idx = 0;
+    else if (b >= 12000000) m_quality_idx = 1;
+    else if (b >= 6000000) m_quality_idx = 2;
+    else m_quality_idx = 3;
     updateSnapshotTargetSize();
 }
 
 void StreamSession::updateSnapshotTargetSize() {
     if (!m_snapshot_ctx) return;
 
-    if (m_bitrate >= 12000000) {
+    // Index 0: 超清原画 (点对点无损) -> Native resolution
+    if (m_quality_idx == 0 || m_bitrate >= 20000000) {
         m_snapshot_ctx->target_width.store(0);
         m_snapshot_ctx->target_height.store(0);
         HC_LOG_INFO("Snapshot fallback mode target size set to Native full resolution (0x0)");
@@ -304,16 +315,39 @@ void StreamSession::updateSnapshotTargetSize() {
     }
 
     bool portrait = (m_dev_width > 0 && m_dev_height > 0) ? (m_dev_width < m_dev_height) : true;
+    int dev_short = (m_dev_width > 0 && m_dev_height > 0) ? std::min(m_dev_width, m_dev_height) : 1080;
+    int dev_long = (m_dev_width > 0 && m_dev_height > 0) ? std::max(m_dev_width, m_dev_height) : 1920;
 
-    if (m_bitrate >= 6000000) {
-        int tw = portrait ? 720 : 1280;
-        int th = portrait ? 1280 : 720;
+    // Index 1: 超清 900P (清晰均衡)
+    if (m_quality_idx == 1 || m_bitrate >= 12000000) {
+        int short_side = (dev_short > 1080) ? 1080 : 900;
+        int long_side = static_cast<int>(static_cast<double>(short_side) * dev_long / dev_short);
+        int tw = portrait ? short_side : long_side;
+        int th = portrait ? long_side : short_side;
+        m_snapshot_ctx->target_width.store(tw);
+        m_snapshot_ctx->target_height.store(th);
+        HC_LOG_INFO(QString("Snapshot fallback mode target size set to %1x%2 (%3P)").arg(tw).arg(th).arg(short_side));
+        return;
+    }
+
+    // Index 2: 高清 720P (流畅提速)
+    if (m_quality_idx == 2 || m_bitrate >= 6000000) {
+        int short_side = 720;
+        int long_side = static_cast<int>(static_cast<double>(short_side) * dev_long / dev_short);
+        int tw = portrait ? short_side : long_side;
+        int th = portrait ? long_side : short_side;
         m_snapshot_ctx->target_width.store(tw);
         m_snapshot_ctx->target_height.store(th);
         HC_LOG_INFO(QString("Snapshot fallback mode target size set to %1x%2 (720P)").arg(tw).arg(th));
-    } else {
-        int tw = portrait ? 540 : 960;
-        int th = portrait ? 960 : 540;
+        return;
+    }
+
+    // Index 3: 标清 540P (极速省流)
+    {
+        int short_side = 540;
+        int long_side = static_cast<int>(static_cast<double>(short_side) * dev_long / dev_short);
+        int tw = portrait ? short_side : long_side;
+        int th = portrait ? long_side : short_side;
         m_snapshot_ctx->target_width.store(tw);
         m_snapshot_ctx->target_height.store(th);
         HC_LOG_INFO(QString("Snapshot fallback mode target size set to %1x%2 (540P)").arg(tw).arg(th));
@@ -391,7 +425,7 @@ void StreamSession::startSnapshotFallback() {
                                         weak_this->updateSnapshotTargetSize();
                                     }
                                     emit weak_this->frameReady(frame);
-                                    QString tier = (frame.width >= 1080 || frame.height >= 1080) ? "原生原画" : (frame.width >= 720 || frame.height >= 720 ? "720P高清" : "540P流畅");
+                                    QString tier = (std::min(frame.width, frame.height) >= 1080) ? "原画点对点" : ((std::min(frame.width, frame.height) >= 900) ? "超清 900P" : ((std::min(frame.width, frame.height) >= 720) ? "高清 720P" : "标清 540P"));
                                     emit weak_this->statusChanged(QString("兼容快照流 · %1x%2 (%3)").arg(frame.width).arg(frame.height).arg(tier));
                                 }
                             });

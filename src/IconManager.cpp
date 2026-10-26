@@ -60,6 +60,8 @@ QIcon IconManager::getIcon(const QString& name) {
         icon = makeSvgIcon("<rect x=\"4\" y=\"4\" width=\"16\" height=\"16\" rx=\"2\" ry=\"2\" fill=\"#ff9f9f\" stroke=\"#ff9f9f\"/>", "#8295a9", "none", 2.0, 16);
     } else if (name == "camera") {
         icon = makeSvgIcon("<path d=\"M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z\"/><circle cx=\"12\" cy=\"13\" r=\"4\"/>", "#8295a9", "none", 2.0, 16);
+    } else if (name == "1to1" || name == "pixel_perfect") {
+        icon = makeSvgIcon("<circle cx=\"11\" cy=\"11\" r=\"8\"/><line x1=\"21\" y1=\"21\" x2=\"16.65\" y2=\"16.65\"/><path d=\"M11 8v6M8 11h6\"/>", "#8295a9", "none", 2.0, 16);
     } else if (name == "fullscreen") {
         icon = makeSvgIcon("<path d=\"M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3\"/>", "#8295a9", "none", 2.0, 16);
     } else if (name == "more") {

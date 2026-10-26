@@ -1210,11 +1210,22 @@ QWidget* MainWindow::buildWorkspacePage() {
     controls->addWidget(m_stop_btn);
 
     m_quality_combo = new QComboBox();
-    m_quality_combo->addItems({"超清原画 (20M)", "超清 1080P (12M)", "高清 720P (6M)", "流畅 (2.5M)"});
-    m_quality_combo->setToolTip("投屏画质：支持动态调节视频流码率 (默认 12M 超清)");
+    m_quality_combo->addItems({
+        "超清原画 (点对点)",
+        "超清 900P (清晰均衡)",
+        "高清 720P (流畅提速)",
+        "标清 540P (极速省流)"
+    });
+    m_quality_combo->setToolTip(
+        "投屏画质：\n"
+        "• 超清原画：100% 原始分辨率点对点渲染，文字最清晰 (推荐)\n"
+        "• 超清 900P：高清晰度与流畅度均衡推荐\n"
+        "• 高清 720P：降低分辨率以提升快照传输帧率\n"
+        "• 标清 540P：极速低延迟低带宽模式"
+    );
     m_quality_combo->setFixedHeight(28);
-    m_quality_combo->setFixedWidth(136);
-    IconManager::setupComboBoxPopup(m_quality_combo, 136);
+    m_quality_combo->setFixedWidth(146);
+    IconManager::setupComboBoxPopup(m_quality_combo, 146);
     int savedQuality = m_settings->value("mirror_quality_idx", 0).toInt();
     m_bitrate_idx = std::clamp(savedQuality, 0, 3);
     m_quality_combo->setCurrentIndex(m_bitrate_idx);
@@ -1227,6 +1238,13 @@ QWidget* MainWindow::buildWorkspacePage() {
     m_rotate_btn->setToolTip("旋转画面 0° / 90° / 180° / 270° (快捷键: ⌘R)");
     connect(m_rotate_btn, &QPushButton::clicked, this, &MainWindow::rotateDisplay);
     controls->addWidget(m_rotate_btn);
+
+    m_btn_pixel_perfect = IconManager::button("1:1 原画", "", "1to1");
+    m_btn_pixel_perfect->setFixedHeight(28);
+    m_btn_pixel_perfect->setShortcut(QKeySequence("Ctrl+1"));
+    m_btn_pixel_perfect->setToolTip("适配 1:1 点对点原生像素尺寸，享受最极致清晰度 (快捷键: ⌘1)");
+    connect(m_btn_pixel_perfect, &QPushButton::clicked, this, &MainWindow::resizeToPixelPerfect);
+    controls->addWidget(m_btn_pixel_perfect);
 
     m_screenshot_btn = IconManager::button("截图", "", "camera");
     m_screenshot_btn->setFixedHeight(28);
@@ -2560,14 +2578,14 @@ void MainWindow::startMirror() {
     }
 
     m_stream = std::make_unique<StreamSession>(m_hdc, dev, 60, br, 0, this);
+    m_stream->setQuality(m_bitrate_idx, br);
 
     connect(m_stream.get(), &StreamSession::frameReady, this, [this](const DecodedFrame& f){
         m_screen->updateFrame(f);
-        m_state_badge->setText(QString("投屏中 · %1x%2").arg(f.width).arg(f.height));
+        updateStreamStatusBadge(f.width, f.height);
     });
 
     connect(m_stream.get(), &StreamSession::statusChanged, this, [this](const QString& status){
-        m_state_badge->setText(status);
         statusBar()->showMessage(status, 4000);
     });
 
@@ -2648,19 +2666,21 @@ void MainWindow::onQualityChanged(int index) {
     QString qualityName = (m_quality_combo ? m_quality_combo->currentText() : QString::number(br / 1000000) + "M");
 
     if (m_projecting && m_stream) {
-        m_stream->setBitrate(br);
+        m_stream->setQuality(m_bitrate_idx, br);
         if (!m_stream->isFallbackSnapshot()) {
             showToast(QString("正在实时热重载视频流码率: %1…").arg(qualityName));
             statusBar()->showMessage(QString("正在实时热重载视频流码率: %1…").arg(qualityName), 3000);
             m_stream->start();
         } else {
             QString tierDesc;
-            if (br >= 12000000) {
-                tierDesc = "原生原画 (1080P 点对点无损输出，最高清晰度)";
-            } else if (br >= 6000000) {
-                tierDesc = "高清 720P (720x1280 缩放传输，降低延迟)";
+            if (m_bitrate_idx == 0) {
+                tierDesc = "原生原画 (100% 原始分辨率点对点无损输出，最高清晰度)";
+            } else if (m_bitrate_idx == 1) {
+                tierDesc = "超清 900P (清晰度与流畅度均衡推荐)";
+            } else if (m_bitrate_idx == 2) {
+                tierDesc = "高清 720P (缩放加速传输，延迟更低)";
             } else {
-                tierDesc = "流畅 540P (540x960 极速传输，极限流畅)";
+                tierDesc = "标清 540P (540x960 极速传输，极限流畅)";
             }
             showToast(QString("快照流画质已实时切换: %1\n%2").arg(qualityName, tierDesc));
             statusBar()->showMessage(QString("兼容快照流: 已实时应用 %1 (%2)").arg(qualityName, tierDesc), 4000);
@@ -2674,6 +2694,74 @@ void MainWindow::rotateDisplay() {
     m_user_rotation = (m_user_rotation + 90) % 360;
     m_screen->setRotation(m_user_rotation);
     showToast(QString("旋转画面: %1°").arg(m_user_rotation));
+}
+
+void MainWindow::resizeToPixelPerfect() {
+    int dev_w = m_screen->deviceWidth();
+    int dev_h = m_screen->deviceHeight();
+    if (dev_w <= 0 || dev_h <= 0) {
+        if (!m_screen->image().isNull()) {
+            dev_w = m_screen->image().width();
+            dev_h = m_screen->image().height();
+        }
+    }
+    if (dev_w <= 0 || dev_h <= 0) {
+        showToast("暂无画面，请先连接并开始投屏");
+        return;
+    }
+
+    if (m_user_rotation % 180 != 0) {
+        std::swap(dev_w, dev_h);
+    }
+
+    const qreal dpr = m_screen->devicePixelRatioF();
+    int target_w = static_cast<int>(dev_w / dpr);
+    int target_h = static_cast<int>(dev_h / dpr);
+
+    QScreen* scr = screen();
+    if (scr) {
+        QRect avail = scr->availableGeometry();
+        int max_h = avail.height() - 140;
+        if (target_h > max_h) {
+            double ratio = static_cast<double>(max_h) / target_h;
+            target_h = max_h;
+            target_w = static_cast<int>(target_w * ratio);
+        }
+    }
+
+    if (m_current_layout == "mirror_only") {
+        int chrome_h = height() - m_screen->height();
+        int chrome_w = width() - m_screen->width();
+        resize(target_w + std::max(0, chrome_w), target_h + std::max(0, chrome_h));
+    } else {
+        if (m_workspace_splitter && m_workspace_splitter->orientation() == Qt::Horizontal) {
+            int total_w = m_workspace_splitter->width();
+            if (total_w < target_w + 300) {
+                resize(target_w + 420 + (width() - m_workspace_splitter->width()), height());
+            }
+            m_workspace_splitter->setSizes({target_w, std::max(300, width() - target_w - 200)});
+        }
+    }
+
+    showToast(QString("已适配 1:1 点对点显示: %1 × %2").arg(dev_w).arg(dev_h));
+}
+
+void MainWindow::updateStreamStatusBadge(int w, int h) {
+    if (!m_projecting) return;
+    QString streamType = (m_stream && m_stream->isFallbackSnapshot()) ? "快照流" : "高清流";
+    QString qualityLabel = "原画";
+    int minDim = std::min(w, h);
+    if (minDim >= 1080) {
+        qualityLabel = "原画点对点";
+    } else if (minDim >= 900) {
+        qualityLabel = "超清 900P";
+    } else if (minDim >= 720) {
+        qualityLabel = "高清 720P";
+    } else {
+        qualityLabel = "标清 540P";
+    }
+    m_state_badge->setText(QString("%1 · %2x%3 (%4)").arg(streamType).arg(w).arg(h).arg(qualityLabel));
+    m_state_badge->setStyleSheet("color: #53d6b5; background: #0c2724; border: 1px solid #1a4d46; padding: 4px 10px; border-radius: 9px; font-size: 12px;");
 }
 
 void MainWindow::saveScreenshot() {

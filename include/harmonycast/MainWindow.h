@@ -60,6 +60,8 @@ private slots:
     void stopMirror(bool userInitiated = true);
     void onQualityChanged(int index);
     void rotateDisplay();
+    void resizeToPixelPerfect();
+    void updateStreamStatusBadge(int w, int h);
     void saveScreenshot();
     void toggleFullscreen();
     void sendKey(const QString& key);
@@ -216,6 +218,7 @@ private:
     QPushButton* m_stop_btn{nullptr};
     QComboBox* m_quality_combo{nullptr};
     QPushButton* m_rotate_btn{nullptr};
+    QPushButton* m_btn_pixel_perfect{nullptr};
     QPushButton* m_screenshot_btn{nullptr};
     QPushButton* m_btn_key_back{nullptr};
     QPushButton* m_btn_key_home{nullptr};

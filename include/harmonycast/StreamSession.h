@@ -44,6 +44,8 @@ public:
     [[nodiscard]] int deviceHeight() const { return m_dev_height; }
     [[nodiscard]] bool isFallbackSnapshot() const { return m_fallback_snapshot; }
 
+    void setQuality(int quality_idx, int bitrate);
+    [[nodiscard]] int qualityIndex() const { return m_quality_idx; }
     void setBitrate(int b);
     void updateSnapshotTargetSize();
     void setFps(int f) { m_fps = f; }
@@ -81,6 +83,7 @@ private:
 
     int m_dev_width{0};
     int m_dev_height{0};
+    int m_quality_idx{0};
 
     std::atomic<bool> m_fallback_snapshot{false};
     std::shared_ptr<SnapshotWorkerContext> m_snapshot_ctx;

@@ -3,7 +3,7 @@
 #include <vector>
 #include <string>
 #include <cstring>
-#include <QCoreApplication>
+#include <QApplication>
 #include "harmonycast/Types.h"
 #include "harmonycast/PacketDemuxer.h"
 #include "harmonycast/HiLogParser.h"
@@ -15,6 +15,7 @@
 #include "harmonycast/Logger.h"
 #include "harmonycast/CrashHandler.h"
 #include "harmonycast/UpdateChecker.h"
+#include "harmonycast/ScreenView.h"
 #include <QDir>
 #include <QFile>
 
@@ -157,7 +158,7 @@ void test_stream_session_and_types() {
     int typeId = qMetaTypeId<DecodedFrame>();
     assert(typeId != QMetaType::UnknownType);
 
-    // 2. StreamSession fallback state
+    // 2. StreamSession fallback state and quality tiers
     auto hdc = std::make_shared<HdcClient>();
     Device dev;
     dev.serial = "127.0.0.1:8710";
@@ -166,6 +167,30 @@ void test_stream_session_and_types() {
     assert(!session.isRunning());
     assert(!session.isFallbackSnapshot());
     assert(session.device().serial == "127.0.0.1:8710");
+
+    // Test Quality index setting
+    session.setQuality(0, 20000000);
+    assert(session.qualityIndex() == 0);
+    session.setQuality(1, 12000000);
+    assert(session.qualityIndex() == 1);
+    session.setQuality(2, 6000000);
+    assert(session.qualityIndex() == 2);
+    session.setQuality(3, 2500000);
+    assert(session.qualityIndex() == 3);
+
+    // 3. ScreenView High-DPI and image rotation test
+    ScreenView screen;
+    QImage testImg(1080, 1920, QImage::Format_RGB32);
+    testImg.fill(Qt::blue);
+    screen.setImage(testImg, 1080, 1920);
+    assert(screen.deviceWidth() == 1080);
+    assert(screen.deviceHeight() == 1920);
+    assert(screen.rotation() == 0);
+
+    screen.setRotation(90);
+    assert(screen.rotation() == 90);
+    screen.setRotation(0);
+    assert(screen.rotation() == 0);
     std::cout << "[PASS] test_stream_session_and_types passed!" << std::endl;
 }
 
@@ -415,7 +440,8 @@ void test_update_checker() {
 }
 
 int main(int argc, char* argv[]) {
-    QCoreApplication app(argc, argv);
+    qputenv("QT_QPA_PLATFORM", "offscreen");
+    QApplication app(argc, argv);
     std::cout << "========================================" << std::endl;
     std::cout << "   HarmonyCast C++ Core Verification    " << std::endl;
     std::cout << "========================================" << std::endl;

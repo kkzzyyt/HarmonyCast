@@ -23,7 +23,7 @@ public:
     void clear();
 
     void setTouchCallback(TouchCallback cb) { m_touch_cb = std::move(cb); }
-    void setRotation(int degrees) { m_rotation = degrees % 360; update(); }
+    void setRotation(int degrees);
     [[nodiscard]] int rotation() const { return m_rotation; }
 
     void setActive(bool active) { m_active = active; update(); }
@@ -31,6 +31,9 @@ public:
 
     void setStatusMessage(const QString& msg) { m_status_msg = msg; update(); }
     [[nodiscard]] const QImage& image() const { return m_image; }
+    [[nodiscard]] int deviceWidth() const { return m_dev_width; }
+    [[nodiscard]] int deviceHeight() const { return m_dev_height; }
+    [[nodiscard]] const QRect& targetRect() const { return m_target_rect; }
 
     std::pair<int, int> mapToDevice(const QPoint& pos) const;
 
@@ -49,6 +52,8 @@ private slots:
 
 private:
     QImage m_image;
+    QImage m_scaled_cache;
+    bool m_cache_dirty{true};
     int m_dev_width{0};
     int m_dev_height{0};
     int m_rotation{0};
@@ -67,6 +72,7 @@ private:
     QTimer* m_fade_timer{nullptr};
 
     void updateTargetRect();
+    void regenerateDisplayCache();
 };
 
 } // namespace harmonycast

@@ -20,16 +20,29 @@ ScreenView::ScreenView(QWidget* parent)
 
 void ScreenView::clear() {
     m_image = QImage();
+    m_scaled_cache = QImage();
+    m_cache_dirty = false;
     m_target_rect = QRect();
     m_touch_active = false;
     m_ripple_opacity = 0.0f;
     update();
 }
 
+void ScreenView::setRotation(int degrees) {
+    int r = (degrees % 360 + 360) % 360;
+    if (m_rotation != r) {
+        m_rotation = r;
+        m_cache_dirty = true;
+        updateTargetRect();
+        update();
+    }
+}
+
 void ScreenView::setImage(const QImage& img, int dev_w, int dev_h) {
     m_image = img;
     m_dev_width = (dev_w > 0) ? dev_w : img.width();
     m_dev_height = (dev_h > 0) ? dev_h : img.height();
+    m_cache_dirty = true;
     updateTargetRect();
     update();
 }
@@ -51,14 +64,19 @@ void ScreenView::updateFrame(const DecodedFrame& frame) {
     m_image = img.copy(); // shallow copy if shared or deep copy once to survive callback
     m_dev_width = frame.width;
     m_dev_height = frame.height;
+    m_cache_dirty = true;
 
-    updateTargetRect();
+    if (m_target_rect.isEmpty()) {
+        updateTargetRect();
+    }
     update();
 }
 
 void ScreenView::updateTargetRect() {
     if (m_image.isNull() || width() <= 0 || height() <= 0) {
         m_target_rect = QRect();
+        m_scaled_cache = QImage();
+        m_cache_dirty = false;
         return;
     }
 
@@ -70,12 +88,53 @@ void ScreenView::updateTargetRect() {
     QSize scaled = img_size.scaled(size(), Qt::KeepAspectRatio);
     int left = (width() - scaled.width()) / 2;
     int top = (height() - scaled.height()) / 2;
-    m_target_rect = QRect(left, top, scaled.width(), scaled.height());
+    QRect new_rect(left, top, scaled.width(), scaled.height());
+    if (m_target_rect != new_rect) {
+        m_target_rect = new_rect;
+        m_cache_dirty = true;
+    }
+}
+
+void ScreenView::regenerateDisplayCache() {
+    if (m_image.isNull() || !m_target_rect.isValid() || m_target_rect.isEmpty()) {
+        m_scaled_cache = QImage();
+        m_cache_dirty = false;
+        return;
+    }
+
+    const qreal dpr = devicePixelRatioF();
+    QSize physical_target = m_target_rect.size() * dpr;
+    if (physical_target.width() <= 0 || physical_target.height() <= 0) {
+        m_scaled_cache = QImage();
+        m_cache_dirty = false;
+        return;
+    }
+
+    // Handle rotation first
+    QImage source = m_image;
+    if (m_rotation != 0) {
+        QTransform transform;
+        transform.rotate(m_rotation);
+        source = m_image.transformed(transform);
+    }
+
+    // High-DPI physical pixel scaling:
+    // If physical target matches source size, keep 1:1 without resampling.
+    // Otherwise use multi-tap area-averaged SmoothTransformation (Lanczos) for pixel-crisp Retina text.
+    if (source.size() == physical_target) {
+        m_scaled_cache = source;
+    } else {
+        m_scaled_cache = source.scaled(physical_target, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+    }
+
+    m_scaled_cache.setDevicePixelRatio(dpr);
+    m_cache_dirty = false;
 }
 
 void ScreenView::resizeEvent(QResizeEvent* event) {
     QWidget::resizeEvent(event);
     updateTargetRect();
+    m_cache_dirty = true;
 }
 
 void ScreenView::onFadeTick() {
@@ -107,17 +166,22 @@ std::pair<int, int> ScreenView::mapToDevice(const QPoint& pos) const {
     double norm_x = static_cast<double>(rel_x) / m_target_rect.width();
     double norm_y = static_cast<double>(rel_y) / m_target_rect.height();
 
+    if (m_rotation == 90) {
+        int final_x = static_cast<int>(norm_y * dev_w);
+        int final_y = static_cast<int>((1.0 - norm_x) * dev_h);
+        return {std::clamp(final_x, 0, dev_w - 1), std::clamp(final_y, 0, dev_h - 1)};
+    } else if (m_rotation == 180) {
+        int final_x = static_cast<int>((1.0 - norm_x) * dev_w);
+        int final_y = static_cast<int>((1.0 - norm_y) * dev_h);
+        return {std::clamp(final_x, 0, dev_w - 1), std::clamp(final_y, 0, dev_h - 1)};
+    } else if (m_rotation == 270) {
+        int final_x = static_cast<int>((1.0 - norm_y) * dev_w);
+        int final_y = static_cast<int>(norm_x * dev_h);
+        return {std::clamp(final_x, 0, dev_w - 1), std::clamp(final_y, 0, dev_h - 1)};
+    }
     int final_x = static_cast<int>(norm_x * dev_w);
     int final_y = static_cast<int>(norm_y * dev_h);
-
-    if (m_rotation == 90) {
-        return {final_y, dev_h - 1 - final_x};
-    } else if (m_rotation == 180) {
-        return {dev_w - 1 - final_x, dev_h - 1 - final_y};
-    } else if (m_rotation == 270) {
-        return {dev_w - 1 - final_y, final_x};
-    }
-    return {final_x, final_y};
+    return {std::clamp(final_x, 0, dev_w - 1), std::clamp(final_y, 0, dev_h - 1)};
 }
 
 void ScreenView::paintEvent(QPaintEvent*) {
@@ -156,20 +220,12 @@ void ScreenView::paintEvent(QPaintEvent*) {
         updateTargetRect();
     }
 
-    painter.setRenderHint(QPainter::Antialiasing, true);
-    painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
-    if (m_rotation != 0) {
-        painter.save();
-        painter.translate(m_target_rect.center());
-        painter.rotate(m_rotation);
+    if (m_cache_dirty || m_scaled_cache.isNull()) {
+        regenerateDisplayCache();
+    }
 
-        double dw = (m_rotation % 180 != 0) ? m_target_rect.height() : m_target_rect.width();
-        double dh = (m_rotation % 180 != 0) ? m_target_rect.width() : m_target_rect.height();
-
-        painter.drawImage(QRectF(-dw / 2.0, -dh / 2.0, dw, dh), m_image);
-        painter.restore();
-    } else {
-        painter.drawImage(m_target_rect, m_image);
+    if (!m_scaled_cache.isNull()) {
+        painter.drawImage(m_target_rect.topLeft(), m_scaled_cache);
     }
 
     // 3. Touch Ripple & Gesture Trail
