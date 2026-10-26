@@ -14,6 +14,7 @@
 #include "harmonycast/HdcClient.h"
 #include "harmonycast/Logger.h"
 #include "harmonycast/CrashHandler.h"
+#include "harmonycast/UpdateChecker.h"
 #include <QDir>
 #include <QFile>
 
@@ -385,6 +386,34 @@ void test_logger_and_crash_handler() {
     std::cout << "[PASS] test_logger_and_crash_handler passed!" << std::endl;
 }
 
+void test_update_checker() {
+    std::cout << "[RUN] test_update_checker..." << std::endl;
+
+    // 1. SemVer comparison tests
+    assert(UpdateChecker::compareVersions("2.2.0", "2.1.0") > 0);
+    assert(UpdateChecker::compareVersions("2.1.0", "2.2.0") < 0);
+    assert(UpdateChecker::compareVersions("v2.1.0", "2.1.0") == 0);
+    assert(UpdateChecker::compareVersions("V2.1.0", "2.1.0") == 0);
+    assert(UpdateChecker::compareVersions("2.1.1", "2.1.0") > 0);
+    assert(UpdateChecker::compareVersions("2.1.0", "2.1.1") < 0);
+    assert(UpdateChecker::compareVersions("3.0.0", "2.9.9") > 0);
+    assert(UpdateChecker::compareVersions("2.1.0-rc1", "2.1.0") == 0);
+    assert(UpdateChecker::compareVersions("2.1", "2.1.0") == 0);
+
+    // 2. Ignore version logic
+    UpdateChecker checker;
+    assert(checker.currentVersion() == "2.1.0");
+
+    checker.ignoreVersion("2.2.0");
+    assert(checker.isVersionIgnored("2.2.0"));
+    assert(!checker.isVersionIgnored("2.3.0"));
+
+    checker.clearIgnoredVersion();
+    assert(!checker.isVersionIgnored("2.2.0"));
+
+    std::cout << "[PASS] test_update_checker passed!" << std::endl;
+}
+
 int main(int argc, char* argv[]) {
     QCoreApplication app(argc, argv);
     std::cout << "========================================" << std::endl;
@@ -399,6 +428,7 @@ int main(int argc, char* argv[]) {
     test_network_devices_persistence();
     test_device_info_parsing();
     test_logger_and_crash_handler();
+    test_update_checker();
 
     std::cout << "\n>>> ALL C++ CORE TESTS PASSED! <<<" << std::endl;
     return 0;

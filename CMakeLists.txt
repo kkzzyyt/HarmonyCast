@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(HarmonyCast VERSION 2.0.0 LANGUAGES CXX)
+project(HarmonyCast VERSION 2.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -52,6 +52,8 @@ set(CORE_HEADERS
     include/harmonycast/LogHighlighter.h
     include/harmonycast/Logger.h
     include/harmonycast/CrashHandler.h
+    include/harmonycast/UpdateChecker.h
+    include/harmonycast/UpdateDialog.h
     include/harmonycast/MainWindow.h
 )
 
@@ -72,6 +74,8 @@ set(CORE_SOURCES
     src/LogHighlighter.cpp
     src/Logger.cpp
     src/CrashHandler.cpp
+    src/UpdateChecker.cpp
+    src/UpdateDialog.cpp
     src/MainWindow.cpp
 )
 

@@ -9,6 +9,7 @@
 #include "WebViewDebugger.h"
 #include "IconManager.h"
 
+#include "harmonycast/UpdateChecker.h"
 #include <QMainWindow>
 #include <QPointer>
 #include <QStackedWidget>
@@ -116,6 +117,12 @@ private slots:
     void exportDiagnosticBundle();
     void showCrashReportDialog(const QString& report);
 
+    // Version Update
+    void checkForUpdates(bool silent);
+    void onUpdateAvailable(const UpdateInfo& info, bool silent);
+    void onNoUpdateAvailable(bool silent);
+    void onUpdateCheckFailed(const QString& error, bool silent);
+
 protected:
     void keyPressEvent(QKeyEvent* event) override;
     bool eventFilter(QObject* watched, QEvent* event) override;
@@ -149,6 +156,7 @@ private:
     std::unique_ptr<StreamSession> m_stream;
     std::unique_ptr<HiLogSession> m_hilog;
     std::unique_ptr<WebViewDebugger> m_webview;
+    std::unique_ptr<UpdateChecker> m_updater;
     std::unique_ptr<QSettings> m_settings;
 
     std::vector<Device> m_cached_devices;

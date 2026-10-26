@@ -5,6 +5,7 @@
 #include "harmonycast/LogHighlighter.h"
 #include "harmonycast/Logger.h"
 #include "harmonycast/CrashHandler.h"
+#include "harmonycast/UpdateDialog.h"
 
 #include <unordered_set>
 
@@ -40,6 +41,7 @@ MainWindow::MainWindow(QWidget* parent)
       m_hdc(std::make_shared<HdcClient>()),
       m_dev_mgr(std::make_shared<DeviceManager>(m_hdc, this)),
       m_webview(std::make_unique<WebViewDebugger>(m_hdc, this)),
+      m_updater(std::make_unique<UpdateChecker>(this)),
       m_settings(std::make_unique<QSettings>("HarmonyCast", "HarmonyCast")) {
 
     m_auto_start_mirror = m_settings->value("auto_start_mirror", true).toBool();
@@ -54,6 +56,9 @@ MainWindow::MainWindow(QWidget* parent)
     applyTheme();
 
     connect(m_dev_mgr.get(), &DeviceManager::devicesUpdated, this, &MainWindow::onDevicesUpdated);
+    connect(m_updater.get(), &UpdateChecker::updateAvailable, this, &MainWindow::onUpdateAvailable);
+    connect(m_updater.get(), &UpdateChecker::noUpdateAvailable, this, &MainWindow::onNoUpdateAvailable);
+    connect(m_updater.get(), &UpdateChecker::checkFailed, this, &MainWindow::onUpdateCheckFailed);
     connect(m_webview.get(), &WebViewDebugger::consoleMessageReceived, this, &MainWindow::onWebConsoleMessage);
     connect(m_webview.get(), &WebViewDebugger::networkRequestReceived, this, &MainWindow::onWebNetworkRequest);
     connect(m_webview.get(), &WebViewDebugger::networkResponseReceived, this, &MainWindow::onWebNetworkResponse);
@@ -87,6 +92,11 @@ MainWindow::MainWindow(QWidget* parent)
     switchModule(0);
 
     QTimer::singleShot(800, this, &MainWindow::checkPreviousCrash);
+
+    // Silent background update check after window displays
+    if (m_settings->value("auto_check_update", true).toBool()) {
+        QTimer::singleShot(2500, this, [this]{ checkForUpdates(true); });
+    }
 }
 
 MainWindow::~MainWindow() {
@@ -156,7 +166,7 @@ void MainWindow::setupUi() {
     bottom_box->setContentsMargins(0, 0, 0, 0);
     bottom_box->setSpacing(6);
 
-    auto* version_label = IconManager::label("HarmonyCast\nv2.0.0", "Muted");
+    auto* version_label = IconManager::label("HarmonyCast\nv2.1.0", "Muted");
     bottom_box->addWidget(version_label, 1);
 
     m_settings_btn = IconManager::iconButton("settings", "系统设置", "IconBtnSettings", 30, 30);
@@ -3957,7 +3967,54 @@ void MainWindow::openSettingsDialog() {
 
     l->addWidget(grpDiag);
 
-    // 3. 底栏确定/取消按钮
+    // 3. 版本检查与更新
+    auto* grpUpdate = new QGroupBox("版本信息与更新", dlg);
+    auto* uLayout = new QVBoxLayout(grpUpdate);
+    uLayout->setContentsMargins(14, 14, 14, 14);
+    uLayout->setSpacing(8);
+
+    auto* verRow = new QHBoxLayout();
+    QString curVer = m_updater ? m_updater->currentVersion() : "2.1.0";
+    auto* lblCurVer = new QLabel(QString("当前版本: v%1 (正式版)").arg(curVer));
+    lblCurVer->setStyleSheet("color: #dbe5ee; font-size: 12px; font-weight: 500;");
+    verRow->addWidget(lblCurVer, 1);
+
+    auto* btnCheckUpdate = IconManager::button("检查最新版本", "Primary", "refresh");
+    btnCheckUpdate->setFixedHeight(26);
+    verRow->addWidget(btnCheckUpdate);
+    uLayout->addLayout(verRow);
+
+    // 更新源配置
+    auto* urlRow = new QHBoxLayout();
+    auto* lblUrl = new QLabel("更新服务源:");
+    lblUrl->setStyleSheet("color: #8ba2b9; font-size: 11px;");
+    urlRow->addWidget(lblUrl);
+
+    auto* editUrl = new QLineEdit();
+    QString defaultUrl = m_updater ? m_updater->updateUrl() : "https://api.github.com/repos/kkzzyyt/HarmonyCast/releases/latest";
+    QString configuredUrl = m_settings->value("update_check_url", defaultUrl).toString();
+    editUrl->setText(configuredUrl);
+    editUrl->setFixedHeight(26);
+    editUrl->setPlaceholderText("https://.../releases/latest 或 version.json");
+    editUrl->setStyleSheet("background: #070c13; color: #dbe5ee; border: 1px solid #1c2b3d; border-radius: 4px; padding: 2px 6px; font-size: 11px;");
+    urlRow->addWidget(editUrl, 1);
+    uLayout->addLayout(urlRow);
+
+    connect(btnCheckUpdate, &QPushButton::clicked, this, [this, editUrl]{
+        QString enteredUrl = editUrl->text().trimmed();
+        if (!enteredUrl.isEmpty() && m_updater) {
+            m_updater->setUpdateUrl(enteredUrl);
+        }
+        checkForUpdates(false);
+    });
+
+    auto* lblUpdateTip = new QLabel("自动连接指定版本源检查新特性、安全更新与性能改进补丁。");
+    lblUpdateTip->setStyleSheet("color: #63778a; font-size: 11px;");
+    uLayout->addWidget(lblUpdateTip);
+
+    l->addWidget(grpUpdate);
+
+    // 4. 底栏确定/取消按钮
     l->addStretch();
     auto* btn_box = new QHBoxLayout();
     btn_box->addStretch();
@@ -3966,10 +4023,15 @@ void MainWindow::openSettingsDialog() {
     btn_box->addWidget(btn_close);
 
     auto* btn_save = IconManager::button("保存设置", "Primary");
-    connect(btn_save, &QPushButton::clicked, dlg, [this, cb_auto, cb_update, dlg]() {
+    connect(btn_save, &QPushButton::clicked, dlg, [this, cb_auto, cb_update, editUrl, dlg]() {
         m_auto_start_mirror = cb_auto->isChecked();
         m_settings->setValue("auto_start_mirror", m_auto_start_mirror);
         m_settings->setValue("auto_check_update", cb_update->isChecked());
+        QString newUrl = editUrl->text().trimmed();
+        if (!newUrl.isEmpty()) {
+            m_settings->setValue("update_check_url", newUrl);
+            if (m_updater) m_updater->setUpdateUrl(newUrl);
+        }
         dlg->accept();
         showToast("偏好设置已保存");
     });
@@ -3978,6 +4040,55 @@ void MainWindow::openSettingsDialog() {
     l->addLayout(btn_box);
     dlg->exec();
     dlg->deleteLater();
+}
+
+void MainWindow::checkForUpdates(bool silent) {
+    if (!silent) {
+        showToast("正在连接版本服务检查更新…");
+        statusBar()->showMessage("正在检查最新版本…", 3000);
+    }
+    if (m_updater) {
+        QString configuredUrl = m_settings->value("update_check_url").toString();
+        if (!configuredUrl.isEmpty()) {
+            m_updater->setUpdateUrl(configuredUrl);
+        }
+        m_updater->checkForUpdates(silent);
+    }
+}
+
+void MainWindow::onUpdateAvailable(const UpdateInfo& info, bool silent) {
+    (void)silent;
+    QWidget* parentDlg = QApplication::activeModalWidget() ? QApplication::activeModalWidget() : this;
+    auto* dlg = new UpdateDialog(info, parentDlg);
+    dlg->exec();
+    if (dlg->wasIgnored() && m_updater) {
+        m_updater->ignoreVersion(info.latestVersion);
+        showToast(QString("已忽略 v%1 版本更新提示").arg(info.latestVersion));
+    }
+    dlg->deleteLater();
+}
+
+void MainWindow::onNoUpdateAvailable(bool silent) {
+    if (!silent) {
+        QString curVer = m_updater ? m_updater->currentVersion() : "2.1.0";
+        showToast(QString("当前已是最新版本 (v%1)").arg(curVer));
+        statusBar()->showMessage(QString("当前已是最新版本 (v%1)").arg(curVer), 4000);
+        QWidget* parentDlg = QApplication::activeModalWidget() ? QApplication::activeModalWidget() : this;
+        QMessageBox::information(parentDlg,
+                                 "版本检查 · HarmonyCast",
+                                 QString("您当前使用的 HarmonyCast v%1 已是最新版本，无需更新。").arg(curVer));
+    }
+}
+
+void MainWindow::onUpdateCheckFailed(const QString& error, bool silent) {
+    if (!silent) {
+        showToast("检查更新失败: " + error);
+        statusBar()->showMessage("检查更新失败: " + error, 4000);
+        QWidget* parentDlg = QApplication::activeModalWidget() ? QApplication::activeModalWidget() : this;
+        QMessageBox::warning(parentDlg,
+                             "版本检查失败 · HarmonyCast",
+                             QString("未能获取到最新版本信息，原因如下：\n\n%1\n\n请检查网络连接或自定义更新服务源配置。").arg(error));
+    }
 }
 
 void MainWindow::exportDiagnosticBundle() {
