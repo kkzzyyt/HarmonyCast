@@ -1475,6 +1475,8 @@ QWidget* MainWindow::buildHiLogWidget() {
         "}"
     );
     m_log_view->installEventFilter(this);
+    m_log_view->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(m_log_view, &QPlainTextEdit::customContextMenuRequested, this, &MainWindow::onHiLogContextMenu);
     m_log_highlighter = std::make_unique<LogHighlighter>(m_log_view->document());
     log_layout->addWidget(m_log_view, 1);
 
@@ -1671,6 +1673,8 @@ QWidget* MainWindow::buildWebViewPanel() {
         "background: #070c13; color: #dbe5ee; border: 1px solid #1a2737; border-radius: 6px; padding: 6px 8px; font-family: 'Menlo', monospace;"
     );
     m_wv_console_view->installEventFilter(this);
+    m_wv_console_view->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(m_wv_console_view, &QPlainTextEdit::customContextMenuRequested, this, &MainWindow::onWebViewConsoleContextMenu);
     m_wv_log_highlighter = std::make_unique<LogHighlighter>(m_wv_console_view->document());
     c_layout->addWidget(m_wv_console_view, 1);
 
@@ -2326,6 +2330,11 @@ void MainWindow::onDeviceSelected(int index) {
     if (s.empty()) {
         m_hdc_target_badge->setText("目标: 无");
         m_hdc_target_prefix->setText("");
+        clearHiLog();
+        if (m_hilog) {
+            m_hilog->stop();
+            m_hilog.reset();
+        }
         return;
     }
 
@@ -2341,7 +2350,21 @@ void MainWindow::onDeviceSelected(int index) {
     }
 
     if (is_connected) {
+        bool device_changed = (m_active_device_serial != s);
         m_active_device_serial = s;
+
+        if (device_changed) {
+            // 切换设备后，缓存日志清空，从新展示当前设备的日志信息
+            restartHiLogForCurrentDevice();
+
+            if (m_projecting) {
+                stopMirror(false);
+                QTimer::singleShot(100, this, [this]() {
+                    startMirror();
+                });
+            }
+        }
+
         if (m_pages->currentIndex() == 0 && !m_info_loading) {
             refreshDeviceInfo();
         }
@@ -2412,6 +2435,7 @@ void MainWindow::switchToSingleDevice(const std::string& endpoint) {
     m_btn_refresh_info->setEnabled(false);
 
     // 4. Reset logs & HDC target
+    clearHiLog();
     if (m_hilog) {
         m_hilog->stop();
         m_hilog.reset();
@@ -2617,10 +2641,12 @@ void MainWindow::startMirror() {
 
     m_stream->start();
 
-    // Start HiLog simultaneously
-    m_hilog = std::make_unique<HiLogSession>(m_hdc->path(), s, "", "all", this);
-    connect(m_hilog.get(), &HiLogSession::entriesReady, this, &MainWindow::onHiLogEntries);
-    m_hilog->start();
+    // Start HiLog simultaneously if not already running for this device
+    if (!m_hilog) {
+        m_hilog = std::make_unique<HiLogSession>(m_hdc->path(), s, "", "all", this);
+        connect(m_hilog.get(), &HiLogSession::entriesReady, this, &MainWindow::onHiLogEntries);
+        m_hilog->start();
+    }
 
     showToast("已启动投屏引擎");
 }
@@ -3129,6 +3155,79 @@ void MainWindow::clearHiLog() {
     m_visible_log_count = 0;
     if (m_log_view) m_log_view->clear();
     if (m_log_count) m_log_count->setText("显示 0 条 · 缓存 0 条");
+}
+
+void MainWindow::restartHiLogForCurrentDevice() {
+    clearHiLog();
+    std::string s = currentSerial();
+    if (s.empty() || !m_hdc) return;
+
+    if (m_hilog) {
+        m_hilog->stop();
+        m_hilog.reset();
+    }
+
+    m_hilog = std::make_unique<HiLogSession>(m_hdc->path(), s, "", "all", this);
+    connect(m_hilog.get(), &HiLogSession::entriesReady, this, &MainWindow::onHiLogEntries);
+    m_hilog->start();
+    HC_LOG_INFO(QString("HiLog session freshly restarted for device %1").arg(QString::fromStdString(s)));
+}
+
+void MainWindow::onHiLogContextMenu(const QPoint& pos) {
+    if (!m_log_view) return;
+
+    QMenu menu(this);
+    menu.setStyleSheet(
+        "QMenu { background-color: #0c131c; border: 1px solid #1c2b3d; border-radius: 6px; padding: 4px; color: #cfdfeb; font-size: 13px; } "
+        "QMenu::item { padding: 6px 22px 6px 12px; border-radius: 4px; } "
+        "QMenu::item:selected { background-color: #1a2f47; color: #5ce0c1; } "
+        "QMenu::separator { height: 1px; background: #1c2b3d; margin: 4px 6px; }"
+    );
+
+    auto* clearAction = menu.addAction(IconManager::getIcon("clear"), "清空日志 (Clear)");
+    connect(clearAction, &QAction::triggered, this, &MainWindow::clearHiLog);
+
+    menu.addSeparator();
+
+    auto* copyAction = menu.addAction(IconManager::getIcon("copy"), "复制选中 (Copy)");
+    copyAction->setEnabled(m_log_view->textCursor().hasSelection());
+    connect(copyAction, &QAction::triggered, m_log_view, &QPlainTextEdit::copy);
+
+    auto* selectAllAction = menu.addAction("全选 (Select All)");
+    connect(selectAllAction, &QAction::triggered, m_log_view, &QPlainTextEdit::selectAll);
+
+    menu.addSeparator();
+
+    auto* exportAction = menu.addAction(IconManager::getIcon("export"), "导出日志 (Export)…");
+    connect(exportAction, &QAction::triggered, this, &MainWindow::exportHiLog);
+
+    menu.exec(m_log_view->mapToGlobal(pos));
+}
+
+void MainWindow::onWebViewConsoleContextMenu(const QPoint& pos) {
+    if (!m_wv_console_view) return;
+
+    QMenu menu(this);
+    menu.setStyleSheet(
+        "QMenu { background-color: #0c131c; border: 1px solid #1c2b3d; border-radius: 6px; padding: 4px; color: #cfdfeb; font-size: 13px; } "
+        "QMenu::item { padding: 6px 22px 6px 12px; border-radius: 4px; } "
+        "QMenu::item:selected { background-color: #1a2f47; color: #5ce0c1; } "
+        "QMenu::separator { height: 1px; background: #1c2b3d; margin: 4px 6px; }"
+    );
+
+    auto* clearAction = menu.addAction(IconManager::getIcon("clear"), "清空控制台 (Clear)");
+    connect(clearAction, &QAction::triggered, this, &MainWindow::clearWebViewConsole);
+
+    menu.addSeparator();
+
+    auto* copyAction = menu.addAction(IconManager::getIcon("copy"), "复制选中 (Copy)");
+    copyAction->setEnabled(m_wv_console_view->textCursor().hasSelection());
+    connect(copyAction, &QAction::triggered, m_wv_console_view, &QPlainTextEdit::copy);
+
+    auto* selectAllAction = menu.addAction("全选 (Select All)");
+    connect(selectAllAction, &QAction::triggered, m_wv_console_view, &QPlainTextEdit::selectAll);
+
+    menu.exec(m_wv_console_view->mapToGlobal(pos));
 }
 
 void MainWindow::exportHiLog() {

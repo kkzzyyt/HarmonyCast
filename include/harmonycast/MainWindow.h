@@ -77,6 +77,8 @@ private slots:
     void clearHiLog();
     void exportHiLog();
     void setLogFontSize(int size);
+    void onHiLogContextMenu(const QPoint& pos);
+    void restartHiLogForCurrentDevice();
 
     // WebView controls
     void switchLogSubtab(int index);
@@ -90,6 +92,7 @@ private slots:
     void executeWebViewJs();
     void openChromeInspect();
     void onNetworkTableContextMenu(const QPoint& pos);
+    void onWebViewConsoleContextMenu(const QPoint& pos);
     void onNetworkRowSelected();
     void filterNetworkTable();
     void formatResponseJson();

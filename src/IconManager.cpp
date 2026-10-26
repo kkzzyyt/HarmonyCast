@@ -72,6 +72,8 @@ QIcon IconManager::getIcon(const QString& name) {
         icon = makeSvgIcon("<circle cx=\"11\" cy=\"11\" r=\"7\"/><line x1=\"21\" y1=\"21\" x2=\"16.65\" y2=\"16.65\"/>", "#627588", "none", 2.0, 14);
     } else if (name == "clear") {
         icon = makeSvgIcon("<line x1=\"18\" y1=\"6\" x2=\"6\" y2=\"18\"/><line x1=\"6\" y1=\"6\" x2=\"18\" y2=\"18\"/>", "#8295a9", "none", 2.0, 14);
+    } else if (name == "copy") {
+        icon = makeSvgIcon("<rect x=\"9\" y=\"9\" width=\"13\" height=\"13\" rx=\"2\" ry=\"2\"/><path d=\"M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1\"/>", "#8295a9", "none", 2.0, 14);
     } else if (name == "export") {
         icon = makeSvgIcon("<path d=\"M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4\"/><polyline points=\"7 10 12 15 17 10\"/><line x1=\"12\" y1=\"15\" x2=\"12\" y2=\"3\"/>", "#8295a9", "none", 2.0, 14);
     } else if (name == "chrome") {
