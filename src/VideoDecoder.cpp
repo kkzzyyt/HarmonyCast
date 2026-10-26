@@ -174,7 +174,7 @@ void VideoDecoder::emitFrame(AVFrame* frame) {
         m_sws_ctx = sws_getContext(
             render_frame->width, render_frame->height, static_cast<AVPixelFormat>(render_frame->format),
             render_frame->width, render_frame->height, AV_PIX_FMT_RGB24,
-            SWS_FAST_BILINEAR, nullptr, nullptr, nullptr);
+            SWS_BICUBIC | SWS_ACCURATE_RND, nullptr, nullptr, nullptr);
     }
 
     if (!m_sws_ctx) return;

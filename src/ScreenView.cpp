@@ -152,13 +152,17 @@ void ScreenView::paintEvent(QPaintEvent*) {
         updateTargetRect();
     }
 
-    painter.setRenderHint(QPainter::SmoothPixmapTransform);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
     if (m_rotation != 0) {
         painter.save();
         painter.translate(m_target_rect.center());
         painter.rotate(m_rotation);
-        painter.drawImage(QRect(-m_target_rect.width() / 2, -m_target_rect.height() / 2,
-                                m_target_rect.width(), m_target_rect.height()), m_image);
+
+        int dw = (m_rotation % 180 != 0) ? m_target_rect.height() : m_target_rect.width();
+        int dh = (m_rotation % 180 != 0) ? m_target_rect.width() : m_target_rect.height();
+
+        painter.drawImage(QRect(-dw / 2, -dh / 2, dw, dh), m_image);
         painter.restore();
     } else {
         painter.drawImage(m_target_rect, m_image);

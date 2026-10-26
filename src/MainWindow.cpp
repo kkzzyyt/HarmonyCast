@@ -1227,11 +1227,14 @@ QWidget* MainWindow::buildWorkspacePage() {
     controls->addWidget(m_stop_btn);
 
     m_quality_combo = new QComboBox();
-    m_quality_combo->addItems({"标准 (4M)", "流畅 (1.5M)", "超清 (8M)"});
-    m_quality_combo->setToolTip("投屏画质：1080P 完整全屏，支持动态调节视频流码率");
+    m_quality_combo->addItems({"超清原画 (20M)", "超清 1080P (12M)", "高清 720P (6M)", "流畅 (2.5M)"});
+    m_quality_combo->setToolTip("投屏画质：支持动态调节视频流码率 (默认 12M 超清)");
     m_quality_combo->setFixedHeight(28);
-    m_quality_combo->setFixedWidth(112);
-    IconManager::setupComboBoxPopup(m_quality_combo, 112);
+    m_quality_combo->setFixedWidth(136);
+    IconManager::setupComboBoxPopup(m_quality_combo, 136);
+    int savedQuality = m_settings->value("mirror_quality_idx", 1).toInt();
+    m_bitrate_idx = std::clamp(savedQuality, 0, 3);
+    m_quality_combo->setCurrentIndex(m_bitrate_idx);
     connect(m_quality_combo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &MainWindow::onQualityChanged);
     controls->addWidget(m_quality_combo);
 
@@ -2561,8 +2564,8 @@ void MainWindow::startMirror() {
     // Wake up device screen asynchronously
     m_hdc->wakeupAsync(s);
 
-    int bitrates[] = {4000000, 1500000, 8000000};
-    int br = bitrates[m_bitrate_idx];
+    int bitrates[] = {20000000, 12000000, 6000000, 2500000};
+    int br = bitrates[std::clamp(m_bitrate_idx, 0, 3)];
 
     Device dev;
     dev.serial = s;
@@ -2654,9 +2657,10 @@ void MainWindow::stopMirror(bool userInitiated) {
 }
 
 void MainWindow::onQualityChanged(int index) {
-    m_bitrate_idx = std::clamp(index, 0, 2);
+    m_bitrate_idx = std::clamp(index, 0, 3);
+    m_settings->setValue("mirror_quality_idx", m_bitrate_idx);
     if (m_stream) {
-        int bitrates[] = {4000000, 1500000, 8000000};
+        int bitrates[] = {20000000, 12000000, 6000000, 2500000};
         m_stream->setBitrate(bitrates[m_bitrate_idx]);
     }
 }

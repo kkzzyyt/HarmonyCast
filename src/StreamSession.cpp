@@ -195,7 +195,7 @@ void StreamSession::tryConnectSocket(int attempt, uint64_t gen) {
         return;
     }
 
-    if (attempt >= 4) {
+    if (attempt >= 8) {
         emit statusChanged("硬件采屏未响应，自动切换为兼容快照流 (snapshot_display)…");
         startSnapshotFallback();
         return;
