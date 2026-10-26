@@ -16,7 +16,8 @@ rm -rf "$STAGING_DIR"
 mkdir -p "$STAGING_DIR"
 cp -R "build/HarmonyCast.app" "$STAGING_DIR/"
 
-DMG_OUTPUT="build/HarmonyCast-2.1.1-macOS-arm64.dmg"
+VERSION=$(grep -m1 "project(HarmonyCast VERSION" CMakeLists.txt | sed -E 's/.*VERSION ([0-9.]+).*/\1/')
+DMG_OUTPUT="build/HarmonyCast-${VERSION}-macOS-arm64.dmg"
 rm -f "$DMG_OUTPUT"
 
 echo "=== 4. Creating fancy DMG with create-dmg ==="

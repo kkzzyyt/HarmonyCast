@@ -427,7 +427,7 @@ void test_update_checker() {
 
     // 2. Ignore version logic
     UpdateChecker checker;
-    assert(checker.currentVersion() == "2.1.1");
+    assert(checker.currentVersion() == "2.1.2");
 
     checker.ignoreVersion("2.2.0");
     assert(checker.isVersionIgnored("2.2.0"));
