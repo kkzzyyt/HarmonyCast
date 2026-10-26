@@ -110,9 +110,9 @@ private slots:
     void copyHdcOutput();
     void exportHdcOutput();
 
-    // Diagnostics & Crash Recovery
+    // Diagnostics & Settings
+    void openSettingsDialog();
     void checkPreviousCrash();
-    void openDiagnosticsMenu();
     void exportDiagnosticBundle();
     void showCrashReportDialog(const QString& report);
 
@@ -175,7 +175,6 @@ private:
     QPushButton* m_refresh_btn{nullptr};
     QPushButton* m_disconnect_btn{nullptr};
     QPushButton* m_device_hub_btn{nullptr};
-    QPushButton* m_diagnostics_btn{nullptr};
 
     // UI: Main Stack
     QStackedWidget* m_pages{nullptr};

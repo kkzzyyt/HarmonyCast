@@ -14,6 +14,7 @@
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QGridLayout>
+#include <QGroupBox>
 #include <QScrollArea>
 #include <QFileDialog>
 #include <QMessageBox>
@@ -159,41 +160,7 @@ void MainWindow::setupUi() {
     bottom_box->addWidget(version_label, 1);
 
     m_settings_btn = IconManager::iconButton("settings", "系统设置", "IconBtnSettings", 30, 30);
-    connect(m_settings_btn, &QPushButton::clicked, this, [this] {
-        auto* dlg = new QDialog(this);
-        dlg->setWindowTitle("系统偏好设置 · HarmonyCast");
-        dlg->resize(450, 260);
-        auto* l = new QVBoxLayout(dlg);
-        l->setSpacing(12);
-
-        auto* cb_auto = new QCheckBox("连接设备后默认自动开启投屏", dlg);
-        cb_auto->setChecked(m_auto_start_mirror);
-        cb_auto->setStyleSheet("color: #e6edf3; font-size: 13px; font-weight: 500;");
-        l->addWidget(cb_auto);
-
-        auto* hint = IconManager::label("开启后，插拔 USB 或通过网络直连设备时，将自动建立连接并启动投屏。", "Muted");
-        hint->setWordWrap(true);
-        l->addWidget(hint);
-
-        l->addSpacing(8);
-        auto* engine_info = IconManager::label("投屏引擎: 高性能 C++20 + Qt6 原生引擎\n画面支持: 硬件加速 (VideoToolbox/D3D11) + 自动快照流降级 (snapshot_display)", "Muted");
-        engine_info->setWordWrap(true);
-        l->addWidget(engine_info);
-
-        l->addStretch();
-        auto* btn_box = new QHBoxLayout();
-        btn_box->addStretch();
-        auto* btn_ok = IconManager::button("确定", "Primary");
-        connect(btn_ok, &QPushButton::clicked, dlg, [this, cb_auto, dlg]() {
-            m_auto_start_mirror = cb_auto->isChecked();
-            m_settings->setValue("auto_start_mirror", m_auto_start_mirror);
-            dlg->accept();
-            showToast(QString("设置已保存: %1").arg(m_auto_start_mirror ? "自动开启投屏" : "手动开启投屏"));
-        });
-        btn_box->addWidget(btn_ok);
-        l->addLayout(btn_box);
-        dlg->exec();
-    });
+    connect(m_settings_btn, &QPushButton::clicked, this, &MainWindow::openSettingsDialog);
     bottom_box->addWidget(m_settings_btn, 0, Qt::AlignVCenter);
     side->addLayout(bottom_box);
 
@@ -306,12 +273,6 @@ void MainWindow::setupUi() {
     m_device_hub_btn->setToolTip("设备维护中心：查看在线 targets、快速网络连接管理 (固定端口 8710)");
     connect(m_device_hub_btn, &QPushButton::clicked, this, &MainWindow::openDeviceCenter);
     heading->addWidget(m_device_hub_btn);
-
-    m_diagnostics_btn = IconManager::button("排查日志", "", "export");
-    m_diagnostics_btn->setFixedHeight(28);
-    m_diagnostics_btn->setToolTip("查看/导出排查诊断日志与崩溃报告");
-    connect(m_diagnostics_btn, &QPushButton::clicked, this, &MainWindow::openDiagnosticsMenu);
-    heading->addWidget(m_diagnostics_btn);
 
     content->addWidget(m_header);
 
@@ -3898,33 +3859,125 @@ void MainWindow::checkPreviousCrash() {
     }
 }
 
-void MainWindow::openDiagnosticsMenu() {
-    QMenu menu(this);
-    menu.setStyleSheet(
-        "QMenu { background: #0e1724; border: 1px solid #1e2c3d; border-radius: 6px; padding: 4px; } "
-        "QMenu::item { color: #dbe5ee; padding: 6px 14px; border-radius: 4px; font-size: 12px; } "
-        "QMenu::item:selected { background: #1c324c; color: #5ce0c1; }"
+void MainWindow::openSettingsDialog() {
+    auto* dlg = new QDialog(this);
+    dlg->setWindowTitle("系统偏好设置 · HarmonyCast");
+    dlg->resize(560, 480);
+    dlg->setStyleSheet(
+        "QDialog { background: #0c1219; color: #dbe5ee; } "
+        "QGroupBox { font-weight: bold; font-size: 13px; color: #5ce0c1; border: 1px solid #1c2b3d; border-radius: 6px; margin-top: 12px; padding-top: 12px; background: #090e15; } "
+        "QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 4px; } "
+        "QCheckBox { color: #dbe5ee; font-size: 13px; } "
+        "QLabel { color: #8ba2b9; font-size: 12px; }"
     );
 
-    auto* actExport = menu.addAction(IconManager::getIcon("export"), "一键导出排查诊断包 (.zip)...");
-    auto* actOpenFolder = menu.addAction(IconManager::getIcon("hub"), "打开日志存储目录 (Finder)...");
-    menu.addSeparator();
+    auto* l = new QVBoxLayout(dlg);
+    l->setContentsMargins(18, 16, 18, 16);
+    l->setSpacing(14);
 
+    // 1. 投屏通用设置
+    auto* grpGeneral = new QGroupBox("投屏偏好设置", dlg);
+    auto* gLayout = new QVBoxLayout(grpGeneral);
+    gLayout->setContentsMargins(14, 14, 14, 14);
+    gLayout->setSpacing(8);
+
+    auto* cb_auto = new QCheckBox("连接设备后默认自动开启投屏", grpGeneral);
+    cb_auto->setChecked(m_auto_start_mirror);
+    gLayout->addWidget(cb_auto);
+
+    auto* hint = IconManager::label("开启后，插拔 USB 或通过网络直连设备时，将自动建立连接并启动投屏。", "Muted");
+    hint->setWordWrap(true);
+    gLayout->addWidget(hint);
+
+    bool autoUpdate = m_settings->value("auto_check_update", true).toBool();
+    auto* cb_update = new QCheckBox("启动时自动检查最新版本更新", grpGeneral);
+    cb_update->setChecked(autoUpdate);
+    gLayout->addWidget(cb_update);
+
+    l->addWidget(grpGeneral);
+
+    // 2. 日志排查与崩溃日志 (重点区域)
+    auto* grpDiag = new QGroupBox("排查诊断与崩溃日志", dlg);
+    auto* dLayout = new QVBoxLayout(grpDiag);
+    dLayout->setContentsMargins(14, 14, 14, 14);
+    dLayout->setSpacing(10);
+
+    // 日志路径行
+    auto* pathRow = new QHBoxLayout();
+    QString logDir = Logger::logDirectory();
+    auto* lblPath = new QLabel(QString("日志目录: %1").arg(logDir));
+    lblPath->setStyleSheet("color: #7d8f9f; font-family: 'Menlo', monospace; font-size: 11px;");
+    pathRow->addWidget(lblPath, 1);
+
+    auto* btnOpenDir = IconManager::button("打开目录", "", "hub");
+    btnOpenDir->setFixedHeight(26);
+    btnOpenDir->setToolTip("在 Finder 文件管理器中查看当前运行日志及历史归档");
+    connect(btnOpenDir, &QPushButton::clicked, this, []{ Logger::openLogDirectory(); });
+    pathRow->addWidget(btnOpenDir);
+    dLayout->addLayout(pathRow);
+
+    // 崩溃日志状态行
+    auto* crashRow = new QHBoxLayout();
     QString latestCrash = CrashHandler::latestCrashReportPath();
-    auto* actViewCrash = menu.addAction(IconManager::getIcon("clear"), "查看最近崩溃报告...");
-    if (latestCrash.isEmpty()) {
-        actViewCrash->setEnabled(false);
-        actViewCrash->setText("查看最近崩溃报告 (无崩溃记录)");
-    }
+    QLabel* lblCrashStatus = nullptr;
+    QPushButton* btnViewCrash = nullptr;
 
-    QAction* selected = menu.exec(m_diagnostics_btn->mapToGlobal(QPoint(0, m_diagnostics_btn->height() + 4)));
-    if (selected == actExport) {
-        exportDiagnosticBundle();
-    } else if (selected == actOpenFolder) {
-        Logger::openLogDirectory();
-    } else if (selected == actViewCrash) {
-        showCrashReportDialog(CrashHandler::readLatestCrashReport());
+    if (!latestCrash.isEmpty()) {
+        lblCrashStatus = new QLabel(QString("⚠️ 检测到异常退出报告: %1").arg(QFileInfo(latestCrash).fileName()));
+        lblCrashStatus->setStyleSheet("color: #ff9f9f; font-weight: 500; font-size: 12px;");
+        btnViewCrash = IconManager::button("查看崩溃堆栈", "Danger", "clear");
+        btnViewCrash->setFixedHeight(26);
+        connect(btnViewCrash, &QPushButton::clicked, this, [this]{
+            showCrashReportDialog(CrashHandler::readLatestCrashReport());
+        });
+    } else {
+        lblCrashStatus = new QLabel("✓ 运行状态良好，暂无异常退出记录");
+        lblCrashStatus->setStyleSheet("color: #5ce0c1; font-size: 12px;");
     }
+    crashRow->addWidget(lblCrashStatus, 1);
+    if (btnViewCrash) {
+        crashRow->addWidget(btnViewCrash);
+    }
+    dLayout->addLayout(crashRow);
+
+    // 导出诊断包行
+    auto* exportRow = new QHBoxLayout();
+    auto* lblExportHint = new QLabel("可将运行日志、崩溃报告及设备环境一键打包为 zip 反馈给开发人员排查。");
+    lblExportHint->setStyleSheet("color: #63778a; font-size: 11px;");
+    lblExportHint->setWordWrap(true);
+    exportRow->addWidget(lblExportHint, 1);
+
+    auto* btnExportZip = IconManager::button("导出诊断包 (.zip)", "Primary", "export");
+    btnExportZip->setFixedHeight(26);
+    connect(btnExportZip, &QPushButton::clicked, this, [this]{
+        exportDiagnosticBundle();
+    });
+    exportRow->addWidget(btnExportZip);
+    dLayout->addLayout(exportRow);
+
+    l->addWidget(grpDiag);
+
+    // 3. 底栏确定/取消按钮
+    l->addStretch();
+    auto* btn_box = new QHBoxLayout();
+    btn_box->addStretch();
+    auto* btn_close = IconManager::button("关闭", "");
+    connect(btn_close, &QPushButton::clicked, dlg, &QDialog::reject);
+    btn_box->addWidget(btn_close);
+
+    auto* btn_save = IconManager::button("保存设置", "Primary");
+    connect(btn_save, &QPushButton::clicked, dlg, [this, cb_auto, cb_update, dlg]() {
+        m_auto_start_mirror = cb_auto->isChecked();
+        m_settings->setValue("auto_start_mirror", m_auto_start_mirror);
+        m_settings->setValue("auto_check_update", cb_update->isChecked());
+        dlg->accept();
+        showToast("偏好设置已保存");
+    });
+    btn_box->addWidget(btn_save);
+
+    l->addLayout(btn_box);
+    dlg->exec();
+    dlg->deleteLater();
 }
 
 void MainWindow::exportDiagnosticBundle() {
