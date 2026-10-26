@@ -38,7 +38,11 @@ void ScreenView::updateFrame(const DecodedFrame& frame) {
     if (frame.data.empty()) return;
 
     QImage::Format fmt = QImage::Format_RGB888;
-    if (frame.stride == frame.width * 4 || frame.format == 12 || frame.format == 26) {
+    if (frame.format == 4) {
+        fmt = QImage::Format_RGB32;
+    } else if (frame.format == 5 || frame.format == 6) {
+        fmt = QImage::Format_ARGB32_Premultiplied;
+    } else if (frame.stride == frame.width * 4 || frame.format == 12 || frame.format == 26) {
         fmt = QImage::Format_RGBA8888;
     }
 
@@ -159,10 +163,10 @@ void ScreenView::paintEvent(QPaintEvent*) {
         painter.translate(m_target_rect.center());
         painter.rotate(m_rotation);
 
-        int dw = (m_rotation % 180 != 0) ? m_target_rect.height() : m_target_rect.width();
-        int dh = (m_rotation % 180 != 0) ? m_target_rect.width() : m_target_rect.height();
+        double dw = (m_rotation % 180 != 0) ? m_target_rect.height() : m_target_rect.width();
+        double dh = (m_rotation % 180 != 0) ? m_target_rect.width() : m_target_rect.height();
 
-        painter.drawImage(QRect(-dw / 2, -dh / 2, dw, dh), m_image);
+        painter.drawImage(QRectF(-dw / 2.0, -dh / 2.0, dw, dh), m_image);
         painter.restore();
     } else {
         painter.drawImage(m_target_rect, m_image);

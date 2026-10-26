@@ -1232,7 +1232,7 @@ QWidget* MainWindow::buildWorkspacePage() {
     m_quality_combo->setFixedHeight(28);
     m_quality_combo->setFixedWidth(136);
     IconManager::setupComboBoxPopup(m_quality_combo, 136);
-    int savedQuality = m_settings->value("mirror_quality_idx", 1).toInt();
+    int savedQuality = m_settings->value("mirror_quality_idx", 0).toInt();
     m_bitrate_idx = std::clamp(savedQuality, 0, 3);
     m_quality_combo->setCurrentIndex(m_bitrate_idx);
     connect(m_quality_combo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &MainWindow::onQualityChanged);
@@ -2659,9 +2659,31 @@ void MainWindow::stopMirror(bool userInitiated) {
 void MainWindow::onQualityChanged(int index) {
     m_bitrate_idx = std::clamp(index, 0, 3);
     m_settings->setValue("mirror_quality_idx", m_bitrate_idx);
-    if (m_stream) {
-        int bitrates[] = {20000000, 12000000, 6000000, 2500000};
-        m_stream->setBitrate(bitrates[m_bitrate_idx]);
+    int bitrates[] = {20000000, 12000000, 6000000, 2500000};
+    int br = bitrates[m_bitrate_idx];
+
+    QString qualityName = (m_quality_combo ? m_quality_combo->currentText() : QString::number(br / 1000000) + "M");
+
+    if (m_projecting && m_stream) {
+        m_stream->setBitrate(br);
+        if (!m_stream->isFallbackSnapshot()) {
+            showToast(QString("正在实时热重载视频流码率: %1…").arg(qualityName));
+            statusBar()->showMessage(QString("正在实时热重载视频流码率: %1…").arg(qualityName), 3000);
+            m_stream->start();
+        } else {
+            QString tierDesc;
+            if (br >= 12000000) {
+                tierDesc = "原生原画 (1080P 点对点无损输出，最高清晰度)";
+            } else if (br >= 6000000) {
+                tierDesc = "高清 720P (720x1280 缩放传输，降低延迟)";
+            } else {
+                tierDesc = "流畅 540P (540x960 极速传输，极限流畅)";
+            }
+            showToast(QString("快照流画质已实时切换: %1\n%2").arg(qualityName, tierDesc));
+            statusBar()->showMessage(QString("兼容快照流: 已实时应用 %1 (%2)").arg(qualityName, tierDesc), 4000);
+        }
+    } else {
+        showToast(QString("已设置默认画质: %1").arg(qualityName));
     }
 }
 

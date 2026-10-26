@@ -16,6 +16,8 @@ namespace harmonycast {
 
 struct SnapshotWorkerContext {
     std::atomic<bool> cancelled{false};
+    std::atomic<int> target_width{0};
+    std::atomic<int> target_height{0};
     std::shared_ptr<HdcClient> hdc;
     std::string serial;
     uintptr_t session_id{0};
@@ -42,7 +44,8 @@ public:
     [[nodiscard]] int deviceHeight() const { return m_dev_height; }
     [[nodiscard]] bool isFallbackSnapshot() const { return m_fallback_snapshot; }
 
-    void setBitrate(int b) { m_bitrate = b; }
+    void setBitrate(int b);
+    void updateSnapshotTargetSize();
     void setFps(int f) { m_fps = f; }
 
 signals:
