@@ -2,6 +2,7 @@
 #include <QProcess>
 #include <QStandardPaths>
 #include <QFileInfo>
+#include <QFile>
 #include <QDir>
 #include <QRegularExpression>
 #include <QCoreApplication>
@@ -19,13 +20,38 @@ HdcClient::HdcClient(std::string hdc_path)
 }
 
 std::string HdcClient::findHdc() {
-    // 1. Check PATH
+    // 1. First priority: Check bundled hdc inside App Bundle Resources or adjacent resources directory
+    QString appDir = QCoreApplication::applicationDirPath();
+    std::vector<QString> bundled_candidates = {
+        appDir + "/../Resources/hdc/hdc",
+        appDir + "/../Resources/resources/hdc/hdc",
+        appDir + "/../Resources/hdc",
+        appDir + "/hdc/hdc",
+        appDir + "/hdc",
+        QDir::currentPath() + "/resources/hdc/hdc"
+    };
+
+    for (const auto& path : bundled_candidates) {
+        if (QFileInfo::exists(path)) {
+            QFileInfo fi(path);
+            if (!fi.isExecutable()) {
+                QFile::setPermissions(path, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner |
+                                            QFile::ReadGroup | QFile::ExeGroup |
+                                            QFile::ReadOther | QFile::ExeOther);
+            }
+            if (QFileInfo(path).isExecutable()) {
+                return QFileInfo(path).canonicalFilePath().toStdString();
+            }
+        }
+    }
+
+    // 2. Check system PATH
     QString in_path = QStandardPaths::findExecutable("hdc");
     if (!in_path.isEmpty()) {
         return in_path.toStdString();
     }
 
-    // 2. Common DevEco Studio / OpenHarmony SDK paths
+    // 3. Common DevEco Studio / OpenHarmony SDK paths
     std::vector<QString> candidates = {
         QDir::homePath() + "/Library/OpenHarmony/Sdk/toolchains/hdc",
         QDir::homePath() + "/Library/Huawei/Sdk/openharmony/toolchains/hdc",
