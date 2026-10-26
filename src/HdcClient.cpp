@@ -28,7 +28,12 @@ std::string HdcClient::findHdc() {
         appDir + "/../Resources/hdc",
         appDir + "/hdc/hdc",
         appDir + "/hdc",
-        QDir::currentPath() + "/resources/hdc/hdc"
+        QDir::currentPath() + "/resources/hdc/hdc",
+        appDir + "/hdc.exe",
+        appDir + "/hdc/hdc.exe",
+        appDir + "/resources/hdc/hdc.exe",
+        QDir::currentPath() + "/hdc.exe",
+        QDir::currentPath() + "/resources/hdc/hdc.exe"
     };
 
     for (const auto& path : bundled_candidates) {
@@ -57,7 +62,9 @@ std::string HdcClient::findHdc() {
         QDir::homePath() + "/Library/Huawei/Sdk/openharmony/toolchains/hdc",
         "/Applications/DevEco-Studio.app/Contents/tools/ohos-sdk/toolchains/hdc",
         "/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/toolchains/hdc",
-        "C:/Users/" + QDir::home().dirName() + "/AppData/Local/OpenHarmony/Sdk/toolchains/hdc.exe",
+        QDir::homePath() + "/AppData/Local/OpenHarmony/Sdk/toolchains/hdc.exe",
+        QDir::homePath() + "/AppData/Local/Huawei/Sdk/openharmony/toolchains/hdc.exe",
+        "C:/Program Files/Huawei/DevEco Studio/sdk/default/openharmony/toolchains/hdc.exe",
         "D:/Program Files/Huawei/DevEco Studio/sdk/default/openharmony/toolchains/hdc.exe"
     };
 
