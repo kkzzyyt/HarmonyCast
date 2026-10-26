@@ -240,7 +240,6 @@ private:
     QLineEdit* m_search_input{nullptr};
     QCheckBox* m_autoscroll_cb{nullptr};
     QCheckBox* m_pause_cb{nullptr};
-    QCheckBox* m_only_errors_cb{nullptr};
     QPushButton* m_clear_log_btn{nullptr};
     QPushButton* m_export_log_btn{nullptr};
     QPlainTextEdit* m_log_view{nullptr};

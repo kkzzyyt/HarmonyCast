@@ -1417,7 +1417,7 @@ QWidget* MainWindow::buildHiLogWidget() {
     // Row 2: Stream Controls & Action Buttons
     auto* row2 = new QHBoxLayout();
     row2->setContentsMargins(0, 0, 0, 0);
-    row2->setSpacing(12);
+    row2->setSpacing(20);
 
     m_autoscroll_cb = new QCheckBox("自动滚动");
     m_autoscroll_cb->setChecked(true);
@@ -1433,16 +1433,9 @@ QWidget* MainWindow::buildHiLogWidget() {
         if (!paused) renderHiLog();
     });
 
-    m_only_errors_cb = new QCheckBox("仅看错误");
-    m_only_errors_cb->setToolTip("一键仅显示 ERROR 和 FATAL 级别日志");
-    m_only_errors_cb->setFixedHeight(26);
-    m_only_errors_cb->setCursor(Qt::PointingHandCursor);
-    m_only_errors_cb->setStyleSheet("QCheckBox { color: #ff9f9f; font-weight: 500; } QCheckBox:hover { color: #ffb8b8; }");
-    connect(m_only_errors_cb, &QCheckBox::toggled, this, &MainWindow::renderHiLog);
-
     row2->addWidget(m_autoscroll_cb);
+    row2->addSpacing(8);
     row2->addWidget(m_pause_cb);
-    row2->addWidget(m_only_errors_cb);
 
     row2->addStretch(1);
 
@@ -1610,7 +1603,7 @@ QWidget* MainWindow::buildWebViewPanel() {
     // Row 2: Controls & Actions (Generous spacing & breathing room)
     auto* wv_row2 = new QHBoxLayout();
     wv_row2->setContentsMargins(0, 0, 0, 0);
-    wv_row2->setSpacing(12);
+    wv_row2->setSpacing(20);
 
     m_wv_autoscroll = new QCheckBox("自动滚动");
     m_wv_autoscroll->setChecked(true);
@@ -1622,6 +1615,7 @@ QWidget* MainWindow::buildWebViewPanel() {
     m_wv_pause->setCursor(Qt::PointingHandCursor);
 
     wv_row2->addWidget(m_wv_autoscroll);
+    wv_row2->addSpacing(8);
     wv_row2->addWidget(m_wv_pause);
 
     wv_row2->addStretch(1);
@@ -3006,10 +3000,6 @@ void MainWindow::exportFaultReport() {
 // HiLog Management
 // ==========================================
 bool MainWindow::isLogMatch(const HiLogEntry& e, const QString& filterPkg, const QString& filterLvl, const QString& query) const {
-    if (m_only_errors_cb && m_only_errors_cb->isChecked()) {
-        if (e.level != LogLevel::Error && e.level != LogLevel::Fatal) return false;
-    }
-
     if (!filterLvl.isEmpty()) {
         if (QString::fromStdString(e.levelString()) != filterLvl) return false;
     }
