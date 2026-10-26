@@ -1439,6 +1439,10 @@ QWidget* MainWindow::buildHiLogWidget() {
 
     row2->addStretch(1);
 
+    auto* hilog_btn_box = new QHBoxLayout();
+    hilog_btn_box->setContentsMargins(0, 0, 0, 0);
+    hilog_btn_box->setSpacing(6);
+
     m_clear_log_btn = IconManager::button("清空", "", "clear");
     m_clear_log_btn->setFixedHeight(26);
     m_clear_log_btn->setToolTip("清空当前所有日志缓存 (快捷键: ⌘ K)");
@@ -1449,8 +1453,9 @@ QWidget* MainWindow::buildHiLogWidget() {
     m_export_log_btn->setToolTip("导出当前筛选日志到本地文本文件");
     connect(m_export_log_btn, &QPushButton::clicked, this, &MainWindow::exportHiLog);
 
-    row2->addWidget(m_clear_log_btn);
-    row2->addWidget(m_export_log_btn);
+    hilog_btn_box->addWidget(m_clear_log_btn);
+    hilog_btn_box->addWidget(m_export_log_btn);
+    row2->addLayout(hilog_btn_box);
 
     tb_vlayout->addLayout(row2);
     log_layout->addWidget(toolbar_frame);
@@ -1602,25 +1607,23 @@ QWidget* MainWindow::buildWebViewPanel() {
 
     wv_tb_vlayout->addLayout(wv_row1);
 
-    // Row 2: Controls & Actions (Generous spacing & breathing room)
-    auto* wv_row2 = new QHBoxLayout();
-    wv_row2->setContentsMargins(0, 0, 0, 0);
-    wv_row2->setSpacing(20);
+    // Row 2: Controls & Actions (FlowLayout allows seamless multi-row wrapping when narrow)
+    auto* wv_row2_widget = new QWidget();
+    auto* wv_row2 = new FlowLayout(wv_row2_widget, 0, 6, 6);
 
     m_wv_autoscroll = new QCheckBox("自动滚动");
     m_wv_autoscroll->setChecked(true);
     m_wv_autoscroll->setFixedHeight(26);
     m_wv_autoscroll->setCursor(Qt::PointingHandCursor);
+    m_wv_autoscroll->setStyleSheet("QCheckBox { margin-right: 6px; }");
 
     m_wv_pause = new QCheckBox("暂停刷新");
     m_wv_pause->setFixedHeight(26);
     m_wv_pause->setCursor(Qt::PointingHandCursor);
+    m_wv_pause->setStyleSheet("QCheckBox { margin-right: 12px; }");
 
     wv_row2->addWidget(m_wv_autoscroll);
-    wv_row2->addSpacing(8);
     wv_row2->addWidget(m_wv_pause);
-
-    wv_row2->addStretch(1);
 
     auto* btn_refresh_wv = IconManager::button("重新检测", "", "refresh");
     btn_refresh_wv->setFixedHeight(26);
@@ -1631,6 +1634,7 @@ QWidget* MainWindow::buildWebViewPanel() {
     m_wv_clear_btn = IconManager::button("清空", "", "clear");
     m_wv_clear_btn->setFixedHeight(26);
     connect(m_wv_clear_btn, &QPushButton::clicked, this, &MainWindow::clearWebViewConsole);
+    wv_row2->addWidget(m_wv_clear_btn);
 
     m_wv_export_btn = IconManager::button("导出日志", "", "export");
     m_wv_export_btn->setFixedHeight(26);
@@ -1645,17 +1649,15 @@ QWidget* MainWindow::buildWebViewPanel() {
             }
         }
     });
+    wv_row2->addWidget(m_wv_export_btn);
 
     m_wv_chrome_btn = IconManager::button("Chrome DevTools", "", "chrome");
     m_wv_chrome_btn->setFixedHeight(26);
     m_wv_chrome_btn->setToolTip("在系统 Chrome 浏览器中打开 DevTools 调试");
     connect(m_wv_chrome_btn, &QPushButton::clicked, this, &MainWindow::openChromeInspect);
-
-    wv_row2->addWidget(m_wv_clear_btn);
-    wv_row2->addWidget(m_wv_export_btn);
     wv_row2->addWidget(m_wv_chrome_btn);
 
-    wv_tb_vlayout->addLayout(wv_row2);
+    wv_tb_vlayout->addWidget(wv_row2_widget);
     layout->addWidget(wv_toolbar_container);
 
     m_wv_right_stack = new QStackedWidget();
