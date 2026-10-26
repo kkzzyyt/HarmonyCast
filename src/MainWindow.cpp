@@ -2689,7 +2689,8 @@ void MainWindow::saveScreenshot() {
     QString dest = destDir + "/" + filename;
 
     auto onSaveSuccess = [this, dest, destDir]() {
-        showToast(QString("截图已保存: %1").arg(QFileInfo(dest).fileName()));
+        HC_LOG_INFO(QString("Screenshot saved successfully to %1").arg(dest));
+        showToast(QString("截图已保存至: %1").arg(dest));
         statusBar()->showMessage(QString("截图成功保存至: %1").arg(dest), 6000);
 
 #ifdef Q_OS_MAC
@@ -2698,15 +2699,55 @@ void MainWindow::saveScreenshot() {
         QDesktopServices::openUrl(QUrl::fromLocalFile(destDir));
 #endif
 
-        int ret = QMessageBox::information(
-            this,
-            "截图保存成功",
-            QString("设备屏幕高清截图已成功保存至本地目录:\n%1\n\n已自动打开所在文件夹定位该文件，是否重新打开？").arg(dest),
-            QMessageBox::Open | QMessageBox::Ok
-        );
-        if (ret == QMessageBox::Open) {
+        auto* dlg = new QDialog(this);
+        dlg->setWindowTitle("截图保存成功 · HarmonyCast");
+        dlg->setFixedWidth(520);
+        dlg->setStyleSheet("QDialog { background: #0c1219; color: #dbe5ee; }");
+        auto* l = new QVBoxLayout(dlg);
+        l->setContentsMargins(20, 20, 20, 16);
+        l->setSpacing(12);
+
+        auto* title = IconManager::label("设备屏幕截图已保存", "CardTitle");
+        title->setStyleSheet("font-size: 15px; font-weight: bold; color: #5ce0c1;");
+        l->addWidget(title);
+
+        auto* desc = IconManager::label("截图文件已成功保存到本地目录，并已在访达 (Finder) 中自动定位该文件：", "Muted");
+        desc->setWordWrap(true);
+        l->addWidget(desc);
+
+        auto* path_edit = new QLineEdit(dest, dlg);
+        path_edit->setReadOnly(true);
+        path_edit->setStyleSheet("QLineEdit { background: #070c13; color: #8ee2ff; border: 1px solid #233446; border-radius: 4px; padding: 6px 8px; font-family: 'Menlo', monospace; font-size: 12px; }");
+        l->addWidget(path_edit);
+
+        auto* btn_bar = new QHBoxLayout();
+        auto* btn_copy = IconManager::button("复制路径", "", "copy");
+        connect(btn_copy, &QPushButton::clicked, dlg, [this, dest]{
+            copyToClipboard(dest, "截图本地绝对路径");
+        });
+
+        auto* btn_open = IconManager::button("打开所在文件夹", "Primary", "folder");
+        connect(btn_open, &QPushButton::clicked, dlg, [dest, destDir]{
+#ifdef Q_OS_MAC
+            QProcess::startDetached("open", {"-R", dest});
+#else
             QDesktopServices::openUrl(QUrl::fromLocalFile(destDir));
-        }
+#endif
+        });
+
+        auto* btn_close = IconManager::button("完成", "");
+        connect(btn_close, &QPushButton::clicked, dlg, &QDialog::accept);
+
+        btn_bar->addWidget(btn_copy);
+        btn_bar->addWidget(btn_open);
+        btn_bar->addStretch();
+        btn_bar->addWidget(btn_close);
+        l->addLayout(btn_bar);
+
+        dlg->setAttribute(Qt::WA_DeleteOnClose);
+        dlg->show();
+        dlg->raise();
+        dlg->activateWindow();
     };
 
     if (m_projecting && m_screen && !m_screen->image().isNull()) {
