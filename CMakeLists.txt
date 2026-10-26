@@ -50,6 +50,8 @@ set(CORE_HEADERS
     include/harmonycast/WebViewDebugger.h
     include/harmonycast/NetworkDeviceDialog.h
     include/harmonycast/LogHighlighter.h
+    include/harmonycast/Logger.h
+    include/harmonycast/CrashHandler.h
     include/harmonycast/MainWindow.h
 )
 
@@ -68,6 +70,8 @@ set(CORE_SOURCES
     src/WebViewDebugger.cpp
     src/NetworkDeviceDialog.cpp
     src/LogHighlighter.cpp
+    src/Logger.cpp
+    src/CrashHandler.cpp
     src/MainWindow.cpp
 )
 

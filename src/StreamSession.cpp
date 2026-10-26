@@ -1,4 +1,5 @@
 #include "harmonycast/StreamSession.h"
+#include "harmonycast/Logger.h"
 #include <QTcpServer>
 #include <QThread>
 #include <QCoreApplication>
@@ -136,6 +137,7 @@ bool StreamSession::start() {
     stop();
     m_running = true;
     uint64_t current_gen = ++m_session_gen;
+    HC_LOG_INFO(QString("StreamSession starting for device %1 (fps=%2, bitrate=%3)").arg(QString::fromStdString(m_device.serial)).arg(m_fps).arg(m_bitrate));
     emit statusChanged("正在准备投屏服务…");
 
     m_local_port = pickFreePort();
@@ -216,6 +218,9 @@ void StreamSession::tryConnectSocket(int attempt, uint64_t gen) {
 }
 
 void StreamSession::stop() {
+    if (m_running) {
+        HC_LOG_INFO(QString("StreamSession stopped for %1").arg(QString::fromStdString(m_device.serial)));
+    }
     m_running = false;
     m_fallback_snapshot = false;
     m_session_gen++;
@@ -286,6 +291,7 @@ void StreamSession::onSocketDisconnected() {
 void StreamSession::startSnapshotFallback() {
     if (m_fallback_snapshot) return;
     m_fallback_snapshot = true;
+    HC_LOG_WARN(QString("StreamSession starting snapshot fallback mode for %1").arg(QString::fromStdString(m_device.serial)));
 
     if (m_snapshot_ctx) {
         m_snapshot_ctx->cancelled = true;

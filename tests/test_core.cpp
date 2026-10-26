@@ -3,6 +3,7 @@
 #include <vector>
 #include <string>
 #include <cstring>
+#include <QCoreApplication>
 #include "harmonycast/Types.h"
 #include "harmonycast/PacketDemuxer.h"
 #include "harmonycast/HiLogParser.h"
@@ -11,6 +12,10 @@
 #include "harmonycast/WebViewDebugger.h"
 #include "harmonycast/NetworkDeviceDialog.h"
 #include "harmonycast/HdcClient.h"
+#include "harmonycast/Logger.h"
+#include "harmonycast/CrashHandler.h"
+#include <QDir>
+#include <QFile>
 
 using namespace harmonycast;
 
@@ -318,7 +323,70 @@ void test_device_info_parsing() {
     std::cout << "[PASS] test_device_info_parsing passed!" << std::endl;
 }
 
-int main() {
+void test_logger_and_crash_handler() {
+    std::cout << "[RUN] test_logger_and_crash_handler..." << std::endl;
+
+    QString testDir = QDir::tempPath() + "/harmonycast_test_logs";
+    QDir(testDir).removeRecursively();
+
+    // 1. Initialize Logger
+    Logger::init(testDir);
+    assert(Logger::logDirectory() == testDir);
+
+    // 2. Write Logs
+    HC_LOG_INFO("Core unit test log line 1");
+    HC_LOG_WARN("Core unit test warning line 2");
+    HC_LOG_ERROR("Core unit test error line 3");
+
+    // 3. Verify in-memory recent logs
+    auto recent = Logger::getRecentLogs(10);
+    assert(recent.size() >= 3);
+    bool foundLine1 = false;
+    for (const auto& l : recent) {
+        if (l.contains("Core unit test log line 1")) foundLine1 = true;
+    }
+    assert(foundLine1);
+
+    // 4. Verify file write
+    QString logFile = Logger::currentLogFilePath();
+    assert(QFile::exists(logFile));
+    QFile f(logFile);
+    bool okOpen = f.open(QIODevice::ReadOnly | QIODevice::Text);
+    assert(okOpen);
+    QString content = QString::fromUtf8(f.readAll());
+    assert(content.contains("Core unit test log line 1"));
+    assert(content.contains("Core unit test warning line 2"));
+    f.close();
+
+    // 5. Verify CrashHandler setup and marker file logic
+    CrashHandler::install();
+    assert(!CrashHandler::hasCrashFromPreviousRun());
+
+    // Simulate crash marker file
+    QString markerPath = testDir + "/crashes/.unreviewed_crash";
+    QFile marker(markerPath);
+    bool okMarker = marker.open(QIODevice::WriteOnly);
+    assert(okMarker);
+    marker.write("test crash");
+    marker.close();
+
+    assert(CrashHandler::hasCrashFromPreviousRun());
+    CrashHandler::markCrashAsReviewed();
+    assert(!CrashHandler::hasCrashFromPreviousRun());
+
+    // 6. Test diagnostic bundle export
+    QString zipDest = testDir + "/bundle.zip";
+    QString bundlePath = Logger::exportDiagnosticBundle(zipDest);
+    assert(!bundlePath.isEmpty());
+    assert(QFile::exists(bundlePath));
+
+    Logger::shutdown();
+    QDir(testDir).removeRecursively();
+    std::cout << "[PASS] test_logger_and_crash_handler passed!" << std::endl;
+}
+
+int main(int argc, char* argv[]) {
+    QCoreApplication app(argc, argv);
     std::cout << "========================================" << std::endl;
     std::cout << "   HarmonyCast C++ Core Verification    " << std::endl;
     std::cout << "========================================" << std::endl;
@@ -330,6 +398,7 @@ int main() {
     test_webview_and_filters();
     test_network_devices_persistence();
     test_device_info_parsing();
+    test_logger_and_crash_handler();
 
     std::cout << "\n>>> ALL C++ CORE TESTS PASSED! <<<" << std::endl;
     return 0;

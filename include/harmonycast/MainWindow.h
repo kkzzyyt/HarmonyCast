@@ -110,6 +110,12 @@ private slots:
     void copyHdcOutput();
     void exportHdcOutput();
 
+    // Diagnostics & Crash Recovery
+    void checkPreviousCrash();
+    void openDiagnosticsMenu();
+    void exportDiagnosticBundle();
+    void showCrashReportDialog(const QString& report);
+
 protected:
     void keyPressEvent(QKeyEvent* event) override;
     bool eventFilter(QObject* watched, QEvent* event) override;
@@ -169,6 +175,7 @@ private:
     QPushButton* m_refresh_btn{nullptr};
     QPushButton* m_disconnect_btn{nullptr};
     QPushButton* m_device_hub_btn{nullptr};
+    QPushButton* m_diagnostics_btn{nullptr};
 
     // UI: Main Stack
     QStackedWidget* m_pages{nullptr};

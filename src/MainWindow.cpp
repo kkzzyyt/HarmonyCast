@@ -3,6 +3,8 @@
 #include "harmonycast/IconManager.h"
 #include "harmonycast/NetworkDeviceDialog.h"
 #include "harmonycast/LogHighlighter.h"
+#include "harmonycast/Logger.h"
+#include "harmonycast/CrashHandler.h"
 
 #include <unordered_set>
 
@@ -82,6 +84,8 @@ MainWindow::MainWindow(QWidget* parent)
 
     m_dev_mgr->startPolling(1500);
     switchModule(0);
+
+    QTimer::singleShot(800, this, &MainWindow::checkPreviousCrash);
 }
 
 MainWindow::~MainWindow() {
@@ -302,6 +306,12 @@ void MainWindow::setupUi() {
     m_device_hub_btn->setToolTip("设备维护中心：查看在线 targets、快速网络连接管理 (固定端口 8710)");
     connect(m_device_hub_btn, &QPushButton::clicked, this, &MainWindow::openDeviceCenter);
     heading->addWidget(m_device_hub_btn);
+
+    m_diagnostics_btn = IconManager::button("排查日志", "", "export");
+    m_diagnostics_btn->setFixedHeight(28);
+    m_diagnostics_btn->setToolTip("查看/导出排查诊断日志与崩溃报告");
+    connect(m_diagnostics_btn, &QPushButton::clicked, this, &MainWindow::openDiagnosticsMenu);
+    heading->addWidget(m_diagnostics_btn);
 
     content->addWidget(m_header);
 
@@ -3862,6 +3872,121 @@ void MainWindow::exportHdcOutput() {
             showToast("终端输出已导出");
         }
     }
+}
+
+void MainWindow::checkPreviousCrash() {
+    if (!CrashHandler::hasCrashFromPreviousRun()) return;
+
+    QString report = CrashHandler::readLatestCrashReport();
+    QMessageBox box(this);
+    box.setWindowTitle("异常退出检测 · HarmonyCast");
+    box.setIcon(QMessageBox::Warning);
+    box.setText("检测到 HarmonyCast 上次运行发生异常退出。");
+    box.setInformativeText("系统已自动收集崩溃调用栈与关键排查日志，您可以一键导出诊断包或直接查看崩溃堆栈。");
+
+    QPushButton* btnExport = box.addButton("导出排查诊断包", QMessageBox::AcceptRole);
+    QPushButton* btnView = box.addButton("查看崩溃堆栈", QMessageBox::ActionRole);
+    QPushButton* btnIgnore = box.addButton("忽略", QMessageBox::RejectRole);
+
+    box.exec();
+    CrashHandler::markCrashAsReviewed();
+
+    if (box.clickedButton() == btnExport) {
+        exportDiagnosticBundle();
+    } else if (box.clickedButton() == btnView) {
+        showCrashReportDialog(report);
+    }
+}
+
+void MainWindow::openDiagnosticsMenu() {
+    QMenu menu(this);
+    menu.setStyleSheet(
+        "QMenu { background: #0e1724; border: 1px solid #1e2c3d; border-radius: 6px; padding: 4px; } "
+        "QMenu::item { color: #dbe5ee; padding: 6px 14px; border-radius: 4px; font-size: 12px; } "
+        "QMenu::item:selected { background: #1c324c; color: #5ce0c1; }"
+    );
+
+    auto* actExport = menu.addAction(IconManager::getIcon("export"), "一键导出排查诊断包 (.zip)...");
+    auto* actOpenFolder = menu.addAction(IconManager::getIcon("hub"), "打开日志存储目录 (Finder)...");
+    menu.addSeparator();
+
+    QString latestCrash = CrashHandler::latestCrashReportPath();
+    auto* actViewCrash = menu.addAction(IconManager::getIcon("clear"), "查看最近崩溃报告...");
+    if (latestCrash.isEmpty()) {
+        actViewCrash->setEnabled(false);
+        actViewCrash->setText("查看最近崩溃报告 (无崩溃记录)");
+    }
+
+    QAction* selected = menu.exec(m_diagnostics_btn->mapToGlobal(QPoint(0, m_diagnostics_btn->height() + 4)));
+    if (selected == actExport) {
+        exportDiagnosticBundle();
+    } else if (selected == actOpenFolder) {
+        Logger::openLogDirectory();
+    } else if (selected == actViewCrash) {
+        showCrashReportDialog(CrashHandler::readLatestCrashReport());
+    }
+}
+
+void MainWindow::exportDiagnosticBundle() {
+    QString ts = QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss");
+    QString defaultPath = QDir::homePath() + QString("/Downloads/HarmonyCast_Diagnostics_%1.zip").arg(ts);
+    QString path = QFileDialog::getSaveFileName(this, "导出排查诊断包", defaultPath, "Zip Archive (*.zip);;All Files (*)");
+    if (path.isEmpty()) return;
+
+    QString resultPath = Logger::exportDiagnosticBundle(path);
+    if (!resultPath.isEmpty()) {
+        showToast("排查诊断包已导出: " + QFileInfo(resultPath).fileName());
+        statusBar()->showMessage("诊断包已成功导出至: " + resultPath, 6000);
+        QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(resultPath).absolutePath()));
+    } else {
+        showToast("导出诊断包失败");
+    }
+}
+
+void MainWindow::showCrashReportDialog(const QString& report) {
+    auto* dlg = new QDialog(this);
+    dlg->setWindowTitle("崩溃堆栈排查报告 · HarmonyCast");
+    dlg->resize(720, 520);
+    dlg->setStyleSheet(
+        "QDialog { background: #0c1219; color: #dbe5ee; } "
+        "QTextEdit { background: #070c13; color: #ff9f9f; border: 1px solid #233446; border-radius: 4px; font-family: 'Menlo', monospace; font-size: 12px; padding: 8px; }"
+    );
+
+    auto* layout = new QVBoxLayout(dlg);
+    layout->setContentsMargins(16, 16, 16, 16);
+    layout->setSpacing(12);
+
+    auto* hdr = new QLabel("崩溃堆栈快照 (请反馈给研发进行定位排查):");
+    hdr->setStyleSheet("font-size: 13px; font-weight: bold; color: #dbe5ee;");
+    layout->addWidget(hdr);
+
+    auto* view = new QTextEdit();
+    view->setReadOnly(true);
+    view->setPlainText(report.isEmpty() ? "未检测到崩溃日志内容" : report);
+    layout->addWidget(view, 1);
+
+    auto* btnBox = new QHBoxLayout();
+    btnBox->addStretch(1);
+
+    auto* btnCopy = IconManager::button("复制内容", "", "copy");
+    connect(btnCopy, &QPushButton::clicked, this, [this, report]{
+        copyToClipboard(report, "崩溃日志内容");
+    });
+    btnBox->addWidget(btnCopy);
+
+    auto* btnOpenFolder = IconManager::button("打开日志目录", "", "hub");
+    connect(btnOpenFolder, &QPushButton::clicked, this, []{
+        Logger::openLogDirectory();
+    });
+    btnBox->addWidget(btnOpenFolder);
+
+    auto* btnClose = IconManager::button("关闭", "Primary", "");
+    connect(btnClose, &QPushButton::clicked, dlg, &QDialog::accept);
+    btnBox->addWidget(btnClose);
+
+    layout->addLayout(btnBox);
+    dlg->exec();
+    dlg->deleteLater();
 }
 
 } // namespace harmonycast
