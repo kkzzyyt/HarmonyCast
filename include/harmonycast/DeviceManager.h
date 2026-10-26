@@ -7,6 +7,7 @@
 #include <vector>
 #include <mutex>
 #include <memory>
+#include <atomic>
 
 namespace harmonycast {
 
@@ -24,7 +25,7 @@ public:
     void queryDeviceInfoAsync(const std::string& serial, std::function<void(DeviceInfo)> callback);
 
 public slots:
-    void refresh();
+    void refresh(bool forceEmit = false);
 
 signals:
     void devicesUpdated(const std::vector<Device>& devices);
@@ -36,6 +37,9 @@ private:
     QTimer* m_timer{nullptr};
     mutable std::mutex m_mutex;
     std::vector<Device> m_devices;
+    std::atomic<bool> m_is_refreshing{false};
+    std::atomic<bool> m_needs_refresh{false};
+    std::atomic<bool> m_needs_force_emit{false};
 };
 
 } // namespace harmonycast

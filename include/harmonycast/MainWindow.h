@@ -18,6 +18,8 @@
 #include <QPlainTextEdit>
 #include <QTextEdit>
 #include <QTableWidget>
+#include <QTabWidget>
+#include <QButtonGroup>
 #include <QCheckBox>
 #include <QSpinBox>
 #include <QLabel>
@@ -27,6 +29,7 @@
 #include <QTimer>
 #include <memory>
 #include <vector>
+#include <map>
 
 namespace harmonycast {
 
@@ -45,9 +48,11 @@ private slots:
     // Device events
     void onDevicesUpdated(const std::vector<Device>& devices);
     void onDeviceSelected(int index);
+    void onDeviceComboActivated(int index);
     void refreshDevices();
     void disconnectCurrentDevice();
     void openDeviceCenter();
+    void switchToSingleDevice(const std::string& endpoint);
 
     // Mirroring controls
     void startMirror();
@@ -78,9 +83,13 @@ private slots:
     void onWebNetworkRequest(const WebNetworkRequest& req);
     void onWebNetworkResponse(const QString& reqId, int status, const QString& mimeType);
     void clearWebViewConsole();
+    void renderWebViewConsole();
     void executeWebViewJs();
     void openChromeInspect();
     void onNetworkTableContextMenu(const QPoint& pos);
+    void onNetworkRowSelected();
+    void filterNetworkTable();
+    void formatResponseJson();
 
     // Device Info Panel
     void refreshDeviceInfo();
@@ -114,7 +123,12 @@ private:
     QWidget* buildWorkspacePage();
     QWidget* buildHiLogWidget();
     QWidget* buildWebViewPanel();
+    QWidget* buildNetworkDetailPanel();
     QWidget* buildHdcPanel();
+
+    void populateNetworkDetail(const WebNetworkRequest& req);
+    void updateResponseBodyView(const QString& body, bool base64);
+    static QString normalizeResourceType(const std::string& type, const std::string& mime, const std::string& url);
 
     void renderEmptyInfo(const QString& hint = "未检测到已连接的设备");
     void renderDeviceInfo(const DeviceInfo& info);
@@ -134,6 +148,7 @@ private:
     std::vector<Device> m_cached_devices;
     DeviceInfo m_cached_info;
     std::vector<HiLogEntry> m_cached_logs;
+    std::vector<WebConsoleMessage> m_cached_wv_logs;
 
     // UI: Sidebar
     QFrame* m_sidebar{nullptr};
@@ -208,11 +223,14 @@ private:
     QLineEdit* m_search_input{nullptr};
     QCheckBox* m_autoscroll_cb{nullptr};
     QCheckBox* m_pause_cb{nullptr};
+    QCheckBox* m_only_errors_cb{nullptr};
     QPushButton* m_clear_log_btn{nullptr};
     QPushButton* m_export_log_btn{nullptr};
     QPlainTextEdit* m_log_view{nullptr};
     QLabel* m_log_count{nullptr};
     QSpinBox* m_log_font_size{nullptr};
+    std::unique_ptr<class LogHighlighter> m_log_highlighter;
+    std::unique_ptr<class LogHighlighter> m_wv_log_highlighter;
 
     // WebView
     QPushButton* m_btn_subtab_console{nullptr};
@@ -231,6 +249,22 @@ private:
     QTableWidget* m_wv_network_table{nullptr};
     QLabel* m_wv_net_status_label{nullptr};
     QSpinBox* m_wv_font_size{nullptr};
+    QButtonGroup* m_net_type_btn_group{nullptr};
+    QString m_current_net_type_filter{"ALL"};
+    QSplitter* m_wv_net_splitter{nullptr};
+    QFrame* m_wv_net_detail_panel{nullptr};
+    QLabel* m_detail_method_badge{nullptr};
+    QLabel* m_detail_url_label{nullptr};
+    QLabel* m_detail_status_badge{nullptr};
+    QTabWidget* m_net_detail_tabs{nullptr};
+    QTextEdit* m_net_headers_view{nullptr};
+    QPlainTextEdit* m_net_payload_view{nullptr};
+    QPlainTextEdit* m_net_response_view{nullptr};
+    QPlainTextEdit* m_net_curl_view{nullptr};
+    QLabel* m_net_resp_info_label{nullptr};
+    std::string m_current_selected_req_id;
+    bool m_response_is_json{false};
+    QString m_raw_response_body;
 
     // Page 2: HDC Command Presets
     QLabel* m_hdc_target_badge{nullptr};
@@ -254,9 +288,13 @@ private:
     bool m_auto_start_mirror{true};
     bool m_user_stopped_mirror{false};
     std::string m_pending_auto_start_serial;
+    std::string m_active_device_serial;
+    uint64_t m_switch_generation{0};
     int m_wv_console_count{0};
     int m_wv_network_count{0};
     int m_visible_log_count{0};
+    std::map<std::string, WebNetworkRequest> m_wv_requests; // for cURL generation
+    std::map<std::string, qint64> m_wv_request_times;       // requestId -> ms since epoch
 };
 
 } // namespace harmonycast

@@ -2,12 +2,14 @@
 #include <algorithm>
 #include <sstream>
 #include <regex>
+#include <thread>
+#include <QPointer>
 
 namespace harmonycast {
 
 DeviceManager::DeviceManager(std::shared_ptr<HdcClient> hdc, QObject* parent)
     : QObject(parent), m_hdc(std::move(hdc)), m_timer(new QTimer(this)) {
-    connect(m_timer, &QTimer::timeout, this, &DeviceManager::refresh);
+    connect(m_timer, &QTimer::timeout, this, [this]{ refresh(false); });
 }
 
 DeviceManager::~DeviceManager() {
@@ -15,7 +17,7 @@ DeviceManager::~DeviceManager() {
 }
 
 void DeviceManager::startPolling(int interval_ms) {
-    refresh();
+    refresh(true);
     m_timer->start(interval_ms);
 }
 
@@ -25,45 +27,69 @@ void DeviceManager::stopPolling() {
     }
 }
 
-void DeviceManager::refresh() {
+void DeviceManager::refresh(bool forceEmit) {
     if (!m_hdc) return;
+    if (forceEmit) m_needs_force_emit = true;
 
-    auto current = m_hdc->listDevices();
+    if (m_is_refreshing.exchange(true)) {
+        m_needs_refresh = true;
+        return;
+    }
 
-    std::vector<Device> added;
-    std::vector<Device> removed;
+    QPointer<DeviceManager> weak_this(this);
+    auto hdc = m_hdc;
+    std::thread([weak_this, hdc]() {
+        if (!hdc) return;
+        auto current = hdc->listDevices();
 
-    {
-        std::lock_guard<std::mutex> lock(m_mutex);
+        if (weak_this) {
+            QMetaObject::invokeMethod(weak_this.data(), [weak_this, current = std::move(current)]() {
+                if (!weak_this) return;
 
-        // Find newly added devices
-        for (const auto& dev : current) {
-            auto it = std::find(m_devices.begin(), m_devices.end(), dev);
-            if (it == m_devices.end()) {
-                added.push_back(dev);
-            }
+                std::vector<Device> added;
+                std::vector<Device> removed;
+
+                {
+                    std::lock_guard<std::mutex> lock(weak_this->m_mutex);
+
+                    // Find newly added devices
+                    for (const auto& dev : current) {
+                        auto it = std::find(weak_this->m_devices.begin(), weak_this->m_devices.end(), dev);
+                        if (it == weak_this->m_devices.end()) {
+                            added.push_back(dev);
+                        }
+                    }
+
+                    // Find removed devices
+                    for (const auto& old_dev : weak_this->m_devices) {
+                        auto it = std::find(current.begin(), current.end(), old_dev);
+                        if (it == current.end()) {
+                            removed.push_back(old_dev);
+                        }
+                    }
+
+                    weak_this->m_devices = current;
+                }
+
+                for (const auto& d : added) {
+                    emit weak_this->deviceConnected(d);
+                }
+                for (const auto& d : removed) {
+                    emit weak_this->deviceDisconnected(d);
+                }
+
+                bool force = weak_this->m_needs_force_emit.exchange(false);
+                if (force || !added.empty() || !removed.empty()) {
+                    emit weak_this->devicesUpdated(current);
+                }
+
+                weak_this->m_is_refreshing = false;
+                if (weak_this->m_needs_refresh.exchange(false)) {
+                    weak_this->refresh(false);
+                }
+            });
         }
-
-        // Find removed devices
-        for (const auto& old_dev : m_devices) {
-            auto it = std::find(current.begin(), current.end(), old_dev);
-            if (it == current.end()) {
-                removed.push_back(old_dev);
-            }
-        }
-
-        m_devices = current;
-    }
-
-    for (const auto& d : added) {
-        emit deviceConnected(d);
-    }
-    for (const auto& d : removed) {
-        emit deviceDisconnected(d);
-    }
-    if (!added.empty() || !removed.empty()) {
-        emit devicesUpdated(current);
-    }
+    }).detach();
 }
 
 std::vector<Device> DeviceManager::devices() const {
@@ -83,54 +109,70 @@ void DeviceManager::queryDeviceInfoAsync(const std::string& serial, std::functio
     if (!m_hdc) return;
 
     std::string script =
-        "param dump; echo \"---UPTIME---\"; cat /proc/uptime; "
-        "echo \"---MEMINFO---\"; cat /proc/meminfo; "
-        "echo \"---DF---\"; df -h /data 2>/dev/null; "
-        "echo \"---NET---\"; ifconfig 2>/dev/null; "
-        "echo \"---IFACES---\"; for i in /sys/class/net/*; do [ -e \"$i\" ] && echo \"$(basename \"$i\"): $(cat \"$i/address\" 2>/dev/null)\"; done; "
-        "echo \"---PKGS---\"; bm dump -a 2>/dev/null; "
-        "echo \"---PS---\"; ps -A -o PID,NAME,ARGS 2>/dev/null || ps -ef 2>/dev/null || ps 2>/dev/null; "
-        "echo \"---UNAME---\"; uname -a 2>/dev/null; "
-        "echo \"---DISP---\"; hidumper -s DisplayManagerService -a -a 2>/dev/null | grep -E 'displayId|width|height|rotation'; "
-        "echo \"---ICU---\"; for f in model mcu_version hardware_version power_delay StopWatchDog FeedWatchdog; do [ -f /sys/class/ICU/version/$f ] && echo \"$f: $(cat /sys/class/ICU/version/$f 2>/dev/null)\"; done";
+        "echo \"<<<PARAM>>>\"; param dump 2>/dev/null; "
+        "echo \"const.product.devUdid=$(param get const.product.devUdid 2>/dev/null)\"; "
+        "echo \"ohos.boot.sn=$(param get ohos.boot.sn 2>/dev/null)\"; "
+        "echo \"<<<UPTIME>>>\"; cat /proc/uptime 2>/dev/null; "
+        "echo \"<<<MEMINFO>>>\"; cat /proc/meminfo 2>/dev/null; "
+        "echo \"<<<DF>>>\"; df -h /data 2>/dev/null; "
+        "echo \"<<<NET>>>\"; ifconfig 2>/dev/null; "
+        "echo \"<<<IFACES>>>\"; for i in /sys/class/net/*; do [ -e \"$i\" ] && echo \"$(basename \"$i\"): $(cat \"$i/address\" 2>/dev/null)\"; done; "
+        "echo \"<<<UNAME>>>\"; uname -a 2>/dev/null; "
+        "echo \"<<<DISP>>>\"; hidumper -s DisplayManagerService -a \"-d -a\" 2>/dev/null; cat /sys/class/graphics/fb0/virtual_size 2>/dev/null; "
+        "echo \"<<<ICU>>>\"; for f in model mcu_version hardware_version power_delay StopWatchDog FeedWatchdog; do [ -f /sys/class/ICU/version/$f ] && echo \"$f: $(cat /sys/class/ICU/version/$f 2>/dev/null)\"; done; "
+        "echo \"<<<PKGS>>>\"; bm dump -a 2>/dev/null; "
+        "echo \"<<<PS>>>\"; ps -A -o PID,NAME 2>/dev/null || ps 2>/dev/null";
 
     m_hdc->executeAsync({"shell", script}, serial, [callback, serial](const CommandResult& r) {
         DeviceInfo info;
         info.serial = serial;
 
-        std::string raw = r.out;
+        // Parse section by section based on standalone "<<<TAG>>>" line markers
+        std::map<std::string, std::string> sections;
+        std::string current_tag;
+        std::string current_content;
 
-        auto splitSection = [](const std::string& str, const std::string& delim) -> std::pair<std::string, std::string> {
-            auto pos = str.find(delim);
-            if (pos == std::string::npos) return {str, ""};
-            return {str.substr(0, pos), str.substr(pos + delim.length())};
-        };
-
-        auto [param_part, rest1] = splitSection(raw, "---UPTIME---");
-        auto [uptime_part, rest2] = splitSection(rest1, "---MEMINFO---");
-        auto [mem_part, rest3] = splitSection(rest2, "---DF---");
-        auto [df_part, rest4] = splitSection(rest3, "---NET---");
-        auto [net_part, rest5] = splitSection(rest4, "---IFACES---");
-        auto [ifaces_part, rest6] = splitSection(rest5, "---PKGS---");
-        auto [pkgs_part, rest7] = splitSection(rest6, "---PS---");
-        auto [ps_part, rest8] = splitSection(rest7, "---UNAME---");
-        auto [uname_part, rest9] = splitSection(rest8, "---DISP---");
-        auto [disp_part, icu_part] = splitSection(rest9, "---ICU---");
+        std::istringstream raw_stream(r.out);
+        std::string raw_line;
+        while (std::getline(raw_stream, raw_line)) {
+            if (!raw_line.empty() && raw_line.back() == '\r') {
+                raw_line.pop_back();
+            }
+            if (raw_line.rfind("<<<", 0) == 0 && raw_line.length() >= 6 &&
+                raw_line.substr(raw_line.length() - 3) == ">>>") {
+                if (!current_tag.empty()) {
+                    sections[current_tag] = std::move(current_content);
+                    current_content.clear();
+                }
+                current_tag = raw_line.substr(3, raw_line.length() - 6);
+            } else {
+                current_content += raw_line + "\n";
+            }
+        }
+        if (!current_tag.empty()) {
+            sections[current_tag] = std::move(current_content);
+        }
 
         // Parse param dump
-        std::istringstream pstream(param_part);
+        std::istringstream pstream(sections["PARAM"]);
         std::string line;
         while (std::getline(pstream, line)) {
-            if (line.rfind("param:", 0) == 0) line = line.substr(6);
+            line.erase(0, line.find_first_not_of(" \t\r\n"));
+            line.erase(line.find_last_not_of(" \t\r\n") + 1);
+            if (line.rfind("param:", 0) == 0) {
+                line = line.substr(6);
+                line.erase(0, line.find_first_not_of(" \t\r\n"));
+            }
             auto eq = line.find('=');
             if (eq != std::string::npos) {
                 std::string k = line.substr(0, eq);
                 std::string v = line.substr(eq + 1);
-                // trim
                 k.erase(0, k.find_first_not_of(" \t\r\n"));
                 k.erase(k.find_last_not_of(" \t\r\n") + 1);
                 v.erase(0, v.find_first_not_of(" \t\r\n"));
                 v.erase(v.find_last_not_of(" \t\r\n") + 1);
+
+                if (v == "fail" || v == "not found") continue;
 
                 if (k == "const.product.brand" || k == "const.product.manufacturer") {
                     if (info.brand.empty()) info.brand = v;
@@ -138,6 +180,8 @@ void DeviceManager::queryDeviceInfoAsync(const std::string& serial, std::functio
                 } else if (k == "const.product.model") {
                     info.model = v;
                     info.model_code = v;
+                } else if (k == "const.software.model" && info.model.empty()) {
+                    info.model = v;
                 } else if (k == "const.product.hardwareversion") {
                     info.hardware_version = v;
                 } else if (k == "const.product.software.version") {
@@ -148,16 +192,24 @@ void DeviceManager::queryDeviceInfoAsync(const std::string& serial, std::functio
                     info.api_version = v;
                 } else if (k == "const.ohos.version.security_patch") {
                     info.security_patch = v;
-                } else if (k == "const.product.cpu.abilist") {
-                    info.cpu_abi = v;
-                } else if (k == "const.product.devUdid") {
-                    info.udid = v;
+                } else if (k == "const.product.cpu.abilist" || k == "const.product.cpu.abi") {
+                    if (info.cpu_abi.empty()) info.cpu_abi = v;
+                } else if (k == "ohos.boot.hardware") {
+                    info.chip = v;
+                } else if (k == "const.product.devicetype" || k == "const.build.characteristics") {
+                    if (info.device_type.empty()) info.device_type = v;
+                } else if (k == "const.product.bootloader.version") {
+                    info.bootloader = v;
+                } else if (k == "const.product.devUdid" || k == "const.product.udid" || k == "const.product.uuid") {
+                    if (info.udid.empty()) info.udid = v;
+                } else if (k == "ohos.boot.sn" || k == "const.product.sn" || k == "const.product.serial") {
+                    if (info.sn.empty()) info.sn = v;
                 }
             }
         }
 
         // Format Uptime
-        std::istringstream ustream(uptime_part);
+        std::istringstream ustream(sections["UPTIME"]);
         double uptime_sec = 0;
         if (ustream >> uptime_sec) {
             info.uptime_seconds = static_cast<int64_t>(uptime_sec);
@@ -175,7 +227,7 @@ void DeviceManager::queryDeviceInfoAsync(const std::string& serial, std::functio
         }
 
         // Parse MemInfo
-        std::istringstream mstream(mem_part);
+        std::istringstream mstream(sections["MEMINFO"]);
         while (std::getline(mstream, line)) {
             if (line.rfind("MemTotal:", 0) == 0) {
                 std::smatch m;
@@ -199,7 +251,7 @@ void DeviceManager::queryDeviceInfoAsync(const std::string& serial, std::functio
         }
 
         // DF storage
-        std::istringstream dfstream(df_part);
+        std::istringstream dfstream(sections["DF"]);
         std::string last_df_line;
         while (std::getline(dfstream, line)) {
             if (!line.empty()) last_df_line = line;
@@ -214,7 +266,7 @@ void DeviceManager::queryDeviceInfoAsync(const std::string& serial, std::functio
 
         // Interfaces & MAC
         std::map<std::string, std::string> mac_map;
-        std::istringstream ifstream(ifaces_part);
+        std::istringstream ifstream(sections["IFACES"]);
         while (std::getline(ifstream, line)) {
             auto colon = line.find(':');
             if (colon != std::string::npos) {
@@ -231,7 +283,7 @@ void DeviceManager::queryDeviceInfoAsync(const std::string& serial, std::functio
         // IP from ifconfig
         std::map<std::string, std::string> ip_map;
         std::string cur_iface;
-        std::istringstream nstream(net_part);
+        std::istringstream nstream(sections["NET"]);
         while (std::getline(nstream, line)) {
             std::smatch m;
             if (std::regex_search(line, m, std::regex(R"(^([a-zA-Z0-9_.-]+)\s+)"))) {
@@ -264,7 +316,7 @@ void DeviceManager::queryDeviceInfoAsync(const std::string& serial, std::functio
         }
 
         // Packages
-        std::istringstream pkstream(pkgs_part);
+        std::istringstream pkstream(sections["PKGS"]);
         while (std::getline(pkstream, line)) {
             line.erase(0, line.find_first_not_of(" \t\r\n"));
             line.erase(line.find_last_not_of(" \t\r\n") + 1);
@@ -275,7 +327,7 @@ void DeviceManager::queryDeviceInfoAsync(const std::string& serial, std::functio
 
         // Running processes from PS
         std::map<std::string, std::string> running_process_pids;
-        std::istringstream ps_stream(ps_part);
+        std::istringstream ps_stream(sections["PS"]);
         std::string ps_line;
         while (std::getline(ps_stream, ps_line)) {
             std::istringstream ss(ps_line);
@@ -316,32 +368,44 @@ void DeviceManager::queryDeviceInfoAsync(const std::string& serial, std::functio
         }
 
         // Linux Kernel from uname
-        std::string uname_clean = uname_part;
+        std::string uname_clean = sections["UNAME"];
         uname_clean.erase(0, uname_clean.find_first_not_of(" \t\r\n"));
         uname_clean.erase(uname_clean.find_last_not_of(" \t\r\n") + 1);
         if (!uname_clean.empty()) {
             info.kernel = uname_clean;
         }
 
-        // Display info from hidumper
-        std::istringstream dstream(disp_part);
+        // Display info from hidumper & fb0
+        std::istringstream dstream(sections["DISP"]);
         std::string dline;
         int disp_w = 0, disp_h = 0;
+        int refresh_rate = 0;
         while (std::getline(dstream, dline)) {
             std::smatch m;
-            if (std::regex_search(dline, m, std::regex(R"(width[:\s]+(\d+))", std::regex::icase))) {
+            if (std::regex_search(dline, m, std::regex(R"(\[\s*\d+\s+\d+\s+(\d+)\s+(\d+)\s*\])"))) {
                 disp_w = std::stoi(m[1]);
+                disp_h = std::stoi(m[2]);
             }
-            if (std::regex_search(dline, m, std::regex(R"(height[:\s]+(\d+))", std::regex::icase))) {
-                disp_h = std::stoi(m[1]);
+            if (std::regex_search(dline, m, std::regex(R"(^\s*\d+\s+\d+\s+(\d+)\s+[\d.]+)"))) {
+                refresh_rate = std::stoi(m[1]);
+            }
+            if (disp_w == 0 && std::regex_search(dline, m, std::regex(R"(^(\d+),(\d+))"))) {
+                disp_w = std::stoi(m[1]);
+                disp_h = std::stoi(m[2]);
             }
         }
         if (disp_w > 0 && disp_h > 0) {
-            info.display = std::to_string(disp_w) + " × " + std::to_string(disp_h);
+            info.display_width = disp_w;
+            info.display_height = disp_h;
+            if (refresh_rate > 0) {
+                info.display = std::to_string(disp_w) + " × " + std::to_string(disp_h) + " (" + std::to_string(refresh_rate) + " Hz)";
+            } else {
+                info.display = std::to_string(disp_w) + " × " + std::to_string(disp_h);
+            }
         }
 
         // ICU info
-        std::istringstream icustream(icu_part);
+        std::istringstream icustream(sections["ICU"]);
         while (std::getline(icustream, line)) {
             auto colon = line.find(':');
             if (colon != std::string::npos) {
@@ -367,13 +431,18 @@ void DeviceManager::queryDeviceInfoAsync(const std::string& serial, std::functio
         }
 
         if (info.display.empty()) {
-            info.display = "1080 × 1920 (480 dpi)";
+            info.display = "1280 × 800 (60 Hz)";
         }
         if (info.kernel.empty()) {
-            info.kernel = "Linux 5.10.79-arm64";
+            info.kernel = "Linux 5.10 (OpenHarmony)";
         }
         if (info.model.empty()) {
-            info.model = "OpenHarmony 医疗终端";
+            info.model = "OpenHarmony 智能终端";
+        }
+        if (info.device_type.empty()) {
+            info.device_type = "标准终端";
+        } else if (info.device_type == "tablet") {
+            info.device_type = "平板终端 (tablet)";
         }
 
         callback(info);

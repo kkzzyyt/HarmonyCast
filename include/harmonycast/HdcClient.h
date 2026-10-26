@@ -27,6 +27,11 @@ public:
     void setPath(std::string hdc_path) { m_hdc_path = std::move(hdc_path); }
     [[nodiscard]] bool isAvailable() const;
 
+    static CommandResult runProcess(const std::string& hdc_path,
+                                    const std::vector<std::string>& args,
+                                    const std::string& serial = "",
+                                    int timeout_ms = 10000);
+
     CommandResult run(const std::vector<std::string>& args,
                       const std::string& serial = "",
                       int timeout_ms = 10000) const;
@@ -44,6 +49,7 @@ public:
     bool fileRecv(const std::string& serial, const std::string& remote_path, const std::string& local_path) const;
 
     bool wakeup(const std::string& serial) const;
+    void wakeupAsync(const std::string& serial) const;
     bool home(const std::string& serial) const;
     bool back(const std::string& serial) const;
 

@@ -53,9 +53,10 @@ bool HdcClient::isAvailable() const {
     return !QStandardPaths::findExecutable(QString::fromStdString(m_hdc_path)).isEmpty();
 }
 
-CommandResult HdcClient::run(const std::vector<std::string>& args,
-                             const std::string& serial,
-                             int timeout_ms) const {
+CommandResult HdcClient::runProcess(const std::string& hdc_path,
+                                    const std::vector<std::string>& args,
+                                    const std::string& serial,
+                                    int timeout_ms) {
     QProcess process;
     QStringList qargs;
 
@@ -66,9 +67,9 @@ CommandResult HdcClient::run(const std::vector<std::string>& args,
         qargs << QString::fromStdString(a);
     }
 
-    process.start(QString::fromStdString(m_hdc_path), qargs);
+    process.start(QString::fromStdString(hdc_path), qargs);
     if (!process.waitForStarted(2000)) {
-        return {-1, "", "Failed to start HDC executable: " + m_hdc_path};
+        return {-1, "", "Failed to start HDC executable: " + hdc_path};
     }
 
     if (!process.waitForFinished(timeout_ms)) {
@@ -82,6 +83,12 @@ CommandResult HdcClient::run(const std::vector<std::string>& args,
     res.out = QString::fromUtf8(process.readAllStandardOutput()).toStdString();
     res.err = QString::fromUtf8(process.readAllStandardError()).toStdString();
     return res;
+}
+
+CommandResult HdcClient::run(const std::vector<std::string>& args,
+                             const std::string& serial,
+                             int timeout_ms) const {
+    return runProcess(m_hdc_path, args, serial, timeout_ms);
 }
 
 std::vector<Device> HdcClient::listDevices() const {
@@ -159,6 +166,10 @@ bool HdcClient::wakeup(const std::string& serial) const {
     return res.success();
 }
 
+void HdcClient::wakeupAsync(const std::string& serial) const {
+    executeAsync({"shell", "power-shell wakeup || uinput -K -d 18 -u 18"}, serial, nullptr);
+}
+
 bool HdcClient::home(const std::string& serial) const {
     std::string cmd = "aa start -b com.ohos.launcher -a com.ohos.launcher.MainAbility 2>/dev/null || uinput -K -d 1 -u 1";
     auto res = run({"shell", cmd}, serial, 3000);
@@ -222,8 +233,9 @@ std::optional<DeviceInfo> HdcClient::getDeviceInfo(const std::string& serial) co
 void HdcClient::executeAsync(const std::vector<std::string>& args,
                              const std::string& serial,
                              std::function<void(CommandResult)> callback) const {
-    std::thread([this, args, serial, callback]() {
-        CommandResult res = run(args, serial);
+    std::string hdc_path = m_hdc_path;
+    std::thread([hdc_path, args, serial, callback]() {
+        CommandResult res = runProcess(hdc_path, args, serial, 10000);
         if (callback) {
             QMetaObject::invokeMethod(QCoreApplication::instance(), [callback, res]() {
                 callback(res);

@@ -6,6 +6,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QImage>
+#include <QPointer>
 #include <iostream>
 
 namespace harmonycast {
@@ -79,9 +80,16 @@ int StreamSession::pickFreePort() {
     return 8990;
 }
 
-bool StreamSession::launchServer() {
+bool StreamSession::launchServerAsync(const std::shared_ptr<HdcClient>& hdc,
+                                      const std::string& serial,
+                                      int remote_port,
+                                      int fps,
+                                      int bitrate,
+                                      int max_size) {
+    if (!hdc || serial.empty()) return false;
+
     std::string arch = "arm64";
-    auto res_uname = m_hdc->run({"shell", "uname", "-m"}, m_device.serial, 2000);
+    auto res_uname = hdc->run({"shell", "uname", "-m"}, serial, 2000);
     if (res_uname.success() && res_uname.out.find("riscv") != std::string::npos) {
         arch = "riscv64";
     }
@@ -105,82 +113,121 @@ bool StreamSession::launchServer() {
 
     std::string remote_bin = "/data/local/tmp/harmonycast_capture";
     if (!local_bin.isEmpty()) {
-        m_hdc->fileSend(m_device.serial, local_bin.toStdString(), remote_bin);
-        m_hdc->run({"shell", "chmod", "755", remote_bin}, m_device.serial, 3000);
+        hdc->fileSend(serial, local_bin.toStdString(), remote_bin);
+        hdc->run({"shell", "chmod", "755", remote_bin}, serial, 3000);
     }
 
     // Kill any previous capture instances
-    m_hdc->run({"shell", "killall", "-9", "harmonycast_capture", "harmonycast_capture_arm64", "2>/dev/null"}, m_device.serial, 1000);
+    hdc->run({"shell", "killall", "-9", "harmonycast_capture", "harmonycast_capture_arm64", "2>/dev/null"}, serial, 1000);
 
     // Launch remote capture server in background
     std::string cmd = QString("%1 -p %2 -f %3 -b %4%5 &")
                           .arg(QString::fromStdString(remote_bin))
-                          .arg(m_remote_port)
-                          .arg(m_fps)
-                          .arg(m_bitrate)
-                          .arg(m_max_size > 0 ? QString(" -m %1").arg(m_max_size) : "")
+                          .arg(remote_port)
+                          .arg(fps)
+                          .arg(bitrate)
+                          .arg(max_size > 0 ? QString(" -m %1").arg(max_size) : "")
                           .toStdString();
-    auto res = m_hdc->run({"shell", cmd}, m_device.serial, 3000);
+    auto res = hdc->run({"shell", cmd}, serial, 3000);
     return res.success();
 }
 
 bool StreamSession::start() {
     stop();
     m_running = true;
+    uint64_t current_gen = ++m_session_gen;
     emit statusChanged("正在准备投屏服务…");
 
     m_local_port = pickFreePort();
     m_remote_port = m_local_port;
 
-    // 1. Setup port forwarding
-    if (!m_hdc->forwardPort(m_device.serial, m_local_port, m_remote_port)) {
-        emit streamFinished("端口映射失败，请检查设备连接");
-        stop();
-        return false;
-    }
-    m_forwarded = true;
-
-    // 2. Launch device-side server
-    launchServer();
-
-    // 3. Initialize hardware-accelerated video decoder
+    // Initialize hardware-accelerated video decoder
     if (!m_decoder->init(1080, 1920, true)) {
         emit statusChanged("硬件加速初始化降级为多线程软解");
         m_decoder->init(1080, 1920, false);
     }
 
-    // 4. Connect video socket with retry loop
-    emit statusChanged("正在连接设备视频流…");
-    for (int attempt = 0; attempt < 15 && m_running; ++attempt) {
-        m_socket->connectToHost(QHostAddress::LocalHost, m_local_port);
-        if (m_socket->waitForConnected(250)) {
-            break;
+    auto hdc = m_hdc;
+    std::string serial = m_device.serial;
+    int local_port = m_local_port;
+    int remote_port = m_remote_port;
+    int fps = m_fps;
+    int bitrate = m_bitrate;
+    int max_size = m_max_size;
+    QPointer<StreamSession> weak_this(this);
+
+    std::thread([weak_this, current_gen, hdc, serial, local_port, remote_port, fps, bitrate, max_size]() {
+        // 1. Setup port forwarding in worker thread
+        if (!hdc || serial.empty() || !hdc->forwardPort(serial, local_port, remote_port)) {
+            if (weak_this) {
+                QMetaObject::invokeMethod(weak_this.data(), [weak_this, current_gen]() {
+                    if (!weak_this || !weak_this->m_running || weak_this->m_session_gen != current_gen) return;
+                    emit weak_this->statusChanged("端口映射失败，尝试兼容快照流…");
+                    weak_this->startSnapshotFallback();
+                });
+            }
+            return;
         }
-        QThread::msleep(100);
+
+        // 2. Launch capture server on device in worker thread
+        launchServerAsync(hdc, serial, remote_port, fps, bitrate, max_size);
+
+        // 3. Inform main thread to begin non-blocking socket connection attempts
+        if (weak_this) {
+            QMetaObject::invokeMethod(weak_this.data(), [weak_this, current_gen]() {
+                if (!weak_this || !weak_this->m_running || weak_this->m_session_gen != current_gen) return;
+                weak_this->m_forwarded = true;
+                emit weak_this->statusChanged("正在连接设备视频流…");
+                weak_this->tryConnectSocket(0, current_gen);
+            });
+        }
+    }).detach();
+
+    return true;
+}
+
+void StreamSession::tryConnectSocket(int attempt, uint64_t gen) {
+    if (!m_running || m_session_gen != gen) return;
+
+    if (m_socket->state() == QAbstractSocket::ConnectedState) {
+        return;
     }
 
-    if (m_socket->state() != QAbstractSocket::ConnectedState) {
+    if (attempt >= 4) {
         emit statusChanged("硬件采屏未响应，自动切换为兼容快照流 (snapshot_display)…");
         startSnapshotFallback();
-        return true;
+        return;
     }
 
-    m_heartbeat_timer->start(2000);
-    return true;
+    if (m_socket->state() != QAbstractSocket::UnconnectedState && m_socket->state() != QAbstractSocket::ConnectingState) {
+        m_socket->abort();
+    }
+
+    if (m_socket->state() == QAbstractSocket::UnconnectedState) {
+        m_socket->connectToHost(QHostAddress::LocalHost, m_local_port);
+    }
+
+    QTimer::singleShot(250, this, [this, attempt, gen]() {
+        if (!m_running || m_session_gen != gen) return;
+        if (m_socket->state() != QAbstractSocket::ConnectedState) {
+            tryConnectSocket(attempt + 1, gen);
+        }
+    });
 }
 
 void StreamSession::stop() {
     m_running = false;
     m_fallback_snapshot = false;
+    m_session_gen++;
     m_heartbeat_timer->stop();
 
-    if (m_snapshot_thread && m_snapshot_thread->joinable()) {
-        m_snapshot_thread->join();
+    if (m_snapshot_ctx) {
+        m_snapshot_ctx->cancelled = true;
+        m_snapshot_ctx.reset();
     }
-    m_snapshot_thread.reset();
 
-    if (m_socket->isOpen()) {
-        m_socket->disconnectFromHost();
+    if (m_socket->state() != QAbstractSocket::UnconnectedState) {
+        m_socket->abort();
     }
     m_control->disconnectFromHost();
 
@@ -196,19 +243,28 @@ bool StreamSession::isRunning() const {
 }
 
 void StreamSession::cleanup() {
-    if (m_forwarded && m_hdc && !m_device.serial.empty()) {
-        m_hdc->removeForward(m_device.serial, m_local_port, m_remote_port);
-        m_forwarded = false;
-    }
-    if (m_hdc && !m_device.serial.empty()) {
-        m_hdc->run({"shell", "killall", "-9", "harmonycast_capture", "2>/dev/null"}, m_device.serial, 1000);
-        m_hdc->run({"shell", "rm", "-f", "/data/local/tmp/harmonycast_stream.jpeg"}, m_device.serial, 1000);
-    }
+    if (!m_hdc || m_device.serial.empty()) return;
+
+    auto hdc = m_hdc;
+    std::string serial = m_device.serial;
+    int local_port = m_local_port;
+    int remote_port = m_remote_port;
+    bool forwarded = m_forwarded;
+    m_forwarded = false;
+
+    std::thread([hdc, serial, local_port, remote_port, forwarded]() {
+        if (forwarded) {
+            hdc->removeForward(serial, local_port, remote_port);
+        }
+        hdc->run({"shell", "killall", "-9", "harmonycast_capture", "2>/dev/null"}, serial, 1000);
+        hdc->run({"shell", "rm", "-f", "/data/local/tmp/harmonycast_stream.jpeg"}, serial, 1000);
+    }).detach();
 }
 
 void StreamSession::onSocketConnected() {
     m_socket->setSocketOption(QAbstractSocket::LowDelayOption, 1);
     m_socket->setSocketOption(QAbstractSocket::ReceiveBufferSizeSocketOption, 2 * 1024 * 1024);
+    m_heartbeat_timer->start(2000);
     emit statusChanged("投屏连接就绪，等待首帧…");
 }
 
@@ -231,36 +287,42 @@ void StreamSession::startSnapshotFallback() {
     if (m_fallback_snapshot) return;
     m_fallback_snapshot = true;
 
-    if (m_snapshot_thread && m_snapshot_thread->joinable()) {
-        m_snapshot_thread->join();
+    if (m_snapshot_ctx) {
+        m_snapshot_ctx->cancelled = true;
+        m_snapshot_ctx.reset();
     }
 
-    m_snapshot_thread = std::make_unique<std::thread>([this]() {
+    auto ctx = std::make_shared<SnapshotWorkerContext>();
+    ctx->hdc = m_hdc;
+    ctx->serial = m_device.serial;
+    ctx->session_id = reinterpret_cast<uintptr_t>(this);
+    m_snapshot_ctx = ctx;
+    QPointer<StreamSession> weak_this(this);
+
+    std::thread([weak_this, ctx]() {
         std::string remote_path = "/data/local/tmp/harmonycast_stream.jpeg";
         QString local_temp = QDir::tempPath() + QString("/harmonycast_stream_%1_%2.jpeg")
-                                .arg(QString::fromStdString(m_device.serial).replace(':', '_').replace('.', '_'))
-                                .arg(reinterpret_cast<uintptr_t>(this));
+                                .arg(QString::fromStdString(ctx->serial).replace(':', '_').replace('.', '_'))
+                                .arg(ctx->session_id);
         std::string local_path = local_temp.toStdString();
 
-        m_hdc->wakeup(m_device.serial);
+        ctx->hdc->wakeup(ctx->serial);
 
         int consecutive_errors = 0;
-        while (m_running && m_fallback_snapshot) {
+        while (!ctx->cancelled.load()) {
             auto t0 = std::chrono::steady_clock::now();
 
-            auto res_snap = m_hdc->run({"shell", "snapshot_display", "-f", remote_path}, m_device.serial, 3000);
-            if (!m_running || !m_fallback_snapshot) break;
+            auto res_snap = ctx->hdc->run({"shell", "snapshot_display", "-f", remote_path}, ctx->serial, 3000);
+            if (ctx->cancelled.load()) break;
 
             if (res_snap.success()) {
-                bool res_recv = m_hdc->fileRecv(m_device.serial, remote_path, local_path);
-                if (!m_running || !m_fallback_snapshot) break;
+                bool res_recv = ctx->hdc->fileRecv(ctx->serial, remote_path, local_path);
+                if (ctx->cancelled.load()) break;
 
                 if (res_recv && QFile::exists(local_temp)) {
                     QImage img;
                     if (img.load(local_temp)) {
                         consecutive_errors = 0;
-                        m_dev_width = img.width();
-                        m_dev_height = img.height();
 
                         QImage rgba = img.convertToFormat(QImage::Format_RGBA8888);
                         DecodedFrame frame;
@@ -271,28 +333,36 @@ void StreamSession::startSnapshotFallback() {
                         frame.is_keyframe = true;
                         frame.data.assign(rgba.constBits(), rgba.constBits() + rgba.sizeInBytes());
 
-                        emit frameReady(frame);
-                        emit statusChanged(QString("兼容快照流 · %1x%2").arg(frame.width).arg(frame.height));
+                        if (weak_this) {
+                            QMetaObject::invokeMethod(weak_this.data(), [weak_this, ctx, frame]() {
+                                if (weak_this && !ctx->cancelled.load() && weak_this->m_running) {
+                                    weak_this->m_dev_width = frame.width;
+                                    weak_this->m_dev_height = frame.height;
+                                    emit weak_this->frameReady(frame);
+                                    emit weak_this->statusChanged(QString("兼容快照流 · %1x%2").arg(frame.width).arg(frame.height));
+                                }
+                            });
+                        }
                     }
                     QFile::remove(local_temp);
                 }
             } else {
                 consecutive_errors++;
                 if (consecutive_errors % 4 == 0) {
-                    m_hdc->wakeup(m_device.serial);
+                    ctx->hdc->wakeup(ctx->serial);
                 }
             }
 
             auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
             int target_delay = std::clamp(100 - static_cast<int>(elapsed), 10, 100);
-            for (int i = 0; i < target_delay / 10 && m_running && m_fallback_snapshot; ++i) {
+            for (int i = 0; i < target_delay / 10 && !ctx->cancelled.load(); ++i) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(10));
             }
         }
 
-        m_hdc->run({"shell", "rm", "-f", remote_path}, m_device.serial, 1000);
+        ctx->hdc->run({"shell", "rm", "-f", remote_path}, ctx->serial, 1000);
         QFile::remove(local_temp);
-    });
+    }).detach();
 }
 
 void StreamSession::sendHeartbeat() {

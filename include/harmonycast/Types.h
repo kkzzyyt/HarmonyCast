@@ -88,7 +88,11 @@ struct DeviceInfo {
     std::string api_version;
     std::string security_patch;
     std::string cpu_abi;
+    std::string chip;
+    std::string device_type;
+    std::string sn;
     std::string udid;
+    std::string bootloader;
     std::string kernel;
     std::string uptime;
     std::string memory;

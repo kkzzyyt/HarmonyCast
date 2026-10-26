@@ -11,6 +11,8 @@
 #include <vector>
 #include <memory>
 #include <string>
+#include <functional>
+#include <map>
 
 namespace harmonycast {
 
@@ -41,10 +43,17 @@ struct WebNetworkRequest {
     std::string url;
     std::string method;
     int status_code{0};
+    std::string status_text;
     std::string mime_type;
+    std::string resource_type; // e.g. "Fetch/XHR", "JS", "CSS", "Img", "Doc", "Other"
     std::string timestamp;
     std::string post_data;
-    std::map<std::string, std::string> headers;
+    std::map<std::string, std::string> headers;          // Request headers
+    std::map<std::string, std::string> response_headers; // Response headers
+    std::string response_body;
+    bool response_body_loaded{false};
+    qint64 start_time_ms{0};
+    qint64 elapsed_ms{-1};
 };
 
 class WebViewDebugger : public QObject {
@@ -56,8 +65,9 @@ public:
     // Scan /proc/net/unix on device for @webview_devtools_remote_<pid>
     std::vector<WebViewInstance> scanInstances(const std::string& serial);
 
-    // Forward device webview socket to local port
+    // Forward device webview socket or tcp target to local port
     bool forwardInstance(const std::string& serial, const WebViewInstance& instance, int local_port = 9222);
+    bool forwardTarget(const std::string& serial, const std::string& remote_target, int local_port = 9222);
 
     // Fetch inspectable pages from http://127.0.0.1:<port>/json/list
     void fetchPages(int port = 9222);
@@ -69,6 +79,16 @@ public:
 
     // Execute JavaScript via Chrome DevTools Protocol
     void evaluateJs(const QString& js);
+
+    // Send generic CDP command with callback
+    void sendCdpCommand(const QString& method, const QJsonObject& params = {}, std::function<void(const QJsonObject&)> callback = nullptr);
+
+    // Fetch response body for a request via CDP
+    void getResponseBody(const QString& requestId, std::function<void(const QString& body, bool base64)> callback);
+
+    // Get cached request
+    const WebNetworkRequest* getRequest(const std::string& requestId) const;
+    const std::map<std::string, WebNetworkRequest>& allRequests() const { return m_requests; }
 
     // Generate cURL command from request
     static QString generateCurl(const WebNetworkRequest& req);
@@ -94,8 +114,7 @@ private:
     int m_msg_id{1};
 
     std::map<std::string, WebNetworkRequest> m_requests;
-
-    void sendCdpCommand(const QString& method, const QJsonObject& params = {});
+    std::map<int, std::function<void(const QJsonObject&)>> m_callbacks;
 };
 
 } // namespace harmonycast

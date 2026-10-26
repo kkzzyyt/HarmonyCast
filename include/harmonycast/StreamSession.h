@@ -14,6 +14,13 @@
 
 namespace harmonycast {
 
+struct SnapshotWorkerContext {
+    std::atomic<bool> cancelled{false};
+    std::shared_ptr<HdcClient> hdc;
+    std::string serial;
+    uintptr_t session_id{0};
+};
+
 class StreamSession : public QObject {
     Q_OBJECT
 public:
@@ -60,6 +67,7 @@ private:
     int m_remote_port{0};
     bool m_forwarded{false};
     std::atomic<bool> m_running{false};
+    uint64_t m_session_gen{0};
 
     QTcpSocket* m_socket{nullptr};
     QTimer* m_heartbeat_timer{nullptr};
@@ -72,10 +80,16 @@ private:
     int m_dev_height{0};
 
     std::atomic<bool> m_fallback_snapshot{false};
-    std::unique_ptr<std::thread> m_snapshot_thread;
+    std::shared_ptr<SnapshotWorkerContext> m_snapshot_ctx;
 
     int pickFreePort();
-    bool launchServer();
+    static bool launchServerAsync(const std::shared_ptr<HdcClient>& hdc,
+                                  const std::string& serial,
+                                  int remote_port,
+                                  int fps,
+                                  int bitrate,
+                                  int max_size);
+    void tryConnectSocket(int attempt, uint64_t gen);
     void cleanup();
     void startSnapshotFallback();
 };

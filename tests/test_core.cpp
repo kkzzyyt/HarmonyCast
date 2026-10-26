@@ -9,6 +9,7 @@
 #include "harmonycast/VideoDecoder.h"
 #include "harmonycast/StreamSession.h"
 #include "harmonycast/WebViewDebugger.h"
+#include "harmonycast/NetworkDeviceDialog.h"
 #include "harmonycast/HdcClient.h"
 
 using namespace harmonycast;
@@ -182,6 +183,141 @@ void test_webview_and_filters() {
     std::cout << "[PASS] test_webview_and_filters passed!" << std::endl;
 }
 
+void test_network_devices_persistence() {
+    std::cout << "[RUN] test_network_devices_persistence..." << std::endl;
+    auto initial_list = NetworkDeviceDialog::loadSavedDevices();
+    size_t initial_count = initial_list.size();
+
+    // 1. Save a new test device
+    NetworkDeviceDialog::saveDevice("192.168.100.250", "Unit Test Device", 8710);
+    auto after_save = NetworkDeviceDialog::loadSavedDevices();
+    assert(after_save.size() == initial_count + 1);
+    assert(after_save.front().ip == "192.168.100.250");
+    assert(after_save.front().port == 8710);
+
+    // 2. Delete the test device
+    NetworkDeviceDialog::deleteSavedDevice("192.168.100.250");
+    auto after_delete = NetworkDeviceDialog::loadSavedDevices();
+    assert(after_delete.size() == initial_count);
+    for (const auto& d : after_delete) {
+        assert(d.ip != "192.168.100.250");
+    }
+
+    std::cout << "[PASS] test_network_devices_persistence passed!" << std::endl;
+}
+
+void test_device_info_parsing() {
+    std::cout << "[RUN] test_device_info_parsing..." << std::endl;
+    // Simulate raw shell output with tabs in param dump and ps containing command line arguments
+    std::string raw =
+        "<<<PARAM>>>\n"
+        "\t  param: const.product.brand=Yarward\n"
+        "\t  param: const.product.model=YH-H35M\n"
+        "\t  param: const.product.hardwareversion=YH-H35M01\n"
+        "\t  param: const.product.software.version=YH-H35MS01_v1.0\n"
+        "\t  param: const.ohos.fullname=OpenHarmony-4.0.10.13\n"
+        "\t  param: const.ohos.apiversion=10\n"
+        "\t  param: const.product.cpu.abilist=arm64-v8a\n"
+        "\t  param: ohos.boot.hardware=rk3566\n"
+        "\t  param: const.product.devicetype=tablet\n"
+        "\t  param: const.product.bootloader.version=u-boot-v2023.08\n"
+        "\t  param: const.product.devUdid=54DA186990BAD4F8D3686DC54EE62A4C5A455164778DF4E08BE0BE48C04684FD\n"
+        "\t  param: ohos.boot.sn=f4012241524a313158155d8295968c00\n"
+        "<<<UPTIME>>>\n"
+        "100000.5 200000.2\n"
+        "<<<MEMINFO>>>\n"
+        "MemTotal:        3926832 kB\n"
+        "MemAvailable:    2100000 kB\n"
+        "<<<DF>>>\n"
+        "/dev/block/by-name/userdata 25G  3.2G   21G  14% /data\n"
+        "<<<NET>>>\n"
+        "eth0      Link encap:Ethernet  HWaddr 00:11:22:33:44:55\n"
+        "          inet addr:10.10.214.61  Bcast:10.10.214.255  Mask:255.255.255.0\n"
+        "<<<IFACES>>>\n"
+        "eth0: 00:11:22:33:44:55\n"
+        "<<<UNAME>>>\n"
+        "Linux localhost 5.10.165 #1 SMP Wed Dec 3 16:52:34 CST 2025 aarch64\n"
+        "<<<DISP>>>\n"
+        "DisplayId ScreenId RefreshRate VPR Rotation Orientation DisplayOrientation FreezeFlag [ x   y   w   h   ]\n"
+        "0         0        59          1.343751        2           1                 1          [ 0    0    1280 800  ]\n"
+        "<<<ICU>>>\n"
+        "model: H35M\n"
+        "<<<PKGS>>>\n"
+        "com.yarward.etnbedsideoh\n"
+        "<<<PS>>>\n"
+        " 1121 com.yarward.etnbedsideoh\n";
+
+    // Test section parsing
+    std::map<std::string, std::string> sections;
+    std::string current_tag;
+    std::string current_content;
+
+    std::istringstream raw_stream(raw);
+    std::string raw_line;
+    while (std::getline(raw_stream, raw_line)) {
+        if (!raw_line.empty() && raw_line.back() == '\r') {
+            raw_line.pop_back();
+        }
+        if (raw_line.rfind("<<<", 0) == 0 && raw_line.length() >= 6 &&
+            raw_line.substr(raw_line.length() - 3) == ">>>") {
+            if (!current_tag.empty()) {
+                sections[current_tag] = std::move(current_content);
+                current_content.clear();
+            }
+            current_tag = raw_line.substr(3, raw_line.length() - 6);
+        } else {
+            current_content += raw_line + "\n";
+        }
+    }
+    if (!current_tag.empty()) {
+        sections[current_tag] = std::move(current_content);
+    }
+
+    assert(sections.count("PARAM"));
+    assert(sections.count("UNAME"));
+    assert(sections.count("DISP"));
+
+    // Verify Kernel
+    std::string kernel = sections["UNAME"];
+    kernel.erase(0, kernel.find_first_not_of(" \t\r\n"));
+    kernel.erase(kernel.find_last_not_of(" \t\r\n") + 1);
+    assert(kernel.find("Linux localhost 5.10.165") != std::string::npos);
+    assert(kernel.find("uname -a") == std::string::npos); // MUST NOT be corrupted by command arguments
+
+    // Verify UDID and SN
+    std::string udid, sn, chip, brand;
+    std::istringstream pstream(sections["PARAM"]);
+    std::string line;
+    while (std::getline(pstream, line)) {
+        line.erase(0, line.find_first_not_of(" \t\r\n"));
+        line.erase(line.find_last_not_of(" \t\r\n") + 1);
+        if (line.rfind("param:", 0) == 0) {
+            line = line.substr(6);
+            line.erase(0, line.find_first_not_of(" \t\r\n"));
+        }
+        auto eq = line.find('=');
+        if (eq != std::string::npos) {
+            std::string k = line.substr(0, eq);
+            std::string v = line.substr(eq + 1);
+            k.erase(0, k.find_first_not_of(" \t\r\n"));
+            k.erase(k.find_last_not_of(" \t\r\n") + 1);
+            v.erase(0, v.find_first_not_of(" \t\r\n"));
+            v.erase(v.find_last_not_of(" \t\r\n") + 1);
+            if (k == "const.product.devUdid") udid = v;
+            else if (k == "ohos.boot.sn") sn = v;
+            else if (k == "ohos.boot.hardware") chip = v;
+            else if (k == "const.product.brand") brand = v;
+        }
+    }
+
+    assert(udid == "54DA186990BAD4F8D3686DC54EE62A4C5A455164778DF4E08BE0BE48C04684FD");
+    assert(sn == "f4012241524a313158155d8295968c00");
+    assert(chip == "rk3566");
+    assert(brand == "Yarward");
+
+    std::cout << "[PASS] test_device_info_parsing passed!" << std::endl;
+}
+
 int main() {
     std::cout << "========================================" << std::endl;
     std::cout << "   HarmonyCast C++ Core Verification    " << std::endl;
@@ -192,6 +328,8 @@ int main() {
     test_video_decoder();
     test_stream_session_and_types();
     test_webview_and_filters();
+    test_network_devices_persistence();
+    test_device_info_parsing();
 
     std::cout << "\n>>> ALL C++ CORE TESTS PASSED! <<<" << std::endl;
     return 0;
