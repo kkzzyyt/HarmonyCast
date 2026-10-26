@@ -742,16 +742,14 @@ void MainWindow::renderDeviceInfo(const DeviceInfo& data) {
         }
     }
 
-    // 2. ICU 硬件与看门狗卡片
+    // 2. ICU 硬件信息卡片
     clearLayout(m_icu_layout);
     auto* icu_hdr = new QHBoxLayout();
-    icu_hdr->addWidget(IconManager::label("亚华医疗 ICU 硬件与看门狗管控", "CardTitle"));
+    icu_hdr->addWidget(IconManager::label("亚华医疗 ICU 硬件信息", "CardTitle"));
     if (!data.icu_available) {
         icu_hdr->addWidget(IconManager::label("通用设备 (未检测到 ICU 节点)", "TagMuted"));
-    } else if (data.watchdog_stopped) {
-        icu_hdr->addWidget(IconManager::label("看门狗已暂停 (调试防复位)", "TagWarning"));
     } else {
-        icu_hdr->addWidget(IconManager::label("看门狗运行中 (超时将自动复位)", "TagSuccess"));
+        icu_hdr->addWidget(IconManager::label("ICU 硬件就绪", "TagSuccess"));
     }
     icu_hdr->addStretch();
     m_icu_layout->addLayout(icu_hdr);
@@ -785,24 +783,9 @@ void MainWindow::renderDeviceInfo(const DeviceInfo& data) {
         m_icu_layout->addLayout(icu_grid);
 
         auto* icu_actions = new QHBoxLayout();
-        auto* btn_stop_wd = IconManager::button("暂停看门狗 (调试防复位)", "", "pause");
-        btn_stop_wd->setToolTip("写入 StopWatchDog=1，暂停看门狗计时，防止调试死机重启");
-        connect(btn_stop_wd, &QPushButton::clicked, this, [this]{ setWatchdogStatusAction(true); });
-
-        auto* btn_start_wd = IconManager::button("开启看门狗 (启用防护)", "", "play");
-        btn_start_wd->setToolTip("写入 StopWatchDog=0，恢复看门狗监控");
-        connect(btn_start_wd, &QPushButton::clicked, this, [this]{ setWatchdogStatusAction(false); });
-
-        auto* btn_feed_wd = IconManager::button("手动喂狗一次", "", "bone");
-        btn_feed_wd->setToolTip("写入 FeedWatchdog=1，执行单次手动喂狗重置计时器");
-        connect(btn_feed_wd, &QPushButton::clicked, this, &MainWindow::feedWatchdogAction);
-
         auto* btn_refresh_icu = IconManager::button("刷新 ICU 状态", "", "refresh");
         connect(btn_refresh_icu, &QPushButton::clicked, this, &MainWindow::refreshDeviceInfo);
 
-        icu_actions->addWidget(btn_stop_wd);
-        icu_actions->addWidget(btn_start_wd);
-        icu_actions->addWidget(btn_feed_wd);
         icu_actions->addWidget(btn_refresh_icu);
         icu_actions->addStretch();
         m_icu_layout->addLayout(icu_actions);
@@ -2695,16 +2678,75 @@ void MainWindow::rotateDisplay() {
 
 void MainWindow::saveScreenshot() {
     std::string s = currentSerial();
-    if (s.empty()) return;
+    if (s.empty()) {
+        showToast("请先选择已连接的设备");
+        return;
+    }
+
     QString filename = QString("screenshot_%1.png").arg(QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss"));
-    QString dest = QDir::homePath() + "/Downloads/" + filename;
-    m_hdc->executeAsync({"shell", "snapshot_display", "-f", "/data/local/tmp/snap.png"}, s, [this, s, dest](const CommandResult& r){
+    QString destDir = QDir::homePath() + "/Downloads";
+    QDir().mkpath(destDir);
+    QString dest = destDir + "/" + filename;
+
+    auto onSaveSuccess = [this, dest, destDir]() {
+        showToast(QString("截图已保存: %1").arg(QFileInfo(dest).fileName()));
+        statusBar()->showMessage(QString("截图成功保存至: %1").arg(dest), 6000);
+
+#ifdef Q_OS_MAC
+        QProcess::startDetached("open", {"-R", dest});
+#else
+        QDesktopServices::openUrl(QUrl::fromLocalFile(destDir));
+#endif
+
+        int ret = QMessageBox::information(
+            this,
+            "截图保存成功",
+            QString("设备屏幕高清截图已成功保存至本地目录:\n%1\n\n已自动打开所在文件夹定位该文件，是否重新打开？").arg(dest),
+            QMessageBox::Open | QMessageBox::Ok
+        );
+        if (ret == QMessageBox::Open) {
+            QDesktopServices::openUrl(QUrl::fromLocalFile(destDir));
+        }
+    };
+
+    if (m_projecting && m_screen && !m_screen->image().isNull()) {
+        QImage shot = m_screen->image();
+        if (m_user_rotation != 0) {
+            QTransform t;
+            t.rotate(m_user_rotation);
+            shot = shot.transformed(t, Qt::SmoothTransformation);
+        }
+        if (shot.save(dest, "PNG")) {
+            onSaveSuccess();
+            return;
+        }
+    }
+
+    // Fallback: capture directly via device snapshot_display (OpenHarmony requires .jpeg extension)
+    std::string remote_jpeg = "/data/local/tmp/harmonycast_snap.jpeg";
+    QString local_temp = QDir::tempPath() + QString("/snap_%1.jpeg").arg(QDateTime::currentMSecsSinceEpoch());
+
+    m_hdc->executeAsync({"shell", "snapshot_display", "-f", remote_jpeg}, s, [this, s, remote_jpeg, local_temp, dest, onSaveSuccess](const CommandResult& r){
         if (r.success()) {
-            m_hdc->executeAsync({"file", "recv", "/data/local/tmp/snap.png", dest.toStdString()}, s, [this, dest](const CommandResult& r2){
-                if (r2.success()) {
-                    showToast(QString("截图已保存: %1").arg(dest));
+            m_hdc->executeAsync({"file", "recv", remote_jpeg, local_temp.toStdString()}, s, [this, s, remote_jpeg, local_temp, dest, onSaveSuccess](const CommandResult& r2){
+                bool ok = false;
+                if (r2.success() && QFile::exists(local_temp)) {
+                    QImage img;
+                    if (img.load(local_temp)) {
+                        ok = img.save(dest, "PNG");
+                    }
+                    QFile::remove(local_temp);
+                }
+                m_hdc->executeAsync({"shell", "rm", "-f", remote_jpeg}, s, nullptr);
+
+                if (ok) {
+                    onSaveSuccess();
+                } else {
+                    showToast("保存截图文件失败");
                 }
             });
+        } else {
+            showToast("设备端截屏执行失败");
         }
     });
 }
