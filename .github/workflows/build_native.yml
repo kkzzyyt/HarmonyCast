@@ -63,7 +63,7 @@ jobs:
           host: 'windows'
           target: 'desktop'
           arch: 'win64_msvc2019_64'
-          modules: 'qtwebsockets qtsvg'
+          modules: 'qtwebsockets'
 
       - name: Download Prebuilt FFmpeg Shared & Dev
         shell: pwsh
@@ -87,7 +87,7 @@ jobs:
       - name: Deploy Qt & FFmpeg Dependencies
         shell: pwsh
         run: |
-          windeployqt build/Release/HarmonyCast.exe --no-translations --compiler-runtime
+          & "$env:Qt6_DIR\bin\windeployqt.exe" build/Release/HarmonyCast.exe --no-translations --compiler-runtime
           Copy-Item "$env:FFMPEG_DIR\bin\*.dll" build\Release\
 
       - name: Copy Resources to Release Directory
@@ -110,16 +110,16 @@ jobs:
           $setup_out = "build\HarmonyCast-$ver-Setup-x64.exe"
           
           # 1. Build Single-File Portable EXE ("就一个exe文件")
-          makensis /DICON_PATH="resources/app-icon.ico" `
-                   /DSTAGING_DIR="build/Release" `
+          makensis /DICON_PATH="resources\app-icon.ico" `
+                   /DSTAGING_DIR="build\Release" `
                    /DOUTPUT_EXE="$portable_out" `
-                   scripts/windows/portable.nsi
+                   scripts\windows\portable.nsi
 
           # 2. Build 1-Click Setup Installer EXE
-          makensis /DICON_PATH="resources/app-icon.ico" `
-                   /DSTAGING_DIR="build/Release" `
+          makensis /DICON_PATH="resources\app-icon.ico" `
+                   /DSTAGING_DIR="build\Release" `
                    /DOUTPUT_SETUP="$setup_out" `
-                   scripts/windows/installer.nsi
+                   scripts\windows\installer.nsi
 
           # 3. Create fallback ZIP package
           Compress-Archive -Path build/Release/* -DestinationPath "build\HarmonyCast-$ver-Windows-x64.zip"

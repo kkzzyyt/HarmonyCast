@@ -8,7 +8,9 @@ echo "=== 1. Building HarmonyCast.app ==="
 cmake --build build --target HarmonyCast
 
 echo "=== 2. Generating DMG background ==="
-python3 scripts/generate_dmg_background.py resources/dmg_background.png
+if [ ! -f "resources/dmg_background.png" ]; then
+    python3 scripts/generate_dmg_background.py resources/dmg_background.png || true
+fi
 
 echo "=== 3. Preparing DMG staging folder & deploying standalone frameworks ==="
 STAGING_DIR="build/dmg_pack"
