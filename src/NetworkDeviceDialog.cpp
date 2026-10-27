@@ -230,6 +230,22 @@ void NetworkDeviceDialog::initUi() {
 
     card_layout->addLayout(input_row);
 
+    auto* tools_row = new QHBoxLayout();
+    tools_row->setSpacing(8);
+
+    m_btn_enable_tcp = IconManager::button("开启 USB 无线调试端口 (8710)", "", "device");
+    m_btn_enable_tcp->setToolTip("为当前已连接的 USB 设备开启 TCP 模式 (hdc tmode port 8710)，开启后拔掉数据线即可无线连接");
+    connect(m_btn_enable_tcp, &QPushButton::clicked, this, &NetworkDeviceDialog::onEnableUsbTcpMode);
+    tools_row->addWidget(m_btn_enable_tcp);
+
+    m_btn_restart_hdc = IconManager::button("重启 HDC 服务", "Secondary", "refresh");
+    m_btn_restart_hdc->setToolTip("重启底层 HDC 服务进程 (hdc kill && hdc start -r)，修复服务假死或连接异常");
+    connect(m_btn_restart_hdc, &QPushButton::clicked, this, &NetworkDeviceDialog::onRestartHdcService);
+    tools_row->addWidget(m_btn_restart_hdc);
+
+    tools_row->addStretch();
+    card_layout->addLayout(tools_row);
+
     m_error_label = IconManager::label("", "Muted");
     m_error_label->setStyleSheet("color: #ff9f9f; font-size: 12px;");
     card_layout->addWidget(m_error_label);
@@ -499,6 +515,64 @@ void NetworkDeviceDialog::disconnectTarget(const std::string& endpoint) {
 
     m_error_label->setStyleSheet("color: #79e6c9; font-size: 12px;");
     m_error_label->setText(QString("已执行 hdc tconn %1 -remove").arg(QString::fromStdString(endpoint)));
+    refreshData();
+}
+
+void NetworkDeviceDialog::onEnableUsbTcpMode() {
+    if (!m_hdc) return;
+
+    m_error_label->setStyleSheet("color: #f3c969; font-size: 12px;");
+    m_error_label->setText("正在检测 USB 设备并开启无线调试模式 (8710端口)…");
+
+    auto devs = m_hdc->listDevices();
+    std::string usb_serial;
+    for (const auto& d : devs) {
+        if (d.serial.find(':') == std::string::npos && d.state == DeviceState::Connected) {
+            usb_serial = d.serial;
+            break;
+        }
+    }
+
+    if (usb_serial.empty()) {
+        for (const auto& d : devs) {
+            if (d.serial.find(':') == std::string::npos && d.state == DeviceState::Unauthorized) {
+                m_error_label->setStyleSheet("color: #ff9f9f; font-size: 12px;");
+                m_error_label->setText("USB 设备未授权：请先在设备屏幕上点击【允许USB调试】或【始终允许】！");
+                return;
+            }
+        }
+        m_error_label->setStyleSheet("color: #ff9f9f; font-size: 12px;");
+        m_error_label->setText("未检测到已连接的 USB 设备。请先用 USB 数据线将设备与电脑连接！");
+        return;
+    }
+
+    bool ok = m_hdc->enableTcpMode(usb_serial, 8710);
+    if (ok) {
+        m_error_label->setStyleSheet("color: #79e6c9; font-size: 12px;");
+        m_error_label->setText(QString("成功为设备开启 8710 无线调试端口！拔出 USB 线后输入 IP 即可无线投屏。"));
+        QMessageBox::information(this, "无线调试开启成功",
+            QString("已成功为设备开启 8710 无线调试端口！\n\n设备标识: %1\n\n使用指南：\n1. 现在您可以安全拔下 USB 数据线；\n2. 确保手机与电脑在同一 Wi-Fi 局域网；\n3. 查看手机【设置 -> WLAN / 关于手机】中的 IP 地址并在上方输入连接即可。")
+            .arg(QString::fromStdString(usb_serial)));
+    } else {
+        m_error_label->setStyleSheet("color: #ff9f9f; font-size: 12px;");
+        m_error_label->setText("开启无线调试模式失败，请确认设备已授权或尝试点击【重启 HDC 服务】。");
+    }
+}
+
+void NetworkDeviceDialog::onRestartHdcService() {
+    if (!m_hdc) return;
+
+    m_error_label->setStyleSheet("color: #f3c969; font-size: 12px;");
+    m_error_label->setText("正在重启底层 HDC 服务…");
+
+    bool ok = m_hdc->restartServer();
+    if (ok) {
+        m_error_label->setStyleSheet("color: #79e6c9; font-size: 12px;");
+        m_error_label->setText("HDC 服务已成功重启并重载设备连接。");
+    } else {
+        m_error_label->setStyleSheet("color: #ff9f9f; font-size: 12px;");
+        m_error_label->setText("重启 HDC 服务失败，请检查 HDC 权限或进程。");
+    }
     refreshData();
 }
 

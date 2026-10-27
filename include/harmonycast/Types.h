@@ -51,7 +51,7 @@ struct Device {
     DeviceState state{DeviceState::Connected};
 
     bool operator==(const Device& other) const {
-        return serial == other.serial;
+        return serial == other.serial && state == other.state && is_network == other.is_network && port == other.port;
     }
 };
 

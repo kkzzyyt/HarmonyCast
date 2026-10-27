@@ -2247,20 +2247,35 @@ void MainWindow::onDevicesUpdated(const std::vector<Device>& devices) {
         std::string s = devices[i].serial;
         connected_serials.insert(s);
         QString text;
+        QString icon = "🟢 ";
+        QString statusText;
+        QString stateDesc = "已连接";
+
+        if (devices[i].state == DeviceState::Unauthorized) {
+            icon = "🔴 ";
+            statusText = " [未授权]";
+            stateDesc = "未授权 (请在设备上允许USB调试)";
+        } else if (devices[i].state == DeviceState::Offline) {
+            icon = "🟡 ";
+            statusText = " [离线]";
+            stateDesc = "离线 (请检查局域网连接)";
+        }
+
         if (s.find(':') != std::string::npos) {
             std::string host = s.substr(0, s.find(':'));
             connected_serials.insert(host);
             NetworkDeviceDialog::saveDevice(host, "", 8710);
-            text = QString("🟢 %1").arg(QString::fromStdString(s));
+            text = QString("%1%2%3").arg(icon).arg(QString::fromStdString(s)).arg(statusText);
         } else {
             std::string id_part = s.length() > 8 ? s.substr(s.length() - 6) : s;
-            text = QString("🟢 USB: %1").arg(QString::fromStdString(id_part));
+            text = QString("%1USB: %2%3").arg(icon).arg(QString::fromStdString(id_part)).arg(statusText);
         }
         m_device_combo->addItem(text, QString::fromStdString(s));
         m_device_combo->setItemData(static_cast<int>(i),
-            QString("%1\n型号: %2").arg(
+            QString("%1\n型号: %2\n状态: %3").arg(
                 QString::fromStdString(s),
-                QString::fromStdString(devices[i].model.empty() ? s : devices[i].model)
+                QString::fromStdString(devices[i].model.empty() ? s : devices[i].model),
+                stateDesc
             ), Qt::ToolTipRole);
 
         if (!m_pending_auto_start_serial.empty() && s == m_pending_auto_start_serial) {
@@ -2483,10 +2498,38 @@ void MainWindow::switchToSingleDevice(const std::string& endpoint) {
 
         if (gen != m_switch_generation) return;
 
-        // Query freshly updated devices right in the worker thread
-        auto fresh_devs = m_hdc->listDevices();
+        // Poll device list until target connects or unauthorized/offline is confirmed (up to 3.5s)
+        std::vector<Device> fresh_devs;
+        bool is_online = false;
+        DeviceState dev_state = DeviceState::Disconnected;
+        int max_attempts = (target.find(':') != std::string::npos) ? 10 : 3;
 
-        QMetaObject::invokeMethod(this, [this, target, fresh_devs, gen]() {
+        for (int attempt = 0; attempt < max_attempts; ++attempt) {
+            if (gen != m_switch_generation) return;
+            fresh_devs = m_hdc->listDevices();
+            for (const auto& d : fresh_devs) {
+                bool match = (d.serial == target);
+                if (!match && target.find(':') != std::string::npos) {
+                    std::string clean = target.substr(0, target.find(':'));
+                    if (d.serial.rfind(clean, 0) == 0) {
+                        match = true;
+                    }
+                }
+                if (match) {
+                    dev_state = d.state;
+                    if (d.state == DeviceState::Connected) {
+                        is_online = true;
+                        break;
+                    }
+                }
+            }
+            if (is_online || dev_state == DeviceState::Unauthorized) {
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(350));
+        }
+
+        QMetaObject::invokeMethod(this, [this, target, fresh_devs, gen, is_online, dev_state]() {
             if (gen != m_switch_generation) return;
 
             m_device_combo->setEnabled(true);
@@ -2494,17 +2537,14 @@ void MainWindow::switchToSingleDevice(const std::string& endpoint) {
             m_pending_auto_start_serial = target;
             m_user_stopped_mirror = false;
 
-            bool is_online = false;
-            for (const auto& d : fresh_devs) {
-                if (d.serial == target || (target.find(':') != std::string::npos && d.serial.rfind(target.substr(0, target.find(':')), 0) == 0)) {
-                    is_online = true;
-                    break;
-                }
-            }
-
-            if (!is_online) {
-                m_screen->setStatusMessage(QString("连接失败：无法连接至 %1，请检查设备 IP 及网络").arg(QString::fromStdString(target)));
-                statusBar()->showMessage(QString("连接设备 %1 失败，请检查 IP 是否正确且处于同一局域网").arg(QString::fromStdString(target)), 4000);
+            if (dev_state == DeviceState::Unauthorized) {
+                m_screen->setStatusMessage("设备未授权：请在设备屏幕上点击【允许USB调试】或【始终允许】");
+                statusBar()->showMessage("设备未授权：请在设备屏幕上点击允许调试", 5000);
+                showToast("设备未授权：请在设备屏幕上允许调试");
+                m_pending_auto_start_serial.clear();
+            } else if (!is_online) {
+                m_screen->setStatusMessage(QString("连接失败：无法连接至 %1。若使用无线调试，请确保手机与电脑在同一局域网，且曾通过USB开启无线调试 (hdc tmode port 8710)").arg(QString::fromStdString(target)));
+                statusBar()->showMessage(QString("连接设备 %1 失败，请检查 IP 及无线调试端口").arg(QString::fromStdString(target)), 5000);
                 showToast(QString("连接失败: 无法连接至 %1").arg(QString::fromStdString(target)));
                 m_pending_auto_start_serial.clear();
             } else {
@@ -2576,14 +2616,27 @@ void MainWindow::startMirror() {
     }
 
     bool is_connected = false;
+    DeviceState cur_state = DeviceState::Disconnected;
     for (const auto& d : m_cached_devices) {
         if (d.serial == s || (s.find(':') != std::string::npos && d.serial.rfind(s.substr(0, s.find(':')), 0) == 0)) {
-            is_connected = true;
+            cur_state = d.state;
+            if (d.state == DeviceState::Connected) {
+                is_connected = true;
+            }
             break;
         }
     }
     if (!is_connected) {
-        showToast("所选设备当前未连接，请先连接设备");
+        if (cur_state == DeviceState::Unauthorized) {
+            showToast("所选设备未授权，请在设备屏幕上点击【允许USB调试】");
+            m_screen->setStatusMessage("设备未授权：请在设备屏幕上点击【允许USB调试】或【始终允许】");
+        } else if (cur_state == DeviceState::Offline) {
+            showToast("所选设备处于离线状态，请检查局域网连接");
+            m_screen->setStatusMessage("设备离线：请检查设备网络连接，确保手机与电脑在同一局域网");
+        } else {
+            showToast("所选设备当前未连接，请先连接设备");
+            m_screen->setStatusMessage("设备未连接，请先点击右上角设备维护中心连接设备");
+        }
         return;
     }
 

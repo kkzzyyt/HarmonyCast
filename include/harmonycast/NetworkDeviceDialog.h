@@ -51,6 +51,8 @@ private slots:
     void onTableDoubleClicked(int row, int column);
     void onConnectAndSave();
     void onDisconnectInput();
+    void onEnableUsbTcpMode();
+    void onRestartHdcService();
 
 private:
     void initUi();
@@ -72,6 +74,8 @@ private:
     QLineEdit* m_port_input{nullptr};
     QPushButton* m_btn_disconnect_input{nullptr};
     QPushButton* m_btn_connect{nullptr};
+    QPushButton* m_btn_enable_tcp{nullptr};
+    QPushButton* m_btn_restart_hdc{nullptr};
     QLabel* m_error_label{nullptr};
 
     std::function<void(const std::string&)> m_on_connect;

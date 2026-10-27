@@ -45,6 +45,9 @@ public:
     bool forwardPort(const std::string& serial, int local_port, int remote_port) const;
     bool removeForward(const std::string& serial, int local_port, int remote_port) const;
 
+    bool enableTcpMode(const std::string& serial = "", int port = 8710) const;
+    bool restartServer() const;
+
     bool fileSend(const std::string& serial, const std::string& local_path, const std::string& remote_path) const;
     bool fileRecv(const std::string& serial, const std::string& remote_path, const std::string& local_path) const;
 

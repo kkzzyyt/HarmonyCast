@@ -168,6 +168,21 @@ void test_stream_session_and_types() {
     assert(!session.isFallbackSnapshot());
     assert(session.device().serial == "127.0.0.1:8710");
 
+    // Test Device equality with state
+    Device d1;
+    d1.serial = "192.168.1.100:8710";
+    d1.state = DeviceState::Connected;
+    Device d2;
+    d2.serial = "192.168.1.100:8710";
+    d2.state = DeviceState::Connected;
+    assert(d1 == d2);
+
+    d2.state = DeviceState::Unauthorized;
+    assert(!(d1 == d2));
+
+    d2.state = DeviceState::Offline;
+    assert(!(d1 == d2));
+
     // Test Quality index setting
     session.setQuality(0, 20000000);
     assert(session.qualityIndex() == 0);

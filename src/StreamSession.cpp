@@ -114,8 +114,22 @@ bool StreamSession::launchServerAsync(const std::shared_ptr<HdcClient>& hdc,
 
     std::string remote_bin = "/data/local/tmp/harmonycast_capture";
     if (!local_bin.isEmpty()) {
-        hdc->fileSend(serial, local_bin.toStdString(), remote_bin);
-        hdc->run({"shell", "chmod", "755", remote_bin}, serial, 3000);
+        QFileInfo linfo(local_bin);
+        qint64 local_size = linfo.size();
+        bool need_push = true;
+
+        // Fast-path: check if binary already exists on remote device with matching file size
+        auto check_res = hdc->run({"shell", "ls", "-l", remote_bin}, serial, 2000);
+        if (check_res.success() && !check_res.out.empty()) {
+            if (check_res.out.find(std::to_string(local_size)) != std::string::npos) {
+                need_push = false;
+            }
+        }
+
+        if (need_push) {
+            hdc->fileSend(serial, local_bin.toStdString(), remote_bin);
+            hdc->run({"shell", "chmod", "755", remote_bin}, serial, 3000);
+        }
     }
 
     // Kill any previous capture instances
@@ -195,7 +209,7 @@ void StreamSession::tryConnectSocket(int attempt, uint64_t gen) {
         return;
     }
 
-    if (attempt >= 8) {
+    if (attempt >= 16) {
         emit statusChanged("硬件采屏未响应，自动切换为兼容快照流 (snapshot_display)…");
         startSnapshotFallback();
         return;

@@ -174,13 +174,37 @@ std::vector<Device> HdcClient::listDevices() const {
 }
 
 bool HdcClient::forwardPort(const std::string& serial, int local_port, int remote_port) const {
-    std::string fport_spec = "tcp:" + std::to_string(local_port) + " tcp:" + std::to_string(remote_port);
+    // 1. Remove any previous/stale mapping on this local port first to prevent collision
+    removeForward(serial, local_port, remote_port);
+
+    // 2. Set up new forwarding rule
     auto res = run({"fport", "tcp:" + std::to_string(local_port), "tcp:" + std::to_string(remote_port)}, serial);
-    return res.success() && res.out.find("Forwardport result:OK") != std::string::npos;
+    if (!res.success()) return false;
+
+    // OpenHarmony hdc output variations: "Forwardport result:OK", "Forwardport result: OK", "result:OK", "success"
+    std::string out = res.out;
+    for (auto& c : out) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return out.find("ok") != std::string::npos || out.find("success") != std::string::npos;
 }
 
 bool HdcClient::removeForward(const std::string& serial, int local_port, int remote_port) const {
     auto res = run({"fport", "rm", "tcp:" + std::to_string(local_port), "tcp:" + std::to_string(remote_port)}, serial);
+    return res.success();
+}
+
+bool HdcClient::enableTcpMode(const std::string& serial, int port) const {
+    auto res = run({"tmode", "port", std::to_string(port)}, serial, 8000);
+    if (!res.success()) return false;
+    std::string out = res.out;
+    for (auto& c : out) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return out.find("success") != std::string::npos ||
+           out.find("ok") != std::string::npos ||
+           out.find("set device run mode") != std::string::npos;
+}
+
+bool HdcClient::restartServer() const {
+    run({"kill"}, "", 3000);
+    auto res = run({"start", "-r"}, "", 6000);
     return res.success();
 }
 
