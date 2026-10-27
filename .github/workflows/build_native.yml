@@ -19,10 +19,10 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Install Qt6 and FFmpeg
+      - name: Install Qt6, FFmpeg and create-dmg
         run: |
           brew update
-          brew install qt ffmpeg
+          brew install qt ffmpeg create-dmg
 
       - name: Configure CMake
         run: |
@@ -39,17 +39,17 @@ jobs:
 
       - name: Package Standalone macOS DMG
         run: |
-          /opt/homebrew/bin/macdeployqt build/HarmonyCast.app -dmg
-          mv build/HarmonyCast.dmg build/HarmonyCast-macOS-arm64.dmg
+          chmod +x ./scripts/build_dmg.sh
+          ./scripts/build_dmg.sh
 
       - name: Upload macOS Artifact
         uses: actions/upload-artifact@v4
         with:
           name: HarmonyCast-macOS-arm64
-          path: build/HarmonyCast-macOS-arm64.dmg
+          path: build/HarmonyCast-*-macOS-arm64.dmg
 
   build-windows:
-    name: Build Windows x64 Executable & ZIP
+    name: Build Windows x64 Executable & Single EXE
     runs-on: windows-latest
     steps:
       - name: Checkout Code
@@ -80,16 +80,48 @@ jobs:
         run: |
           windeployqt build/Release/HarmonyCast.exe --no-translations --compiler-runtime
 
-      - name: Create Windows ZIP Package
+      - name: Copy Resources to Release Directory
         shell: pwsh
         run: |
-          Compress-Archive -Path build/Release/* -DestinationPath build/HarmonyCast-Windows-x64.zip
+          Copy-Item -Recurse -Force resources build/Release/resources
 
-      - name: Upload Windows Artifact
+      - name: Extract Version
+        id: get_version
+        shell: pwsh
+        run: |
+          $ver = (Select-String -Path CMakeLists.txt -Pattern 'project\(HarmonyCast VERSION ([0-9.]+)').Matches.Groups[1].Value
+          echo "VERSION=$ver" >> $env:GITHUB_OUTPUT
+
+      - name: Build Single-File Portable EXE and Setup Installer via NSIS
+        shell: pwsh
+        run: |
+          $ver = "${{ steps.get_version.outputs.VERSION }}"
+          $portable_out = "build\HarmonyCast-$ver-Windows-x64.exe"
+          $setup_out = "build\HarmonyCast-$ver-Setup-x64.exe"
+          
+          # 1. Build Single-File Portable EXE ("就一个exe文件")
+          makensis /DICON_PATH="resources/app-icon.ico" `
+                   /DSTAGING_DIR="build/Release" `
+                   /DOUTPUT_EXE="$portable_out" `
+                   scripts/windows/portable.nsi
+
+          # 2. Build 1-Click Setup Installer EXE
+          makensis /DICON_PATH="resources/app-icon.ico" `
+                   /DSTAGING_DIR="build/Release" `
+                   /DOUTPUT_SETUP="$setup_out" `
+                   scripts/windows/installer.nsi
+
+          # 3. Create fallback ZIP package
+          Compress-Archive -Path build/Release/* -DestinationPath "build\HarmonyCast-$ver-Windows-x64.zip"
+
+      - name: Upload Windows Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: HarmonyCast-Windows-x64
-          path: build/HarmonyCast-Windows-x64.zip
+          path: |
+            build/HarmonyCast-*-Windows-x64.exe
+            build/HarmonyCast-*-Setup-x64.exe
+            build/HarmonyCast-*-Windows-x64.zip
 
   release:
     name: Publish GitHub Release

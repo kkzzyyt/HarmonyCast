@@ -136,7 +136,14 @@ if(APPLE)
         COMMENT "Copying resources and applying ad-hoc code signature to HarmonyCast.app"
     )
 else()
+    if(WIN32)
+        list(APPEND APP_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/resources/windows/HarmonyCast.rc")
+    endif()
     add_executable(HarmonyCast WIN32 ${APP_SOURCES})
+    add_custom_command(TARGET HarmonyCast POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/resources" "$<TARGET_FILE_DIR:HarmonyCast>/resources"
+        COMMENT "Copying resources to target directory"
+    )
 endif()
 
 target_include_directories(HarmonyCast PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
