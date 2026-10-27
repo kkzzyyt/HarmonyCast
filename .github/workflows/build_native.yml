@@ -112,24 +112,27 @@ jobs:
       - name: Build Single-File Portable EXE and Setup Installer via NSIS
         shell: pwsh
         run: |
+          $repo_root = (Get-Location).Path
           $ver = "${{ steps.get_version.outputs.VERSION }}"
-          $portable_out = "build\HarmonyCast-$ver-Windows-x64.exe"
-          $setup_out = "build\HarmonyCast-$ver-Setup-x64.exe"
+          $icon_path = "$repo_root\resources\app-icon.ico"
+          $staging_dir = "$repo_root\build\Release"
+          $portable_out = "$repo_root\build\HarmonyCast-$ver-Windows-x64.exe"
+          $setup_out = "$repo_root\build\HarmonyCast-$ver-Setup-x64.exe"
           
           # 1. Build Single-File Portable EXE ("就一个exe文件")
-          makensis /DICON_PATH="resources\app-icon.ico" `
-                   /DSTAGING_DIR="build\Release" `
+          makensis /DICON_PATH="$icon_path" `
+                   /DSTAGING_DIR="$staging_dir" `
                    /DOUTPUT_EXE="$portable_out" `
                    scripts\windows\portable.nsi
 
           # 2. Build 1-Click Setup Installer EXE
-          makensis /DICON_PATH="resources\app-icon.ico" `
-                   /DSTAGING_DIR="build\Release" `
+          makensis /DICON_PATH="$icon_path" `
+                   /DSTAGING_DIR="$staging_dir" `
                    /DOUTPUT_SETUP="$setup_out" `
                    scripts\windows\installer.nsi
 
           # 3. Create fallback ZIP package
-          Compress-Archive -Path build/Release/* -DestinationPath "build\HarmonyCast-$ver-Windows-x64.zip"
+          Compress-Archive -Path build\Release\* -DestinationPath "build\HarmonyCast-$ver-Windows-x64.zip"
 
       - name: Upload Windows Artifacts
         uses: actions/upload-artifact@v4
