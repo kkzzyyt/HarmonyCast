@@ -77,7 +77,7 @@ jobs:
         shell: pwsh
         run: |
           cmake -B build -DCMAKE_BUILD_TYPE=Release `
-            -DCMAKE_PREFIX_PATH="$env:Qt6_DIR;$env:FFMPEG_DIR" `
+            -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR;$env:FFMPEG_DIR" `
             -DFFMPEG_DIR="$env:FFMPEG_DIR"
 
       - name: Build HarmonyCast
@@ -87,7 +87,11 @@ jobs:
       - name: Deploy Qt & FFmpeg Dependencies
         shell: pwsh
         run: |
-          & "$env:Qt6_DIR\bin\windeployqt.exe" build/Release/HarmonyCast.exe --no-translations --compiler-runtime
+          if (Test-Path "$env:QT_ROOT_DIR\bin\windeployqt.exe") {
+              & "$env:QT_ROOT_DIR\bin\windeployqt.exe" build\Release\HarmonyCast.exe --no-translations --compiler-runtime
+          } else {
+              windeployqt build\Release\HarmonyCast.exe --no-translations --compiler-runtime
+          }
           Copy-Item "$env:FFMPEG_DIR\bin\*.dll" build\Release\
 
       - name: Copy Resources to Release Directory
