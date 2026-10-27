@@ -8,8 +8,18 @@
 #include <exception>
 #include <csignal>
 #include <cstring>
+#ifdef _WIN32
+#include <io.h>
+#include <fcntl.h>
+#include <windows.h>
+#include <sys/stat.h>
+#define write _write
+#define open _open
+#define close _close
+#else
 #include <unistd.h>
 #include <fcntl.h>
+#endif
 #include <time.h>
 
 #if defined(__APPLE__) || defined(__linux__)
@@ -44,7 +54,11 @@ static void writeCrashReport(const char* reason, const char* details, void* faul
 
     time_t now = time(nullptr);
     struct tm tm_buf;
+#ifdef _WIN32
+    localtime_s(&tm_buf, &now);
+#else
     localtime_r(&now, &tm_buf);
+#endif
 
     char filename[512];
     snprintf(filename, sizeof(filename), "%s/crash_%04d%02d%02d_%02d%02d%02d.log",
@@ -52,7 +66,11 @@ static void writeCrashReport(const char* reason, const char* details, void* faul
              tm_buf.tm_year + 1900, tm_buf.tm_mon + 1, tm_buf.tm_mday,
              tm_buf.tm_hour, tm_buf.tm_min, tm_buf.tm_sec);
 
+#ifdef _WIN32
+    int fd = ::_open(filename, _O_WRONLY | _O_CREAT | _O_TRUNC, _S_IREAD | _S_IWRITE);
+#else
     int fd = ::open(filename, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+#endif
     if (fd < 0) return;
 
     writeSafeString(fd, "================================================================================\n");
@@ -119,7 +137,11 @@ static void writeCrashReport(const char* reason, const char* details, void* faul
 
     // Create marker file for previous crash alert
     if (g_marker_path[0] != '\0') {
+#ifdef _WIN32
+        int mfd = ::_open(g_marker_path, _O_WRONLY | _O_CREAT | _O_TRUNC, _S_IREAD | _S_IWRITE);
+#else
         int mfd = ::open(g_marker_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+#endif
         if (mfd >= 0) {
             writeSafeString(mfd, filename);
             ::close(mfd);
@@ -173,6 +195,37 @@ void CrashHandler::install() {
 
     snprintf(g_app_info, sizeof(g_app_info), "HarmonyCast v2.2.0 (Built %s %s)", __DATE__, __TIME__);
 
+#ifdef _WIN32
+    // Install Windows SEH unhandled exception filter
+    SetUnhandledExceptionFilter([](EXCEPTION_POINTERS* ep) -> LONG {
+        char reason[128];
+        snprintf(reason, sizeof(reason), "Windows Exception 0x%08lX", ep ? ep->ExceptionRecord->ExceptionCode : 0);
+        void* faultAddr = ep ? ep->ExceptionRecord->ExceptionAddress : nullptr;
+        writeCrashReport(reason, "Unhandled Windows SEH exception", faultAddr);
+        return EXCEPTION_CONTINUE_SEARCH;
+    });
+
+    signal(SIGSEGV, [](int sig) {
+        writeCrashReport("SIGSEGV", "Fatal OS signal received", nullptr);
+        signal(sig, SIG_DFL);
+        raise(sig);
+    });
+    signal(SIGABRT, [](int sig) {
+        writeCrashReport("SIGABRT", "Fatal OS signal received", nullptr);
+        signal(sig, SIG_DFL);
+        raise(sig);
+    });
+    signal(SIGFPE, [](int sig) {
+        writeCrashReport("SIGFPE", "Fatal OS signal received", nullptr);
+        signal(sig, SIG_DFL);
+        raise(sig);
+    });
+    signal(SIGILL, [](int sig) {
+        writeCrashReport("SIGILL", "Fatal OS signal received", nullptr);
+        signal(sig, SIG_DFL);
+        raise(sig);
+    });
+#else
     // Install POSIX signal handlers
     struct sigaction sa;
     std::memset(&sa, 0, sizeof(sa));
@@ -185,6 +238,7 @@ void CrashHandler::install() {
     sigaction(SIGBUS,  &sa, nullptr);
     sigaction(SIGFPE,  &sa, nullptr);
     sigaction(SIGILL,  &sa, nullptr);
+#endif
 
     // Install C++ terminate handler
     std::set_terminate(onTerminate);

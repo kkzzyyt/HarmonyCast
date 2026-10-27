@@ -14,7 +14,12 @@
 #include <mutex>
 #include <deque>
 #include <atomic>
+#ifdef _WIN32
+#include <io.h>
+#define write _write
+#else
 #include <unistd.h>
+#endif
 #include <sys/stat.h>
 
 #if defined(__APPLE__)
