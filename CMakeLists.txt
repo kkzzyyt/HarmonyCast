@@ -17,13 +17,21 @@ set(CMAKE_AUTOUIC ON)
 
 # Find FFmpeg
 find_path(FFMPEG_INCLUDE_DIR libavcodec/avcodec.h
-    PATHS /opt/homebrew/opt/ffmpeg/include /usr/local/include /usr/include)
-find_library(AVCODEC_LIBRARY avcodec
-    PATHS /opt/homebrew/opt/ffmpeg/lib /usr/local/lib /usr/lib)
-find_library(AVUTIL_LIBRARY avutil
-    PATHS /opt/homebrew/opt/ffmpeg/lib /usr/local/lib /usr/lib)
-find_library(SWSCALE_LIBRARY swscale
-    PATHS /opt/homebrew/opt/ffmpeg/lib /usr/local/lib /usr/lib)
+    PATHS /opt/homebrew/opt/ffmpeg/include /usr/local/include /usr/include
+          $ENV{FFMPEG_DIR}/include
+          ${FFMPEG_DIR}/include)
+find_library(AVCODEC_LIBRARY NAMES avcodec avcodec.lib
+    PATHS /opt/homebrew/opt/ffmpeg/lib /usr/local/lib /usr/lib
+          $ENV{FFMPEG_DIR}/lib
+          ${FFMPEG_DIR}/lib)
+find_library(AVUTIL_LIBRARY NAMES avutil avutil.lib
+    PATHS /opt/homebrew/opt/ffmpeg/lib /usr/local/lib /usr/lib
+          $ENV{FFMPEG_DIR}/lib
+          ${FFMPEG_DIR}/lib)
+find_library(SWSCALE_LIBRARY NAMES swscale swscale.lib
+    PATHS /opt/homebrew/opt/ffmpeg/lib /usr/local/lib /usr/lib
+          $ENV{FFMPEG_DIR}/lib
+          ${FFMPEG_DIR}/lib)
 
 if(NOT FFMPEG_INCLUDE_DIR OR NOT AVCODEC_LIBRARY)
     message(FATAL_ERROR "FFmpeg (libavcodec, libavutil, libswscale) not found!")
