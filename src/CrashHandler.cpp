@@ -171,7 +171,7 @@ void CrashHandler::install() {
     QString markerPath = crashDirPath + "/.unreviewed_crash";
     std::strncpy(g_marker_path, markerPath.toUtf8().constData(), sizeof(g_marker_path) - 1);
 
-    snprintf(g_app_info, sizeof(g_app_info), "HarmonyCast v2.1.2 (Built %s %s)", __DATE__, __TIME__);
+    snprintf(g_app_info, sizeof(g_app_info), "HarmonyCast v2.2.0 (Built %s %s)", __DATE__, __TIME__);
 
     // Install POSIX signal handlers
     struct sigaction sa;
