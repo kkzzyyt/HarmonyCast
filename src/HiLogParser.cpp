@@ -81,7 +81,11 @@ HiLogEntry HiLogParser::parseLine(std::string_view raw_line, const std::string& 
         auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) % 1000;
         auto timer = std::chrono::system_clock::to_time_t(now);
         std::tm bt{};
+#ifdef _WIN32
+        localtime_s(&bt, &timer);
+#else
         localtime_r(&timer, &bt);
+#endif
         std::ostringstream ss;
         ss << std::put_time(&bt, "%H:%M:%S") << '.' << std::setfill('0') << std::setw(3) << ms.count();
         entry.timestamp = ss.str();
