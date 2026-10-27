@@ -16,7 +16,6 @@
 #include <atomic>
 #ifdef _WIN32
 #include <io.h>
-#define write _write
 #else
 #include <unistd.h>
 #endif
@@ -93,6 +92,17 @@ void Logger::dumpTrailToFd(int fd) {
     size_t total = s_trail_total.load(std::memory_order_relaxed);
     if (total == 0) return;
 
+#ifdef _WIN32
+    if (total < TRAIL_SIZE) {
+        ::_write(fd, s_trail_buffer, static_cast<unsigned int>(total));
+    } else {
+        size_t head = s_trail_head.load(std::memory_order_relaxed) % TRAIL_SIZE;
+        ::_write(fd, s_trail_buffer + head, static_cast<unsigned int>(TRAIL_SIZE - head));
+        if (head > 0) {
+            ::_write(fd, s_trail_buffer, static_cast<unsigned int>(head));
+        }
+    }
+#else
     if (total < TRAIL_SIZE) {
         ::write(fd, s_trail_buffer, total);
     } else {
@@ -102,6 +112,7 @@ void Logger::dumpTrailToFd(int fd) {
             ::write(fd, s_trail_buffer, head);
         }
     }
+#endif
 }
 
 void Logger::rotateLogsIfNeeded() {

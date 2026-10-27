@@ -13,9 +13,6 @@
 #include <fcntl.h>
 #include <windows.h>
 #include <sys/stat.h>
-#define write _write
-#define open _open
-#define close _close
 #else
 #include <unistd.h>
 #include <fcntl.h>
@@ -37,7 +34,9 @@ static const char* signalToName(int sig) {
     switch (sig) {
         case SIGSEGV: return "SIGSEGV (Segmentation Fault: Invalid memory access)";
         case SIGABRT: return "SIGABRT (Abort: Assertion failure or abort called)";
+#ifdef SIGBUS
         case SIGBUS:  return "SIGBUS (Bus Error: Non-existent physical address or unaligned access)";
+#endif
         case SIGFPE:  return "SIGFPE (Floating Point Exception: Division by zero or overflow)";
         case SIGILL:  return "SIGILL (Illegal Instruction)";
         default:      return "UNKNOWN_SIGNAL";
@@ -46,7 +45,11 @@ static const char* signalToName(int sig) {
 
 static void writeSafeString(int fd, const char* str) {
     if (fd < 0 || !str) return;
+#ifdef _WIN32
+    ::_write(fd, str, static_cast<unsigned int>(std::strlen(str)));
+#else
     ::write(fd, str, std::strlen(str));
+#endif
 }
 
 static void writeCrashReport(const char* reason, const char* details, void* fault_addr) {
@@ -133,7 +136,11 @@ static void writeCrashReport(const char* reason, const char* details, void* faul
     writeSafeString(fd, "End of Crash Report\n");
     writeSafeString(fd, "================================================================================\n");
 
+#ifdef _WIN32
+    ::_close(fd);
+#else
     ::close(fd);
+#endif
 
     // Create marker file for previous crash alert
     if (g_marker_path[0] != '\0') {
@@ -144,11 +151,16 @@ static void writeCrashReport(const char* reason, const char* details, void* faul
 #endif
         if (mfd >= 0) {
             writeSafeString(mfd, filename);
+#ifdef _WIN32
+            ::_close(mfd);
+#else
             ::close(mfd);
+#endif
         }
     }
 }
 
+#ifndef _WIN32
 static void posixSignalHandler(int sig, siginfo_t* info, void* ucontext) {
     (void)ucontext;
     void* fault_addr = (info ? info->si_addr : nullptr);
@@ -162,6 +174,7 @@ static void posixSignalHandler(int sig, siginfo_t* info, void* ucontext) {
     sigaction(sig, &sa, nullptr);
     raise(sig);
 }
+#endif
 
 static void onTerminate() {
     std::exception_ptr p = std::current_exception();
