@@ -99,6 +99,9 @@ jobs:
         run: |
           Copy-Item -Recurse -Force resources build/Release/resources
 
+      - name: Setup NSIS
+        uses: nsis-dev/setup-nsis@v1
+
       - name: Extract Version
         id: get_version
         shell: pwsh
