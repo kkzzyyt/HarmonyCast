@@ -120,16 +120,10 @@ jobs:
           $setup_out = "$repo_root\build\HarmonyCast-$ver-Setup-x64.exe"
           
           # 1. Build Single-File Portable EXE ("就一个exe文件")
-          makensis /DICON_PATH="$icon_path" `
-                   /DSTAGING_DIR="$staging_dir" `
-                   /DOUTPUT_EXE="$portable_out" `
-                   scripts\windows\portable.nsi
+          makensis /DICON_PATH="$icon_path" /DSTAGING_DIR="$staging_dir" /DOUTPUT_EXE="$portable_out" scripts\windows\portable.nsi
 
           # 2. Build 1-Click Setup Installer EXE
-          makensis /DICON_PATH="$icon_path" `
-                   /DSTAGING_DIR="$staging_dir" `
-                   /DOUTPUT_SETUP="$setup_out" `
-                   scripts\windows\installer.nsi
+          makensis /DICON_PATH="$icon_path" /DSTAGING_DIR="$staging_dir" /DOUTPUT_SETUP="$setup_out" scripts\windows\installer.nsi
 
           # 3. Create fallback ZIP package
           Compress-Archive -Path build\Release\* -DestinationPath "build\HarmonyCast-$ver-Windows-x64.zip"
@@ -199,10 +193,7 @@ jobs:
       - name: Configure compatibility edition
         shell: pwsh
         run: |
-          cmake -B build-server2012 -A x64 -T v142 `
-            -DCMAKE_SYSTEM_VERSION=10.0.19041.0 `
-            -DHARMONYCAST_SERVER2012_COMPAT=ON `
-            -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR" -DFFMPEG_DIR="$env:FFMPEG_DIR"
+          cmake -B build-server2012 -A x64 -T v142 -DCMAKE_SYSTEM_VERSION=10.0.19041.0 -DHARMONYCAST_SERVER2012_COMPAT=ON -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR;$env:FFMPEG_DIR" -DFFMPEG_DIR="$env:FFMPEG_DIR"
 
       - name: Build compatibility edition
         run: cmake --build build-server2012 --config Release
@@ -248,11 +239,9 @@ jobs:
           $ver = (Select-String -Path CMakeLists.txt -Pattern 'project\(HarmonyCast VERSION ([0-9.]+)').Matches.Groups[1].Value
           $icon = "$repo\resources\app-icon.ico"
           $staging = "$repo\build-server2012\package"
-          makensis /DICON_PATH="$icon" /DSTAGING_DIR="$staging" `
-            /DOUTPUT_EXE="$repo\build-server2012\HarmonyCast-$ver-Windows-Server2012-x64.exe" scripts\windows\portable.nsi
+          makensis /DICON_PATH="$icon" /DSTAGING_DIR="$staging" /DOUTPUT_EXE="$repo\build-server2012\HarmonyCast-$ver-Windows-Server2012-x64.exe" scripts\windows\portable.nsi
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          makensis /DICON_PATH="$icon" /DSTAGING_DIR="$staging" `
-            /DOUTPUT_SETUP="$repo\build-server2012\HarmonyCast-$ver-Setup-Server2012-x64.exe" scripts\windows\installer.nsi
+          makensis /DICON_PATH="$icon" /DSTAGING_DIR="$staging" /DOUTPUT_SETUP="$repo\build-server2012\HarmonyCast-$ver-Setup-Server2012-x64.exe" scripts\windows\installer.nsi
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Compress-Archive -Path "$staging\*" -DestinationPath "build-server2012\HarmonyCast-$ver-Windows-Server2012-x64.zip"
 

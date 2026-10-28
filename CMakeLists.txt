@@ -40,15 +40,15 @@ find_path(FFMPEG_INCLUDE_DIR libavcodec/avcodec.h
     PATHS /opt/homebrew/opt/ffmpeg/include /usr/local/include /usr/include
           $ENV{FFMPEG_DIR}/include
           ${FFMPEG_DIR}/include)
-find_library(AVCODEC_LIBRARY NAMES avcodec avcodec.lib
+find_library(AVCODEC_LIBRARY NAMES avcodec avcodec.lib libavcodec libavcodec.lib avcodec-61 avcodec-60
     PATHS /opt/homebrew/opt/ffmpeg/lib /usr/local/lib /usr/lib
           $ENV{FFMPEG_DIR}/lib
           ${FFMPEG_DIR}/lib)
-find_library(AVUTIL_LIBRARY NAMES avutil avutil.lib
+find_library(AVUTIL_LIBRARY NAMES avutil avutil.lib libavutil libavutil.lib avutil-59 avutil-58
     PATHS /opt/homebrew/opt/ffmpeg/lib /usr/local/lib /usr/lib
           $ENV{FFMPEG_DIR}/lib
           ${FFMPEG_DIR}/lib)
-find_library(SWSCALE_LIBRARY NAMES swscale swscale.lib
+find_library(SWSCALE_LIBRARY NAMES swscale swscale.lib libswscale libswscale.lib swscale-8 swscale-7
     PATHS /opt/homebrew/opt/ffmpeg/lib /usr/local/lib /usr/lib
           $ENV{FFMPEG_DIR}/lib
           ${FFMPEG_DIR}/lib)

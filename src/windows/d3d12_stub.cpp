@@ -1,4 +1,5 @@
 #include <windows.h>
+#include <unknwn.h>
 
 #ifndef DXGI_ERROR_UNSUPPORTED
 #define DXGI_ERROR_UNSUPPORTED ((HRESULT)0x887A0004L)
@@ -7,6 +8,8 @@
 #ifndef E_NOTIMPL
 #define E_NOTIMPL ((HRESULT)0x80004001L)
 #endif
+
+struct IUnknown;
 
 extern "C" {
 
