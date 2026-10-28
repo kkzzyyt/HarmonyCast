@@ -442,14 +442,14 @@ void test_update_checker() {
 
     // 2. Ignore version logic
     UpdateChecker checker;
-    assert(checker.currentVersion() == "2.2.0");
+    assert(checker.currentVersion() == "2.2.1");
 
     checker.ignoreVersion("2.3.0");
     assert(checker.isVersionIgnored("2.3.0"));
     assert(!checker.isVersionIgnored("2.4.0"));
 
     checker.clearIgnoredVersion();
-    assert(!checker.isVersionIgnored("2.2.0"));
+    assert(!checker.isVersionIgnored("2.2.1"));
 
     std::cout << "[PASS] test_update_checker passed!" << std::endl;
 }
