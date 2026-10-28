@@ -35,7 +35,10 @@ def check_directory(root: Path) -> list:
                 if image.FILE_HEADER.Machine != 0x8664:
                     errors.append(f"{label}: expected an x64 binary")
                 subsystem = (image.OPTIONAL_HEADER.MajorSubsystemVersion, image.OPTIONAL_HEADER.MinorSubsystemVersion)
-                if subsystem > (6, 2):
+                # Downlevel UCRT redistributable forwarders (api-ms-win-*.dll) carry subsystem (10, 0)
+                # in the Windows 10 SDK, but are intended for and load safely on Server 2012 / Windows 8.
+                is_api_set = binary.name.lower().startswith("api-ms-win-")
+                if not is_api_set and subsystem > (6, 2):
                     errors.append(f"{label}: subsystem {subsystem} requires a newer Windows version")
                 image.parse_data_directories(directories=[
                     pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_IMPORT"],

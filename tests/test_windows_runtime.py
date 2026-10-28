@@ -118,6 +118,10 @@ class Server2012RuntimeTests(unittest.TestCase):
         (self.root / "HarmonyCast.exe").write_bytes(pe_image(subsystem=(10, 0)))
         self.assertTrue(any("subsystem" in error for error in runtime.check_directory(self.root)))
 
+    def test_accepts_api_set_forwarder_newer_subsystem(self):
+        (self.root / "api-ms-win-crt-runtime-l1-1-0.dll").write_bytes(pe_image(subsystem=(10, 0)))
+        self.assertEqual(runtime.check_directory(self.root), [])
+
     def test_rejects_windows10_entry_point(self):
         (self.root / "Qt5Gui.dll").write_bytes(pe_image([("user32.dll", "GetDpiForWindow")]))
         self.assertTrue(any("GetDpiForWindow" in error for error in runtime.check_directory(self.root)))
