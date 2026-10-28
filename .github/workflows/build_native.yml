@@ -193,7 +193,14 @@ jobs:
       - name: Configure compatibility edition
         shell: pwsh
         run: |
-          cmake -B build-server2012 -A x64 -T v142 -DCMAKE_SYSTEM_VERSION=10.0.19041.0 -DHARMONYCAST_SERVER2012_COMPAT=ON -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR;$env:FFMPEG_DIR" -DFFMPEG_DIR="$env:FFMPEG_DIR"
+          $qt = $env:QT_ROOT_DIR -replace '\\', '/'
+          $ffmpeg = $env:FFMPEG_DIR -replace '\\', '/'
+          Get-ChildItem -Recurse $env:FFMPEG_DIR
+          cmake -B build-server2012 -A x64 -T v142 `
+            "-DCMAKE_SYSTEM_VERSION=10.0.19041.0" `
+            "-DHARMONYCAST_SERVER2012_COMPAT=ON" `
+            "-DCMAKE_PREFIX_PATH=$qt;$ffmpeg" `
+            "-DFFMPEG_DIR=$ffmpeg"
 
       - name: Build compatibility edition
         run: cmake --build build-server2012 --config Release

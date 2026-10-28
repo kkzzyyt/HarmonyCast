@@ -36,24 +36,37 @@ set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
 # Find FFmpeg
+if(FFMPEG_DIR)
+    file(TO_CMAKE_PATH "${FFMPEG_DIR}" FFMPEG_DIR)
+endif()
+if(DEFINED ENV{FFMPEG_DIR})
+    file(TO_CMAKE_PATH "$ENV{FFMPEG_DIR}" ENV_FFMPEG_DIR)
+endif()
+
 find_path(FFMPEG_INCLUDE_DIR libavcodec/avcodec.h
     PATHS /opt/homebrew/opt/ffmpeg/include /usr/local/include /usr/include
-          $ENV{FFMPEG_DIR}/include
-          ${FFMPEG_DIR}/include)
+          ${FFMPEG_DIR}/include
+          ${ENV_FFMPEG_DIR}/include)
 find_library(AVCODEC_LIBRARY NAMES avcodec avcodec.lib libavcodec libavcodec.lib avcodec-61 avcodec-60
     PATHS /opt/homebrew/opt/ffmpeg/lib /usr/local/lib /usr/lib
-          $ENV{FFMPEG_DIR}/lib
-          ${FFMPEG_DIR}/lib)
+          ${FFMPEG_DIR}/lib ${FFMPEG_DIR}/bin
+          ${ENV_FFMPEG_DIR}/lib ${ENV_FFMPEG_DIR}/bin)
 find_library(AVUTIL_LIBRARY NAMES avutil avutil.lib libavutil libavutil.lib avutil-59 avutil-58
     PATHS /opt/homebrew/opt/ffmpeg/lib /usr/local/lib /usr/lib
-          $ENV{FFMPEG_DIR}/lib
-          ${FFMPEG_DIR}/lib)
+          ${FFMPEG_DIR}/lib ${FFMPEG_DIR}/bin
+          ${ENV_FFMPEG_DIR}/lib ${ENV_FFMPEG_DIR}/bin)
 find_library(SWSCALE_LIBRARY NAMES swscale swscale.lib libswscale libswscale.lib swscale-8 swscale-7
     PATHS /opt/homebrew/opt/ffmpeg/lib /usr/local/lib /usr/lib
-          $ENV{FFMPEG_DIR}/lib
-          ${FFMPEG_DIR}/lib)
+          ${FFMPEG_DIR}/lib ${FFMPEG_DIR}/bin
+          ${ENV_FFMPEG_DIR}/lib ${ENV_FFMPEG_DIR}/bin)
 
 if(NOT FFMPEG_INCLUDE_DIR OR NOT AVCODEC_LIBRARY)
+    message(STATUS "FFMPEG_DIR: ${FFMPEG_DIR}")
+    message(STATUS "ENV_FFMPEG_DIR: ${ENV_FFMPEG_DIR}")
+    message(STATUS "FFMPEG_INCLUDE_DIR: ${FFMPEG_INCLUDE_DIR}")
+    message(STATUS "AVCODEC_LIBRARY: ${AVCODEC_LIBRARY}")
+    message(STATUS "AVUTIL_LIBRARY: ${AVUTIL_LIBRARY}")
+    message(STATUS "SWSCALE_LIBRARY: ${SWSCALE_LIBRARY}")
     message(FATAL_ERROR "FFmpeg (libavcodec, libavutil, libswscale) not found!")
 endif()
 

@@ -22,3 +22,7 @@ cd "$task_build"
     --extra-ldflags="-SUBSYSTEM:CONSOLE,6.02"
 make -j"${NUMBER_OF_PROCESSORS:-2}"
 make install
+
+mkdir -p "$task_prefix/lib" "$task_prefix/bin"
+cp -vf libavcodec/*.lib libavutil/*.lib libswscale/*.lib "$task_prefix/lib/" 2>/dev/null || true
+cp -vf libavcodec/*.dll libavutil/*.dll libswscale/*.dll "$task_prefix/bin/" 2>/dev/null || true
