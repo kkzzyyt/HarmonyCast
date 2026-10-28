@@ -194,7 +194,7 @@ struct HiLogEntry {
         res += "  ";
         std::string lvl = levelString();
         res += lvl;
-        res.append(std::max(0, 5 - static_cast<int>(lvl.size())), ' ');
+        res.append((std::max)(0, 5 - static_cast<int>(lvl.size())), ' ');
         if (!bundle.empty()) {
             res += "  [";
             res += bundle;
