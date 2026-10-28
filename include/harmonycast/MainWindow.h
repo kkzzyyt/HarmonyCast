@@ -28,9 +28,12 @@
 #include <QHBoxLayout>
 #include <QSettings>
 #include <QTimer>
+#include <QTemporaryFile>
 #include <memory>
 #include <vector>
 #include <map>
+#include <deque>
+#include <set>
 
 namespace harmonycast {
 
@@ -39,7 +42,7 @@ class MainWindow : public QMainWindow {
     Q_DISABLE_COPY(MainWindow)
 
 public:
-    explicit MainWindow(QWidget* parent = nullptr);
+    explicit MainWindow(QWidget* parent = nullptr, bool startBackgroundServices = true);
     ~MainWindow() override;
 
 private slots:
@@ -115,6 +118,7 @@ private slots:
     void clearHdcTerminal();
     void copyHdcOutput();
     void exportHdcOutput();
+    void appendHdcOutput(const QString& text);
 
     // Diagnostics & Settings
     void openSettingsDialog();
@@ -153,6 +157,12 @@ private:
     bool isLogMatch(const HiLogEntry& e, const QString& filterPkg, const QString& filterLvl, const QString& query) const;
     static QString formatLogLine(const HiLogEntry& e);
     void showToast(const QString& msg);
+    void flushLogViews();
+    void scheduleLogFlush();
+    bool webLogMatches(const WebConsoleMessage& message) const;
+    static QString formatWebLog(const WebConsoleMessage& message);
+    bool networkRequestMatches(const WebNetworkRequest& request) const;
+    void flushNetworkUpdates();
     [[nodiscard]] std::string currentSerial() const;
 
     // Services
@@ -166,8 +176,17 @@ private:
 
     std::vector<Device> m_cached_devices;
     DeviceInfo m_cached_info;
-    std::vector<HiLogEntry> m_cached_logs;
-    std::vector<WebConsoleMessage> m_cached_wv_logs;
+    std::deque<HiLogEntry> m_cached_logs;
+    std::deque<WebConsoleMessage> m_cached_wv_logs;
+    size_t m_log_cache_bytes{0};
+    size_t m_web_log_cache_bytes{0};
+    QString m_pending_log_text;
+    QString m_pending_web_log_text;
+    bool m_log_rebuild_needed{false};
+    bool m_web_log_rebuild_needed{false};
+    QTimer* m_log_flush_timer{nullptr};
+    QTimer* m_log_search_timer{nullptr};
+    QTimer* m_web_search_timer{nullptr};
 
     // UI: Sidebar
     QFrame* m_sidebar{nullptr};
@@ -295,6 +314,7 @@ private:
     QPushButton* m_btn_kill_hdc{nullptr};
     QLabel* m_hdc_status_label{nullptr};
     QTextEdit* m_hdc_terminal{nullptr};
+    std::unique_ptr<QTemporaryFile> m_hdc_history;
 
     // State
     int m_user_rotation{0};
@@ -314,6 +334,10 @@ private:
     int m_visible_log_count{0};
     std::map<std::string, WebNetworkRequest> m_wv_requests; // for cURL generation
     std::map<std::string, qint64> m_wv_request_times;       // requestId -> ms since epoch
+    std::map<std::string, QTableWidgetItem*> m_network_items;
+    std::set<std::string> m_dirty_network_requests;
+    bool m_network_filter_changed{false};
+    int m_visible_network_count{0};
 };
 
 } // namespace harmonycast

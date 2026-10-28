@@ -5,6 +5,8 @@
 #include <vector>
 #include <optional>
 #include <functional>
+#include <QPointer>
+#include <QObject>
 
 namespace harmonycast {
 
@@ -18,7 +20,7 @@ struct CommandResult {
 
 class HdcClient {
 public:
-    explicit HdcClient(std::string hdc_path = "");
+    explicit HdcClient(std::string hdc_path = "", QObject* callbackContext = nullptr);
     ~HdcClient() = default;
 
     static std::string findHdc();
@@ -60,6 +62,7 @@ public:
 
 private:
     std::string m_hdc_path;
+    QPointer<QObject> m_callback_context;
 };
 
 } // namespace harmonycast

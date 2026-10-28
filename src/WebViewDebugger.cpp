@@ -4,6 +4,9 @@
 #include <QEventLoop>
 #include <QNetworkProxy>
 #include <iostream>
+#include <algorithm>
+#include <QFile>
+#include <QUuid>
 
 namespace harmonycast {
 
@@ -20,6 +23,23 @@ WebViewDebugger::WebViewDebugger(std::shared_ptr<HdcClient> hdc, QObject* parent
     connect(m_ws, &QWebSocket::connected, this, &WebViewDebugger::onWsConnected);
     connect(m_ws, &QWebSocket::textMessageReceived, this, &WebViewDebugger::onWsTextMessage);
     connect(m_ws, &QWebSocket::disconnected, this, &WebViewDebugger::onWsDisconnected);
+    m_callback_timer = new QTimer(this);
+    m_callback_timer->setInterval(5000);
+    connect(m_callback_timer, &QTimer::timeout, this, [this] {
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        std::vector<std::function<void(const QJsonObject&)>> expired;
+        for (auto it = m_callback_deadlines.begin(); it != m_callback_deadlines.end();) {
+            if (it->second > now) { ++it; continue; }
+            auto callback = m_callbacks.find(it->first);
+            if (callback != m_callbacks.end()) {
+                expired.push_back(std::move(callback->second));
+                m_callbacks.erase(callback);
+            }
+            it = m_callback_deadlines.erase(it);
+        }
+        if (m_callbacks.empty()) m_callback_timer->stop();
+        for (auto& callback : expired) callback({});
+    });
 }
 
 WebViewDebugger::~WebViewDebugger() {
@@ -161,6 +181,8 @@ void WebViewDebugger::sendCdpCommand(const QString& method, const QJsonObject& p
     int id = m_msg_id++;
     if (callback) {
         m_callbacks[id] = callback;
+        m_callback_deadlines[id] = QDateTime::currentMSecsSinceEpoch() + 30000;
+        if (!m_callback_timer->isActive()) m_callback_timer->start();
     }
 
     QJsonObject cmd;
@@ -178,13 +200,24 @@ void WebViewDebugger::getResponseBody(const QString& requestId, std::function<vo
     std::string rid = requestId.toStdString();
     auto it = m_requests.find(rid);
     if (it != m_requests.end() && it->second.response_body_loaded) {
-        if (callback) callback(QString::fromStdString(it->second.response_body), false);
-        return;
+        if (!it->second.response_body_file.isEmpty()) {
+            QFile file(it->second.response_body_file);
+            if (file.open(QIODevice::ReadOnly)) {
+                if (callback) callback(QString::fromUtf8(file.readAll()), it->second.response_body_base64);
+                return;
+            }
+            it->second.response_body_loaded = false;
+        } else {
+            if (callback) callback(QString::fromStdString(it->second.response_body), it->second.response_body_base64);
+            return;
+        }
     }
 
     QJsonObject params;
     params["requestId"] = requestId;
-    sendCdpCommand("Network.getResponseBody", params, [this, rid, callback](const QJsonObject& resp) {
+    const uint64_t generation = m_cache_generation;
+    sendCdpCommand("Network.getResponseBody", params, [this, rid, callback, generation](const QJsonObject& resp) {
+        if (generation != m_cache_generation) return;
         QString body;
         bool base64 = false;
         if (resp.contains("result") && resp["result"].isObject()) {
@@ -193,12 +226,75 @@ void WebViewDebugger::getResponseBody(const QString& requestId, std::function<vo
             base64 = res["base64Encoded"].toBool();
             auto rit = m_requests.find(rid);
             if (rit != m_requests.end()) {
-                rit->second.response_body = body.toStdString();
-                rit->second.response_body_loaded = true;
+                // Preserve complete responses; spill large bodies to temporary files.
+                std::string encoded = body.toStdString();
+                m_body_cache_bytes -= rit->second.response_body.size();
+                rit->second.response_body.clear();
+                rit->second.response_body.shrink_to_fit();
+                if (!rit->second.response_body_file.isEmpty()) QFile::remove(rit->second.response_body_file);
+                rit->second.response_body_file.clear();
+                rit->second.response_body_base64 = base64;
+                if (encoded.size() <= 2 * 1024 * 1024) {
+                    if (m_body_cache_bytes + encoded.size() > 16 * 1024 * 1024) {
+                        for (auto& [id, request] : m_requests) {
+                            if (!request.response_body_loaded || request.response_body.empty()) continue;
+                            request.response_body_loaded = storeBodyOnDisk(request, request.response_body);
+                            request.response_body.clear();
+                            request.response_body.shrink_to_fit();
+                        }
+                        m_body_cache_bytes = 0;
+                    }
+                    rit->second.response_body = std::move(encoded);
+                    m_body_cache_bytes += rit->second.response_body.size();
+                    rit->second.response_body_loaded = true;
+                } else {
+                    rit->second.response_body_loaded = storeBodyOnDisk(rit->second, encoded);
+                }
             }
         }
         if (callback) callback(body, base64);
     });
+}
+
+bool WebViewDebugger::storeBodyOnDisk(WebNetworkRequest& request, const std::string& body) {
+    if (!m_response_files) m_response_files = std::make_unique<QTemporaryDir>();
+    if (!m_response_files->isValid()) return false;
+    if (!request.response_body_file.isEmpty()) QFile::remove(request.response_body_file);
+    const QString path = m_response_files->filePath(QUuid::createUuid().toString(QUuid::WithoutBraces) + ".body");
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly)) return false;
+    if (file.write(body.data(), qint64(body.size())) != qint64(body.size()) || !file.flush()) {
+        file.remove();
+        return false;
+    }
+    request.response_body_file = path;
+    return true;
+}
+
+void WebViewDebugger::forgetRequest(const std::string& id) {
+    const std::string key = id; // id may refer to m_request_order.front().
+    auto request = m_requests.find(key);
+    if (request == m_requests.end()) return;
+    if (!request->second.response_body_file.isEmpty()) QFile::remove(request->second.response_body_file);
+    m_body_cache_bytes -= request->second.response_body.size();
+    m_requests.erase(request);
+    if (!m_request_order.empty() && m_request_order.front() == key) {
+        m_request_order.pop_front();
+        return;
+    }
+    auto order = std::find(m_request_order.begin(), m_request_order.end(), key);
+    if (order != m_request_order.end()) m_request_order.erase(order);
+}
+
+void WebViewDebugger::clearRequests() {
+    ++m_cache_generation;
+    m_requests.clear();
+    m_request_order.clear();
+    m_body_cache_bytes = 0;
+    m_response_files.reset();
+    m_callbacks.clear();
+    m_callback_deadlines.clear();
+    m_callback_timer->stop();
 }
 
 const WebNetworkRequest* WebViewDebugger::getRequest(const std::string& requestId) const {
@@ -216,8 +312,12 @@ void WebViewDebugger::onWsConnected() {
 }
 
 void WebViewDebugger::onWsDisconnected() {
-    m_requests.clear();
+    // Keep already captured responses available for offline inspection.
+    // Explicit clear, request eviction and destruction release their storage.
+    ++m_cache_generation;
     m_callbacks.clear();
+    m_callback_deadlines.clear();
+    m_callback_timer->stop();
 }
 
 void WebViewDebugger::onWsTextMessage(const QString& message) {
@@ -232,6 +332,8 @@ void WebViewDebugger::onWsTextMessage(const QString& message) {
         if (it != m_callbacks.end()) {
             auto cb = std::move(it->second);
             m_callbacks.erase(it);
+            m_callback_deadlines.erase(id);
+            if (m_callbacks.empty()) m_callback_timer->stop();
             if (cb) cb(obj);
         }
     }
@@ -366,12 +468,9 @@ void WebViewDebugger::onWsTextMessage(const QString& message) {
             nr.headers[k.toStdString()] = headers[k].toString().toStdString();
         }
 
-        if (m_requests.size() > 1000) {
-            auto it = m_requests.begin();
-            std::advance(it, 200);
-            m_requests.erase(m_requests.begin(), it);
-        }
-
+        forgetRequest(req_id);
+        while (m_requests.size() >= 1000 && !m_request_order.empty()) forgetRequest(m_request_order.front());
+        m_request_order.push_back(req_id);
         m_requests[req_id] = nr;
         emit networkRequestReceived(nr);
     }
@@ -401,14 +500,8 @@ void WebViewDebugger::onWsTextMessage(const QString& message) {
                 it->second.elapsed_ms = QDateTime::currentMSecsSinceEpoch() - it->second.start_time_ms;
             }
         } else {
-            WebNetworkRequest nr;
-            nr.request_id = req_id;
-            nr.status_code = status;
-            nr.status_text = statusText;
-            nr.mime_type = mime;
-            nr.resource_type = resType;
-            nr.response_headers = respHeaders;
-            m_requests[req_id] = nr;
+            // Do not resurrect evicted/cleared requests when a late response arrives.
+            return;
         }
 
         emit networkResponseReceived(QString::fromStdString(req_id), status, QString::fromStdString(mime));

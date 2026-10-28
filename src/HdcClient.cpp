@@ -8,12 +8,13 @@
 #include <QCoreApplication>
 #include <sstream>
 #include <iostream>
-#include <thread>
+#include <QThreadPool>
 
 namespace harmonycast {
 
-HdcClient::HdcClient(std::string hdc_path)
-    : m_hdc_path(std::move(hdc_path)) {
+HdcClient::HdcClient(std::string hdc_path, QObject* callbackContext)
+    : m_hdc_path(std::move(hdc_path)),
+      m_callback_context(callbackContext ? callbackContext : QCoreApplication::instance()) {
     if (m_hdc_path.empty()) {
         m_hdc_path = findHdc();
     }
@@ -153,8 +154,17 @@ std::vector<Device> HdcClient::listDevices() const {
             else if (state_str.find("Unauthorized") != std::string::npos) dev.state = DeviceState::Unauthorized;
         } else {
             size_t space = line.find(' ');
-            dev.serial = (space != std::string::npos) ? line.substr(0, space) : line;
-            dev.state = DeviceState::Connected;
+            if (space != std::string::npos) {
+                dev.serial = line.substr(0, space);
+                std::string state_str = line.substr(space + 1);
+                if (state_str.find("Connected") != std::string::npos) dev.state = DeviceState::Connected;
+                else if (state_str.find("Offline") != std::string::npos) dev.state = DeviceState::Offline;
+                else if (state_str.find("Unauthorized") != std::string::npos) dev.state = DeviceState::Unauthorized;
+                else dev.state = DeviceState::Connected;
+            } else {
+                dev.serial = line;
+                dev.state = DeviceState::Connected;
+            }
         }
 
         // Check if network IP:port device
@@ -174,10 +184,6 @@ std::vector<Device> HdcClient::listDevices() const {
 }
 
 bool HdcClient::forwardPort(const std::string& serial, int local_port, int remote_port) const {
-    // 1. Remove any previous/stale mapping on this local port first to prevent collision
-    removeForward(serial, local_port, remote_port);
-
-    // 2. Set up new forwarding rule
     auto res = run({"fport", "tcp:" + std::to_string(local_port), "tcp:" + std::to_string(remote_port)}, serial);
     if (!res.success()) return false;
 
@@ -188,9 +194,6 @@ bool HdcClient::forwardPort(const std::string& serial, int local_port, int remot
 }
 
 bool HdcClient::removeForward(const std::string& serial, int local_port, int remote_port) const {
-    if (!serial.empty()) {
-        run({"fport", "rm", "tcp:" + std::to_string(local_port), "tcp:" + std::to_string(remote_port)}, "");
-    }
     auto res = run({"fport", "rm", "tcp:" + std::to_string(local_port), "tcp:" + std::to_string(remote_port)}, serial);
     return res.success();
 }
@@ -294,14 +297,28 @@ void HdcClient::executeAsync(const std::vector<std::string>& args,
                              const std::string& serial,
                              std::function<void(CommandResult)> callback) const {
     std::string hdc_path = m_hdc_path;
-    std::thread([hdc_path, args, serial, callback]() {
+    static QThreadPool commands;
+    static QThreadPool input;
+    static const bool configured = [] {
+        commands.setMaxThreadCount(4);
+        input.setMaxThreadCount(1);
+        commands.setExpiryTimeout(10000);
+        input.setExpiryTimeout(10000);
+        return true;
+    }();
+    (void)configured;
+    const bool isInput = args.size() > 1 && args[0] == "shell" && args[1] == "uinput";
+    auto context = m_callback_context;
+    auto task = [hdc_path, args, serial, callback = std::move(callback), context, isInput]() {
+        if (isInput && !context) return;
         CommandResult res = runProcess(hdc_path, args, serial, 10000);
-        if (callback) {
-            QMetaObject::invokeMethod(QCoreApplication::instance(), [callback, res]() {
+        if (callback && context) {
+            QMetaObject::invokeMethod(context.data(), [callback, res = std::move(res)]() {
                 callback(res);
             });
         }
-    }).detach();
+    };
+    (isInput ? input : commands).start(std::move(task));
 }
 
 } // namespace harmonycast

@@ -27,6 +27,7 @@ public:
 
     void setBundle(std::string bundle) { m_bundle = std::move(bundle); }
     void setCategory(std::string cat) { m_category = std::move(cat); }
+    void setRetentionEnabled(bool enabled) { m_retain_entries = enabled; if (!enabled) clear(); }
 
     std::vector<HiLogEntry> snapshotEntries() const;
     void clear();
@@ -51,6 +52,7 @@ private:
 
     mutable std::mutex m_mutex;
     std::deque<HiLogEntry> m_entries;
+    bool m_retain_entries{true};
     static constexpr size_t MAX_ENTRIES = 10000;
 };
 

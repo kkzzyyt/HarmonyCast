@@ -22,9 +22,9 @@
 ## ✨ 核心特性
 
 ### 1. ⚡ 原生 C++20 极致性能架构
-- **零脚本依赖**：彻底取代早期 Python 脚本实现，CPU 占用率下降 **70%**，内存常驻仅 ~50MB。
-- **硬件加速解码**：针对 macOS VideoToolbox 与 Windows Direct3D 11 / NVDEC 深度优化，支持 1080P 60FPS 极低延迟（<35ms）硬解。
-- **高响应控制通道**：底层专用二进制套接字协议，触摸与按键注入延迟低于 **2ms**。
+- **原生实现**：采用 C++20 + Qt6；视频处理在后台执行，界面使用共享图像和有界刷新队列。
+- **硬件加速解码**：支持 macOS VideoToolbox 与 Windows D3D11VA，并保留软件解码回退；实际帧率与延迟取决于设备和传输方式。
+- **设备控制**：保留 HDC 触摸与按键控制，复用后台线程并按顺序调度输入。
 
 ### 2. 📱 自由分屏投屏工作台 (Workbench)
 - **多形态布局**：一键无缝切换 **左右分屏**、**上下分屏**、**仅投屏**、**仅日志** 四种工作流。
@@ -70,6 +70,8 @@
 | **macOS** | `.dmg` | Apple Silicon (M1/M2/M3/M4) | 开箱即用，双击拖拽至 Applications 目录即可 |
 | **Windows** | `.zip` | Windows 10/11 x64 | 解压后直接双击运行 `HarmonyCast.exe` |
 
+Windows Server 2012/2012 R2 提供独立的 [兼容构建方案](docs/windows-server2012.md)（Qt5、软件解码，待服务器验证）。新增工作流生成的包名包含 `Windows-Server2012-x64`，请完整解压使用；普通 Windows 包仍要求 Windows 10/11。
+
 > [!TIP]
 > **macOS 首次打开提示“无法打开”或“不受信任的开发者”？**
 > 本项目使用开源 Ad-hoc 本地签名。如遇拦截，请在系统「设置」→「隐私与安全性」中点击 **仍要打开**，或在终端执行：
@@ -104,7 +106,7 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release \
 cmake --build build -j$(sysctl -n hw.ncpu)
 
 # 4. 运行验证测试套件
-./build/test_harmonycast_core
+ctest --test-dir build --output-on-failure
 
 # 5. 打包独立 DMG 应用
 macdeployqt build/HarmonyCast.app -dmg
@@ -126,6 +128,10 @@ windeployqt build/Release/HarmonyCast.exe --compiler-runtime
 ```
 
 ---
+
+性能验证、缓存策略和本地基准命令见 [性能说明](docs/performance.md)。
+
+后续功能、阶段路线与验收标准见 [发展规划](docs/development-roadmap.md)，全部文档入口见 [项目文档](docs/README.md)。
 
 ## ⌨️ 常用快捷键
 

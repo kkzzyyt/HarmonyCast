@@ -2,18 +2,26 @@
 #include <iostream>
 #include <thread>
 #include <algorithm>
+#include <cstring>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavutil/avutil.h>
 #include <libavutil/hwcontext.h>
 #include <libavutil/imgutils.h>
+#include <libavutil/pixdesc.h>
 #include <libswscale/swscale.h>
 }
 
 namespace harmonycast {
 
-static enum AVPixelFormat s_hw_pix_fmt = AV_PIX_FMT_NONE;
+#if defined(__APPLE__)
+static constexpr AVPixelFormat s_hw_pix_fmt = AV_PIX_FMT_VIDEOTOOLBOX;
+#elif defined(_WIN32)
+static constexpr AVPixelFormat s_hw_pix_fmt = AV_PIX_FMT_D3D11;
+#else
+static constexpr AVPixelFormat s_hw_pix_fmt = AV_PIX_FMT_VAAPI;
+#endif
 
 static enum AVPixelFormat get_hw_format(AVCodecContext* ctx, const enum AVPixelFormat* pix_fmts) {
     const enum AVPixelFormat* p;
@@ -21,6 +29,12 @@ static enum AVPixelFormat get_hw_format(AVCodecContext* ctx, const enum AVPixelF
         if (*p == s_hw_pix_fmt) {
             return *p;
         }
+    }
+    // FFmpeg retries format selection without the hardware format when the
+    // actual stream is unsupported. Keep software decoding available then.
+    for (p = pix_fmts; *p != AV_PIX_FMT_NONE; ++p) {
+        const auto* descriptor = av_pix_fmt_desc_get(*p);
+        if (descriptor && !(descriptor->flags & AV_PIX_FMT_FLAG_HWACCEL)) return *p;
     }
     return AV_PIX_FMT_NONE;
 }
@@ -39,6 +53,9 @@ VideoDecoder::~VideoDecoder() {
 }
 
 void VideoDecoder::close() {
+    if (m_av_frame) av_frame_unref(m_av_frame);
+    if (m_sw_frame) av_frame_unref(m_sw_frame);
+    if (m_av_packet) av_packet_unref(m_av_packet);
     if (m_sws_ctx) {
         sws_freeContext(m_sws_ctx);
         m_sws_ctx = nullptr;
@@ -53,18 +70,17 @@ void VideoDecoder::close() {
     }
     m_hw_active = false;
     m_decoded_count = 0;
+    m_source_format = -1;
+    m_images = {};
 }
 
 bool VideoDecoder::initHwContext() {
 #if defined(__APPLE__)
     enum AVHWDeviceType type = AV_HWDEVICE_TYPE_VIDEOTOOLBOX;
-    s_hw_pix_fmt = AV_PIX_FMT_VIDEOTOOLBOX;
 #elif defined(_WIN32)
     enum AVHWDeviceType type = AV_HWDEVICE_TYPE_D3D11VA;
-    s_hw_pix_fmt = AV_PIX_FMT_D3D11;
 #else
     enum AVHWDeviceType type = AV_HWDEVICE_TYPE_VAAPI;
-    s_hw_pix_fmt = AV_PIX_FMT_VAAPI;
 #endif
 
     int ret = av_hwdevice_ctx_create(&m_hw_device_ctx, type, nullptr, nullptr, 0);
@@ -79,6 +95,10 @@ bool VideoDecoder::initHwContext() {
 
 bool VideoDecoder::init(int width, int height, bool enable_hardware) {
     close();
+#if defined(HARMONYCAST_SERVER2012_COMPAT)
+    // The compatibility FFmpeg build contains a CPU-only H.264 decoder.
+    enable_hardware = false;
+#endif
     m_width = width;
     m_height = height;
 
@@ -118,17 +138,18 @@ bool VideoDecoder::init(int width, int height, bool enable_hardware) {
 bool VideoDecoder::decode(std::span<const uint8_t> data, bool is_keyframe, int64_t pts) {
     if (!m_codec_ctx || data.empty()) return false;
 
-    m_av_packet->data = const_cast<uint8_t*>(data.data());
-    m_av_packet->size = static_cast<int>(data.size());
+    av_packet_unref(m_av_packet);
+    if (av_new_packet(m_av_packet, static_cast<int>(data.size())) < 0) return false;
+    std::memcpy(m_av_packet->data, data.data(), data.size());
     m_av_packet->pts = pts;
-    if (is_keyframe) {
-        m_av_packet->flags |= AV_PKT_FLAG_KEY;
-    }
+    m_av_packet->flags = is_keyframe ? AV_PKT_FLAG_KEY : 0;
 
     int ret = avcodec_send_packet(m_codec_ctx, m_av_packet);
-    if (ret < 0 && ret != AVERROR(EAGAIN)) {
-        return false;
+    if (ret == AVERROR(EAGAIN)) {
+        while (avcodec_receive_frame(m_codec_ctx, m_av_frame) == 0) emitFrame(m_av_frame);
+        ret = avcodec_send_packet(m_codec_ctx, m_av_packet);
     }
+    if (ret < 0) return false;
 
     while (ret >= 0) {
         ret = avcodec_receive_frame(m_codec_ctx, m_av_frame);
@@ -148,7 +169,9 @@ void VideoDecoder::emitFrame(AVFrame* frame) {
     if (!m_frame_cb) return;
 
     AVFrame* render_frame = frame;
+    m_hw_active = frame->format == s_hw_pix_fmt;
     if (frame->format == s_hw_pix_fmt) {
+        if (m_sw_frame->width != frame->width || m_sw_frame->height != frame->height) av_frame_unref(m_sw_frame);
         int ret = av_hwframe_transfer_data(m_sw_frame, frame, 0);
         if (ret < 0) {
             char err[128];
@@ -164,28 +187,42 @@ void VideoDecoder::emitFrame(AVFrame* frame) {
     out.height = render_frame->height;
     out.pts = frame->pts;
     out.is_keyframe = (frame->flags & AV_FRAME_FLAG_KEY) != 0;
-    out.format = AV_PIX_FMT_RGB24;
+    out.format = 4; // QImage::Format_RGB32, also used by the snapshot path.
 
-    // CPU RGB24 conversion
-    if (!m_sws_ctx || m_width != render_frame->width || m_height != render_frame->height) {
+    // Convert directly into reusable painter-native images.
+    if (!m_sws_ctx || m_width != render_frame->width || m_height != render_frame->height || m_source_format != render_frame->format) {
         if (m_sws_ctx) sws_freeContext(m_sws_ctx);
         m_width = render_frame->width;
         m_height = render_frame->height;
+        m_source_format = render_frame->format;
         m_sws_ctx = sws_getContext(
             render_frame->width, render_frame->height, static_cast<AVPixelFormat>(render_frame->format),
-            render_frame->width, render_frame->height, AV_PIX_FMT_RGB24,
+            render_frame->width, render_frame->height, AV_PIX_FMT_RGB32,
             SWS_BICUBIC | SWS_ACCURATE_RND, nullptr, nullptr, nullptr);
     }
 
     if (!m_sws_ctx) return;
 
-    out.stride = render_frame->width * 3;
-    out.data.resize(out.stride * render_frame->height);
-
-    uint8_t* dst_data[4] = { out.data.data(), nullptr, nullptr, nullptr };
-    int dst_linesize[4] = { out.stride, 0, 0, 0 };
-
-    sws_scale(m_sws_ctx, render_frame->data, render_frame->linesize, 0, render_frame->height, dst_data, dst_linesize);
+    for (auto& image : m_images) {
+        if (image.isNull() || image.isDetached()) {
+            if (image.size() != QSize(out.width, out.height)) image = QImage(out.width, out.height, QImage::Format_RGB32);
+            if (image.isNull()) return;
+            // The pool slot is detached, so writing cannot change a displayed frame.
+            uint8_t* dst_data[4] = { image.bits(), nullptr, nullptr, nullptr };
+            int dst_linesize[4] = { int(image.bytesPerLine()), 0, 0, 0 };
+            sws_scale(m_sws_ctx, render_frame->data, render_frame->linesize, 0, render_frame->height, dst_data, dst_linesize);
+            out.image = image;
+            break;
+        }
+    }
+    if (out.image.isNull()) {
+        out.image = QImage(out.width, out.height, QImage::Format_RGB32);
+        if (out.image.isNull()) return;
+        uint8_t* dst_data[4] = { out.image.bits(), nullptr, nullptr, nullptr };
+        int dst_linesize[4] = { int(out.image.bytesPerLine()), 0, 0, 0 };
+        sws_scale(m_sws_ctx, render_frame->data, render_frame->linesize, 0, render_frame->height, dst_data, dst_linesize);
+    }
+    out.stride = int(out.image.bytesPerLine());
 
     m_decoded_count++;
     m_frame_cb(out);

@@ -5,12 +5,15 @@
 #include "PacketDemuxer.h"
 #include "VideoDecoder.h"
 #include "ControlChannel.h"
+#include "FrameMailbox.h"
+#include "VideoPipeline.h"
 #include <QObject>
 #include <QTcpSocket>
 #include <QTimer>
 #include <memory>
 #include <atomic>
 #include <thread>
+#include <QThread>
 
 namespace harmonycast {
 
@@ -21,6 +24,10 @@ struct SnapshotWorkerContext {
     std::shared_ptr<HdcClient> hdc;
     std::string serial;
     uintptr_t session_id{0};
+    std::mutex presentation_mutex;
+    QSize viewport;
+    int rotation{0};
+    qreal dpr{1};
 };
 
 class StreamSession : public QObject {
@@ -49,6 +56,7 @@ public:
     void setBitrate(int b);
     void updateSnapshotTargetSize();
     void setFps(int f) { m_fps = f; }
+    void setPresentation(QSize viewport, int rotation, qreal dpr);
 
 signals:
     void frameReady(const DecodedFrame& frame);
@@ -77,8 +85,14 @@ private:
     QTcpSocket* m_socket{nullptr};
     QTimer* m_heartbeat_timer{nullptr};
 
-    PacketDemuxer m_demuxer;
-    std::unique_ptr<VideoDecoder> m_decoder;
+    QThread* m_decode_thread{nullptr};
+    VideoPipeline* m_pipeline{nullptr};
+    bool m_decode_busy{false};
+    std::shared_ptr<FrameMailbox> m_frame_mailbox;
+    std::shared_ptr<std::atomic<bool>> m_start_cancel;
+    QSize m_viewport;
+    int m_rotation{0};
+    qreal m_dpr{1};
     std::shared_ptr<ControlChannel> m_control;
 
     int m_dev_width{0};
@@ -98,6 +112,9 @@ private:
     void tryConnectSocket(int attempt, uint64_t gen);
     void cleanup();
     void startSnapshotFallback();
+    void startPipeline();
+    void stopPipeline();
+    void deliverLatestFrame(const std::shared_ptr<FrameMailbox>& mailbox, uint64_t generation);
 };
 
 } // namespace harmonycast

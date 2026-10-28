@@ -30,15 +30,16 @@
 #include <QMenu>
 #include <QShortcut>
 #include <QInputDialog>
+#include <QScreen>
 #include <iostream>
 
 namespace harmonycast {
 
 static const char* DEFAULT_PACKAGE_FILTER = "com.yarward.*";
 
-MainWindow::MainWindow(QWidget* parent)
+MainWindow::MainWindow(QWidget* parent, bool startBackgroundServices)
     : QMainWindow(parent),
-      m_hdc(std::make_shared<HdcClient>()),
+      m_hdc(std::make_shared<HdcClient>(std::string{}, this)),
       m_dev_mgr(std::make_shared<DeviceManager>(m_hdc, this)),
       m_webview(std::make_unique<WebViewDebugger>(m_hdc, this)),
       m_updater(std::make_unique<UpdateChecker>(this)),
@@ -51,6 +52,21 @@ MainWindow::MainWindow(QWidget* parent)
     setMinimumSize(880, 600);
     setPalette(IconManager::getDarkPalette());
 
+    m_log_flush_timer = new QTimer(this);
+    m_log_flush_timer->setSingleShot(true);
+    m_log_flush_timer->setInterval(50);
+    connect(m_log_flush_timer, &QTimer::timeout, this, &MainWindow::flushLogViews);
+    m_log_search_timer = new QTimer(this);
+    m_log_search_timer->setSingleShot(true);
+    m_log_search_timer->setInterval(180);
+    connect(m_log_search_timer, &QTimer::timeout, this, &MainWindow::renderHiLog);
+    m_web_search_timer = new QTimer(this);
+    m_web_search_timer->setSingleShot(true);
+    m_web_search_timer->setInterval(180);
+    connect(m_web_search_timer, &QTimer::timeout, this, [this] {
+        renderWebViewConsole();
+        filterNetworkTable();
+    });
     setupUi();
     setupShortcuts();
     applyTheme();
@@ -88,19 +104,21 @@ MainWindow::MainWindow(QWidget* parent)
         }
     });
 
-    m_dev_mgr->startPolling(1500);
+    if (startBackgroundServices) m_dev_mgr->startPolling(1500);
     switchModule(0);
 
-    QTimer::singleShot(800, this, &MainWindow::checkPreviousCrash);
+    if (startBackgroundServices) QTimer::singleShot(800, this, &MainWindow::checkPreviousCrash);
 
     // Silent background update check after window displays
-    if (m_settings->value("auto_check_update", true).toBool()) {
+    if (startBackgroundServices && m_settings->value("auto_check_update", true).toBool()) {
         QTimer::singleShot(2500, this, [this]{ checkForUpdates(true); });
     }
 }
 
 MainWindow::~MainWindow() {
+    m_dev_mgr->stopPolling();
     stopMirror(false);
+    if (m_hilog) m_hilog->stop();
 }
 
 void MainWindow::applyTheme() {
@@ -166,7 +184,7 @@ void MainWindow::setupUi() {
     bottom_box->setContentsMargins(0, 0, 0, 0);
     bottom_box->setSpacing(6);
 
-    auto* version_label = IconManager::label("HarmonyCast\nv2.2.1", "Muted");
+    auto* version_label = IconManager::label("HarmonyCast\nv2.2.2", "Muted");
     bottom_box->addWidget(version_label, 1);
 
     m_settings_btn = IconManager::iconButton("settings", "系统设置", "IconBtnSettings", 30, 30);
@@ -370,7 +388,13 @@ void MainWindow::switchModule(int index) {
 
 std::string MainWindow::currentSerial() const {
     if (!m_device_combo || m_device_combo->count() == 0) return {};
-    return m_device_combo->currentData().toString().toStdString();
+    std::string s = m_device_combo->currentData().toString().toStdString();
+    while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s.erase(0, 1);
+    while (!s.empty() && (s.back() == ' ' || s.back() == '\t')) s.pop_back();
+    if (s.find(':') == std::string::npos && s.find('.') != std::string::npos) {
+        s += ":8710";
+    }
+    return s;
 }
 
 void MainWindow::showToast(const QString& msg) {
@@ -388,6 +412,7 @@ void MainWindow::keyPressEvent(QKeyEvent* event) {
 }
 
 bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
+    if ((watched == m_log_view || watched == m_wv_console_view || watched == m_wv_network_table) && event->type() == QEvent::Show) scheduleLogFlush();
     if ((watched == m_log_view || watched == m_wv_console_view) && event->type() == QEvent::Wheel) {
         auto* wheelEvent = static_cast<QWheelEvent*>(event);
         if (wheelEvent->modifiers() & (Qt::ControlModifier | Qt::MetaModifier)) {
@@ -1295,6 +1320,9 @@ QWidget* MainWindow::buildWorkspacePage() {
     // Screen
     m_screen = new ScreenView(m_mirror_page);
     connect(m_screen, &ScreenView::startRequested, this, &MainWindow::startMirror);
+    connect(m_screen, &ScreenView::presentationChanged, this, [this](QSize viewport, int rotation, qreal dpr) {
+        if (m_stream) m_stream->setPresentation(viewport, rotation, dpr);
+    });
     mirror_layout->addWidget(m_screen, 1);
 
     m_workspace_splitter->addWidget(m_mirror_page);
@@ -1411,7 +1439,7 @@ QWidget* MainWindow::buildHiLogWidget() {
     m_search_input->setClearButtonEnabled(true);
     m_search_input->setMinimumWidth(100);
     m_search_input->setFixedHeight(28);
-    connect(m_search_input, &QLineEdit::textChanged, this, &MainWindow::renderHiLog);
+    connect(m_search_input, &QLineEdit::textChanged, this, [this] { m_log_search_timer->start(); });
     row1->addWidget(m_search_input, 1);
 
     tb_vlayout->addLayout(row1);
@@ -1428,6 +1456,7 @@ QWidget* MainWindow::buildHiLogWidget() {
     m_autoscroll_cb->setCursor(Qt::PointingHandCursor);
 
     m_pause_cb = new QCheckBox("暂停刷新");
+    m_pause_cb->setObjectName("PauseHiLog");
     m_pause_cb->setToolTip("暂停日志刷新显示");
     m_pause_cb->setFixedHeight(26);
     m_pause_cb->setCursor(Qt::PointingHandCursor);
@@ -1601,10 +1630,7 @@ QWidget* MainWindow::buildWebViewPanel() {
     m_wv_filter_input->addAction(IconManager::getIcon("search"), QLineEdit::LeadingPosition);
     m_wv_filter_input->setFixedHeight(28);
     m_wv_filter_input->setClearButtonEnabled(true);
-    connect(m_wv_filter_input, &QLineEdit::textChanged, this, [this]{
-        renderWebViewConsole();
-        filterNetworkTable();
-    });
+    connect(m_wv_filter_input, &QLineEdit::textChanged, this, [this] { m_web_search_timer->start(); });
     wv_row1->addWidget(m_wv_filter_input, 1);
 
     wv_tb_vlayout->addLayout(wv_row1);
@@ -1620,6 +1646,10 @@ QWidget* MainWindow::buildWebViewPanel() {
     m_wv_autoscroll->setStyleSheet("QCheckBox { margin-right: 6px; }");
 
     m_wv_pause = new QCheckBox("暂停刷新");
+    m_wv_pause->setObjectName("PauseWebConsole");
+    connect(m_wv_pause, &QCheckBox::toggled, this, [this](bool paused) {
+        if (!paused) renderWebViewConsole();
+    });
     m_wv_pause->setFixedHeight(26);
     m_wv_pause->setCursor(Qt::PointingHandCursor);
     m_wv_pause->setStyleSheet("QCheckBox { margin-right: 12px; }");
@@ -1641,6 +1671,7 @@ QWidget* MainWindow::buildWebViewPanel() {
     m_wv_export_btn = IconManager::button("导出日志", "", "export");
     m_wv_export_btn->setFixedHeight(26);
     connect(m_wv_export_btn, &QPushButton::clicked, this, [this]{
+        if (!m_wv_pause->isChecked()) renderWebViewConsole();
         QString content = m_wv_console_view->toPlainText();
         QString path = QFileDialog::getSaveFileName(this, "导出 WebView 日志", QDir::homePath() + "/Downloads/webview.log", "Log Files (*.log)");
         if (!path.isEmpty()) {
@@ -1671,6 +1702,8 @@ QWidget* MainWindow::buildWebViewPanel() {
     c_layout->setSpacing(4);
 
     m_wv_console_view = new QPlainTextEdit();
+    m_wv_console_view->setObjectName("WebConsoleView");
+    m_wv_console_view->setMaximumBlockCount(10000);
     m_wv_console_view->setReadOnly(true);
     m_wv_console_view->setFont(QFont("Menlo", 11));
     m_wv_console_view->setStyleSheet(
@@ -1752,7 +1785,7 @@ QWidget* MainWindow::buildWebViewPanel() {
         type_filter_bar->addWidget(btn);
     }
 
-    connect(m_net_type_btn_group, &QButtonGroup::buttonClicked, this, [this](QAbstractButton* btn) {
+    connect(m_net_type_btn_group, QOverload<QAbstractButton*>::of(&QButtonGroup::buttonClicked), this, [this](QAbstractButton* btn) {
         m_current_net_type_filter = btn->property("filterKey").toString();
         filterNetworkTable();
     });
@@ -1761,6 +1794,9 @@ QWidget* MainWindow::buildWebViewPanel() {
     n_layout->addLayout(type_filter_bar);
 
     m_wv_network_table = new QTableWidget(0, 5);
+    m_wv_network_table->setObjectName("NetworkTable");
+    m_wv_network_table->installEventFilter(this);
+    m_wv_network_table->horizontalHeader()->setResizeContentsPrecision(50);
     m_wv_network_table->setHorizontalHeaderLabels({"状态", "方式", "接口 / URL", "类型", "耗时"});
     m_wv_network_table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
     m_wv_network_table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
@@ -2095,6 +2131,9 @@ QWidget* MainWindow::buildHdcPanel() {
     term_layout->addLayout(term_bar);
 
     m_hdc_terminal = new QTextEdit();
+    m_hdc_terminal->setObjectName("HdcTerminal");
+    m_hdc_terminal->document()->setMaximumBlockCount(10000);
+    m_hdc_terminal->setToolTip("显示最近 10000 行；复制与导出包含本次完整输出");
     m_hdc_terminal->setReadOnly(true);
     m_hdc_terminal->setFont(QFont("Menlo", 11));
     m_hdc_terminal->setLineWrapMode(QTextEdit::NoWrap);
@@ -2360,10 +2399,18 @@ void MainWindow::onDeviceSelected(int index) {
     m_hdc_target_badge->setText(QString("目标: %1").arg(QString::fromStdString(s)));
     m_hdc_target_prefix->setText(QString("-t %1").arg(QString::fromStdString(s)));
 
+    bool is_net = (s.find(':') != std::string::npos || s.find('.') != std::string::npos);
     bool is_connected = false;
     for (const auto& d : m_cached_devices) {
-        if (d.serial == s || (s.find(':') != std::string::npos && d.serial.rfind(s.substr(0, s.find(':')), 0) == 0)) {
-            is_connected = true;
+        bool match = (d.serial == s);
+        if (!match && is_net) {
+            std::string prefix = (s.find(':') != std::string::npos) ? s.substr(0, s.find(':')) : s;
+            match = (d.serial.rfind(prefix, 0) == 0);
+        }
+        if (match) {
+            if (d.state == DeviceState::Connected) {
+                is_connected = true;
+            }
             break;
         }
     }
@@ -2404,8 +2451,15 @@ void MainWindow::onDeviceComboActivated(int index) {
     bool is_net = (s.find(':') != std::string::npos || s.find('.') != std::string::npos);
     bool is_connected = false;
     for (const auto& d : m_cached_devices) {
-        if (d.serial == s || (is_net && d.serial.rfind(s.substr(0, s.find(':')), 0) == 0)) {
-            is_connected = true;
+        bool match = (d.serial == s);
+        if (!match && is_net) {
+            std::string prefix = (s.find(':') != std::string::npos) ? s.substr(0, s.find(':')) : s;
+            match = (d.serial.rfind(prefix, 0) == 0);
+        }
+        if (match) {
+            if (d.state == DeviceState::Connected) {
+                is_connected = true;
+            }
             break;
         }
     }
@@ -2498,6 +2552,13 @@ void MainWindow::switchToSingleDevice(const std::string& endpoint) {
 
         // Connect to target
         if (target.find(':') != std::string::npos) {
+            // If target was already offline or stuck in HDC, remove first to reset socket state
+            for (const auto& d : current_devs) {
+                if ((d.serial == target || d.serial == clean_target) && d.state == DeviceState::Offline) {
+                    m_hdc->run({"tconn", target, "-remove"});
+                    break;
+                }
+            }
             m_hdc->run({"tconn", target});
             NetworkDeviceDialog::saveDevice(clean_target, "", 8710);
         }
@@ -2508,7 +2569,7 @@ void MainWindow::switchToSingleDevice(const std::string& endpoint) {
         std::vector<Device> fresh_devs;
         bool is_online = false;
         DeviceState dev_state = DeviceState::Disconnected;
-        int max_attempts = (target.find(':') != std::string::npos) ? 10 : 3;
+        int max_attempts = (target.find(':') != std::string::npos) ? 8 : 2;
 
         for (int attempt = 0; attempt < max_attempts; ++attempt) {
             if (gen != m_switch_generation) return;
@@ -2532,7 +2593,7 @@ void MainWindow::switchToSingleDevice(const std::string& endpoint) {
             if (is_online || dev_state == DeviceState::Unauthorized) {
                 break;
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(350));
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
         }
 
         QMetaObject::invokeMethod(this, [this, target, fresh_devs, gen, is_online, dev_state]() {
@@ -2621,10 +2682,16 @@ void MainWindow::startMirror() {
         return;
     }
 
+    bool is_net = (s.find(':') != std::string::npos || s.find('.') != std::string::npos);
     bool is_connected = false;
     DeviceState cur_state = DeviceState::Disconnected;
     for (const auto& d : m_cached_devices) {
-        if (d.serial == s || (s.find(':') != std::string::npos && d.serial.rfind(s.substr(0, s.find(':')), 0) == 0)) {
+        bool match = (d.serial == s);
+        if (!match && is_net) {
+            std::string prefix = (s.find(':') != std::string::npos) ? s.substr(0, s.find(':')) : s;
+            match = (d.serial.rfind(prefix, 0) == 0);
+        }
+        if (match) {
             cur_state = d.state;
             if (d.state == DeviceState::Connected) {
                 is_connected = true;
@@ -2636,9 +2703,10 @@ void MainWindow::startMirror() {
         if (cur_state == DeviceState::Unauthorized) {
             showToast("所选设备未授权，请在设备屏幕上点击【允许USB调试】");
             m_screen->setStatusMessage("设备未授权：请在设备屏幕上点击【允许USB调试】或【始终允许】");
-        } else if (cur_state == DeviceState::Offline) {
-            showToast("所选设备处于离线状态，请检查局域网连接");
-            m_screen->setStatusMessage("设备离线：请检查设备网络连接，确保手机与电脑在同一局域网");
+        } else if (is_net) {
+            // Auto-reconnect to the network target
+            showToast(QString("正在重新连接设备 %1…").arg(QString::fromStdString(s)));
+            switchToSingleDevice(s);
         } else {
             showToast("所选设备当前未连接，请先连接设备");
             m_screen->setStatusMessage("设备未连接，请先点击右上角设备维护中心连接设备");
@@ -2664,7 +2732,12 @@ void MainWindow::startMirror() {
     Device dev;
     dev.serial = s;
     for (const auto& d : m_cached_devices) {
-        if (d.serial == s) {
+        bool match = (d.serial == s);
+        if (!match && is_net) {
+            std::string prefix = (s.find(':') != std::string::npos) ? s.substr(0, s.find(':')) : s;
+            match = (d.serial.rfind(prefix, 0) == 0);
+        }
+        if (match) {
             dev = d;
             break;
         }
@@ -2672,6 +2745,7 @@ void MainWindow::startMirror() {
 
     m_stream = std::make_unique<StreamSession>(m_hdc, dev, 60, br, 0, this);
     m_stream->setQuality(m_bitrate_idx, br);
+    m_stream->setPresentation(m_screen->isVisible() ? m_screen->size() : QSize{}, m_user_rotation, m_screen->devicePixelRatioF());
 
     connect(m_stream.get(), &StreamSession::frameReady, this, [this](const DecodedFrame& f){
         m_screen->updateFrame(f);
@@ -2720,6 +2794,7 @@ void MainWindow::startMirror() {
     if (!m_hilog) {
         m_hilog = std::make_unique<HiLogSession>(m_hdc->path(), s, "", "all", this);
         connect(m_hilog.get(), &HiLogSession::entriesReady, this, &MainWindow::onHiLogEntries);
+        m_hilog->setRetentionEnabled(false);
         m_hilog->start();
     }
 
@@ -2855,7 +2930,9 @@ void MainWindow::updateStreamStatusBadge(int w, int h) {
     } else {
         qualityLabel = "标清 540P";
     }
-    m_state_badge->setText(QString("%1 · %2x%3 (%4)").arg(streamType).arg(w).arg(h).arg(qualityLabel));
+    const QString status = QString("%1 · %2x%3 (%4)").arg(streamType).arg(w).arg(h).arg(qualityLabel);
+    if (m_state_badge->text() == status) return;
+    m_state_badge->setText(status);
     m_state_badge->setStyleSheet("color: #53d6b5; background: #0c2724; border: 1px solid #1a4d46; padding: 4px 10px; border-radius: 9px; font-size: 12px;");
 }
 
@@ -3159,45 +3236,78 @@ QString MainWindow::formatLogLine(const HiLogEntry& e) {
     }
 }
 
+static size_t logBytes(const HiLogEntry& entry) {
+    return sizeof(entry) + entry.timestamp.size() + entry.domain.size() + entry.tag.size() +
+           entry.message.size() + entry.bundle.size() + entry.category.size() + entry.raw.size();
+}
+
+static size_t logBytes(const WebConsoleMessage& entry) {
+    return sizeof(entry) + entry.timestamp.size() + entry.level.size() + entry.text.size() + entry.source_url.size();
+}
+
+void MainWindow::scheduleLogFlush() {
+    if (!m_log_flush_timer->isActive()) m_log_flush_timer->start();
+}
+
+void MainWindow::flushLogViews() {
+    auto append = [](QPlainTextEdit* view, QString& pending, bool follow) {
+        if (pending.isEmpty()) return;
+        auto* scroll = view->verticalScrollBar();
+        int oldPosition = scroll->value();
+        bool atBottom = oldPosition >= scroll->maximum() - 25;
+        view->appendPlainText(pending.chopped(1));
+        pending.clear();
+        scroll->setValue(follow && atBottom ? scroll->maximum() : oldPosition);
+    };
+    if (m_log_view->isVisible() && !m_pause_cb->isChecked() && !m_log_search_timer->isActive()) {
+        if (m_log_rebuild_needed) renderHiLog();
+        else append(m_log_view, m_pending_log_text, m_autoscroll_cb->isChecked());
+    }
+    if (m_wv_console_view->isVisible() && !m_wv_pause->isChecked() && !m_web_search_timer->isActive()) {
+        if (m_web_log_rebuild_needed) renderWebViewConsole();
+        else append(m_wv_console_view, m_pending_web_log_text, m_wv_autoscroll->isChecked());
+    }
+    m_log_count->setText(QString("显示 %1 条 · 缓存 %2 条%3").arg(m_visible_log_count).arg(m_cached_logs.size())
+        .arg(m_pause_cb->isChecked() ? " · 已暂停显示，仍在采集" : ""));
+    flushNetworkUpdates();
+}
+
 void MainWindow::onHiLogEntries(const std::vector<HiLogEntry>& entries) {
-    if (m_pause_cb && m_pause_cb->isChecked()) return;
-
-    QString filterPkg = m_package_combo ? m_package_combo->currentText().trimmed() : "";
-    QString filterLvl = m_level_combo ? m_level_combo->currentData().toString() : "";
-    QString query = m_search_input ? m_search_input->text().trimmed() : "";
-
-    QString newLines;
-    int matchedNew = 0;
-
-    for (const auto& e : entries) {
-        m_cached_logs.push_back(e);
-        if (m_cached_logs.size() > 10000) {
-            m_cached_logs.erase(m_cached_logs.begin(), m_cached_logs.begin() + 1000);
+    const QString package = m_package_combo->currentText().trimmed();
+    const QString level = m_level_combo->currentData().toString();
+    const QString query = m_search_input->text().trimmed();
+    bool defer = m_pause_cb->isChecked() || !m_log_view->isVisible() || m_log_search_timer->isActive();
+    for (const auto& entry : entries) {
+        m_cached_logs.push_back(entry);
+        // Display/export use parsed fields; keeping raw duplicates every message.
+        m_cached_logs.back().raw = {};
+        m_cached_logs.back().raw.shrink_to_fit();
+        m_log_cache_bytes += logBytes(m_cached_logs.back());
+        while (m_cached_logs.size() > 10000 || (m_cached_logs.size() > 1 && m_log_cache_bytes > 32 * 1024 * 1024)) {
+            m_log_cache_bytes -= logBytes(m_cached_logs.front());
+            m_cached_logs.pop_front();
         }
-
-        if (isLogMatch(e, filterPkg, filterLvl, query)) {
-            newLines += formatLogLine(e);
-            matchedNew++;
-        }
-    }
-
-    if (!newLines.isEmpty() && m_log_view) {
-        bool wasAtBottom = (m_log_view->verticalScrollBar()->value() >= m_log_view->verticalScrollBar()->maximum() - 25);
-        m_log_view->appendPlainText(newLines.trimmed());
-        if (m_autoscroll_cb && m_autoscroll_cb->isChecked() && wasAtBottom) {
-            m_log_view->verticalScrollBar()->setValue(m_log_view->verticalScrollBar()->maximum());
-        }
-        m_visible_log_count += matchedNew;
-        if (m_log_count) {
-            m_log_count->setText(QString("显示 %1 条 · 缓存 %2 条")
-                .arg(m_visible_log_count)
-                .arg(m_cached_logs.size()));
+        if (!defer && !m_log_rebuild_needed && isLogMatch(entry, package, level, query)) {
+            m_pending_log_text += formatLogLine(entry);
+            ++m_visible_log_count;
+            if (m_pending_log_text.size() > 512 * 1024) {
+                m_log_rebuild_needed = true;
+                m_pending_log_text.clear();
+            }
         }
     }
+    if (defer || m_pending_log_text.size() > 512 * 1024) {
+        m_log_rebuild_needed = true;
+        m_pending_log_text.clear();
+    }
+    scheduleLogFlush();
 }
 
 void MainWindow::renderHiLog() {
-    if (!m_log_view) return;
+    m_log_rebuild_needed = true;
+    m_pending_log_text.clear();
+    if (!m_log_view || m_pause_cb->isChecked()) return;
+    m_log_search_timer->stop();
 
     QString filterPkg = m_package_combo ? m_package_combo->currentText().trimmed() : "";
     QString filterLvl = m_level_combo ? m_level_combo->currentData().toString() : "";
@@ -3214,6 +3324,7 @@ void MainWindow::renderHiLog() {
     }
 
     m_visible_log_count = visibleCount;
+    m_log_rebuild_needed = false;
     m_log_view->setPlainText(buffer);
     if (m_autoscroll_cb && m_autoscroll_cb->isChecked()) {
         m_log_view->verticalScrollBar()->setValue(m_log_view->verticalScrollBar()->maximum());
@@ -3227,6 +3338,10 @@ void MainWindow::renderHiLog() {
 
 void MainWindow::clearHiLog() {
     m_cached_logs.clear();
+    m_log_cache_bytes = 0;
+    m_pending_log_text.clear();
+    m_log_rebuild_needed = false;
+    if (m_hilog) m_hilog->clear();
     m_visible_log_count = 0;
     if (m_log_view) m_log_view->clear();
     if (m_log_count) m_log_count->setText("显示 0 条 · 缓存 0 条");
@@ -3244,6 +3359,7 @@ void MainWindow::restartHiLogForCurrentDevice() {
 
     m_hilog = std::make_unique<HiLogSession>(m_hdc->path(), s, "", "all", this);
     connect(m_hilog.get(), &HiLogSession::entriesReady, this, &MainWindow::onHiLogEntries);
+    m_hilog->setRetentionEnabled(false);
     m_hilog->start();
     HC_LOG_INFO(QString("HiLog session freshly restarted for device %1").arg(QString::fromStdString(s)));
 }
@@ -3306,6 +3422,7 @@ void MainWindow::onWebViewConsoleContextMenu(const QPoint& pos) {
 }
 
 void MainWindow::exportHiLog() {
+    if (!m_pause_cb->isChecked()) renderHiLog();
     QString path = QFileDialog::getSaveFileName(this, "导出 HiLog", QDir::homePath() + "/Downloads/hilog.txt", "Text Files (*.txt)");
     if (!path.isEmpty()) {
         QFile file(path);
@@ -3335,104 +3452,52 @@ void MainWindow::setLogFontSize(int size) {
 // ==========================================
 // WebView Debugger Events
 // ==========================================
+bool MainWindow::webLogMatches(const WebConsoleMessage& msg) const {
+    QString level = m_wv_filter_combo->currentText();
+    if (level == "警告" && msg.level != "warn" && msg.level != "warning") return false;
+    if (level == "错误" && msg.level != "error") return false;
+    if (level == "日志" && msg.level != "log" && msg.level != "info" && msg.level != "debug") return false;
+    QString query = m_wv_filter_input->text().trimmed();
+    return query.isEmpty() || QString::fromStdString(msg.text).contains(query, Qt::CaseInsensitive) ||
+           QString::fromStdString(msg.source_url).contains(query, Qt::CaseInsensitive);
+}
+
+QString MainWindow::formatWebLog(const WebConsoleMessage& msg) {
+    QString result = QString("%1 [%2] %3").arg(QString::fromStdString(msg.timestamp),
+        QString::fromStdString(msg.level).toUpper(), QString::fromStdString(msg.text));
+    if (!msg.source_url.empty()) result += QString(" (%1:%2)").arg(QString::fromStdString(msg.source_url)).arg(msg.line_number);
+    return result;
+}
+
 void MainWindow::onWebConsoleMessage(const WebConsoleMessage& msg) {
-    if (m_wv_pause && m_wv_pause->isChecked()) return;
-
     m_cached_wv_logs.push_back(msg);
-    if (m_cached_wv_logs.size() > 5000) {
-        m_cached_wv_logs.erase(m_cached_wv_logs.begin(), m_cached_wv_logs.begin() + 500);
+    m_web_log_cache_bytes += logBytes(msg);
+    while (m_cached_wv_logs.size() > 5000 || (m_cached_wv_logs.size() > 1 && m_web_log_cache_bytes > 16 * 1024 * 1024)) {
+        m_web_log_cache_bytes -= logBytes(m_cached_wv_logs.front());
+        m_cached_wv_logs.pop_front();
     }
-    m_wv_console_count++;
-
-    // Apply current filter before appending
-    QString levelFilter = m_wv_filter_combo ? m_wv_filter_combo->currentText() : "";
-    QString query = m_wv_filter_input ? m_wv_filter_input->text().trimmed() : "";
-
-    bool levelMatch = true;
-    if (levelFilter == "警告") {
-        std::string l = msg.level;
-        levelMatch = (l == "warn" || l == "warning");
-    } else if (levelFilter == "错误") {
-        levelMatch = (msg.level == "error");
-    } else if (levelFilter == "日志") {
-        std::string l = msg.level;
-        levelMatch = (l == "log" || l == "info" || l == "debug");
+    ++m_wv_console_count;
+    bool defer = m_wv_pause->isChecked() || !m_wv_console_view->isVisible() || m_web_search_timer->isActive();
+    if (defer || m_pending_web_log_text.size() > 512 * 1024) {
+        m_web_log_rebuild_needed = true;
+        m_pending_web_log_text.clear();
+    } else if (!m_web_log_rebuild_needed && webLogMatches(msg)) {
+        m_pending_web_log_text += formatWebLog(msg) + '\n';
     }
-
-    bool queryMatch = query.isEmpty() ||
-        QString::fromStdString(msg.text).contains(query, Qt::CaseInsensitive) ||
-        QString::fromStdString(msg.source_url).contains(query, Qt::CaseInsensitive);
-
-    if (levelMatch && queryMatch) {
-        QString lvl = QString::fromStdString(msg.level).toUpper();
-        QString ts = QString::fromStdString(msg.timestamp);
-        QString text = QString::fromStdString(msg.text);
-        QString src = QString::fromStdString(msg.source_url);
-        QString formatted;
-        if (!src.isEmpty()) {
-            formatted = QString("%1 [%2] %3 (%4:%5)").arg(ts, lvl, text, src, QString::number(msg.line_number));
-        } else {
-            formatted = QString("%1 [%2] %3").arg(ts, lvl, text);
-        }
-
-        if (m_wv_console_view) {
-            bool wasAtBottom = (m_wv_console_view->verticalScrollBar()->value() >=
-                                m_wv_console_view->verticalScrollBar()->maximum() - 25);
-            m_wv_console_view->appendPlainText(formatted);
-            if (m_wv_autoscroll && m_wv_autoscroll->isChecked() && wasAtBottom) {
-                m_wv_console_view->verticalScrollBar()->setValue(m_wv_console_view->verticalScrollBar()->maximum());
-            }
-        }
-    }
-
-    if (m_wv_net_status_label) {
-        m_wv_net_status_label->setText(QString("%1 条日志 · %2 个请求").arg(m_wv_console_count).arg(m_wv_network_count));
-    }
+    scheduleLogFlush();
 }
 
 void MainWindow::renderWebViewConsole() {
-    if (!m_wv_console_view) return;
-
-    QString levelFilter = m_wv_filter_combo ? m_wv_filter_combo->currentText() : "";
-    QString query = m_wv_filter_input ? m_wv_filter_input->text().trimmed() : "";
-
+    m_web_log_rebuild_needed = true;
+    m_pending_web_log_text.clear();
+    if (!m_wv_console_view || m_wv_pause->isChecked()) return;
     QStringList lines;
     for (const auto& msg : m_cached_wv_logs) {
-        bool levelMatch = true;
-        if (levelFilter == "警告") {
-            std::string l = msg.level;
-            levelMatch = (l == "warn" || l == "warning");
-        } else if (levelFilter == "错误") {
-            levelMatch = (msg.level == "error");
-        } else if (levelFilter == "日志") {
-            std::string l = msg.level;
-            levelMatch = (l == "log" || l == "info" || l == "debug");
-        }
-
-        bool queryMatch = query.isEmpty() ||
-            QString::fromStdString(msg.text).contains(query, Qt::CaseInsensitive) ||
-            QString::fromStdString(msg.source_url).contains(query, Qt::CaseInsensitive);
-
-        if (levelMatch && queryMatch) {
-            QString lvl = QString::fromStdString(msg.level).toUpper();
-            QString ts = QString::fromStdString(msg.timestamp);
-            QString text = QString::fromStdString(msg.text);
-            QString src = QString::fromStdString(msg.source_url);
-            if (!src.isEmpty()) {
-                lines << QString("%1 [%2] %3 (%4:%5)").arg(ts, lvl, text, src, QString::number(msg.line_number));
-            } else {
-                lines << QString("%1 [%2] %3").arg(ts, lvl, text);
-            }
-        }
+        if (webLogMatches(msg)) lines << formatWebLog(msg);
     }
-
     m_wv_console_view->setPlainText(lines.join('\n'));
-    if (m_wv_autoscroll && m_wv_autoscroll->isChecked()) {
-        m_wv_console_view->verticalScrollBar()->setValue(m_wv_console_view->verticalScrollBar()->maximum());
-    }
-    if (m_wv_net_status_label) {
-        m_wv_net_status_label->setText(QString("%1 条日志 · %2 个请求").arg(m_wv_console_count).arg(m_wv_network_count));
-    }
+    m_web_log_rebuild_needed = false;
+    if (m_wv_autoscroll->isChecked()) m_wv_console_view->verticalScrollBar()->setValue(m_wv_console_view->verticalScrollBar()->maximum());
 }
 
 QString MainWindow::normalizeResourceType(const std::string& type, const std::string& mime, const std::string& url) {
@@ -3510,6 +3575,12 @@ QWidget* MainWindow::buildNetworkDetailPanel() {
     connect(btn_close, &QPushButton::clicked, this, [this]{
         m_wv_net_detail_panel->setVisible(false);
         m_wv_network_table->clearSelection();
+        m_current_selected_req_id.clear();
+        m_raw_response_body.clear();
+        m_net_response_view->clear();
+        m_net_headers_view->clear();
+        m_net_payload_view->clear();
+        m_net_curl_view->clear();
     });
     top_bar->addWidget(btn_close);
 
@@ -3743,23 +3814,15 @@ void MainWindow::populateNetworkDetail(const WebNetworkRequest& req) {
         m_net_payload_view->setPlainText(payloadText.trimmed());
     }
 
-    // 6. Response Tab
-    if (req.response_body_loaded) {
-        updateResponseBodyView(QString::fromStdString(req.response_body), false);
-    } else {
-        m_net_response_view->setPlainText("正在从 ArkWeb 调试端口获取响应体 (Network.getResponseBody)…");
-        std::string capId = req.request_id;
-        m_webview->getResponseBody(QString::fromStdString(req.request_id), [this, capId](const QString& body, bool base64) {
-            auto it = m_wv_requests.find(capId);
-            if (it != m_wv_requests.end()) {
-                it->second.response_body = body.toStdString();
-                it->second.response_body_loaded = true;
-            }
-            if (m_current_selected_req_id == capId) {
-                updateResponseBodyView(body, base64);
-            }
-        });
-    }
+    // Keep one bounded response-body cache in WebViewDebugger, not a second
+    // copy in every table record. The selected response remains available in full.
+    m_net_response_view->setPlainText("正在获取响应体…");
+    const std::string requestId = req.request_id;
+    m_webview->getResponseBody(QString::fromStdString(requestId), [this, requestId](const QString& body, bool base64) {
+        if (m_current_selected_req_id == requestId && m_wv_requests.find(requestId) != m_wv_requests.end()) {
+            updateResponseBodyView(body, base64);
+        }
+    });
 
     // 7. cURL Tab
     m_net_curl_view->setPlainText(WebViewDebugger::generateCurl(req));
@@ -3825,55 +3888,56 @@ void MainWindow::formatResponseJson() {
     }
 }
 
+bool MainWindow::networkRequestMatches(const WebNetworkRequest& req) const {
+    const QString type = QString::fromStdString(req.resource_type);
+    const QString filter = m_current_net_type_filter;
+    if (filter == "XHR" && type != "Fetch/XHR") return false;
+    if (filter == "JS" && type != "JS") return false;
+    if (filter == "CSS" && type != "CSS") return false;
+    if (filter == "IMG" && type != "Img") return false;
+    if (filter == "DOC" && type != "Doc") return false;
+    if (filter == "OTHER" && (type == "Fetch/XHR" || type == "JS" || type == "CSS" || type == "Img" || type == "Doc")) return false;
+    const QString query = m_wv_filter_input->text().trimmed();
+    return query.isEmpty() || QString::fromStdString(req.url).contains(query, Qt::CaseInsensitive) ||
+           QString::fromStdString(req.method).contains(query, Qt::CaseInsensitive) || QString::number(req.status_code).contains(query);
+}
+
 void MainWindow::filterNetworkTable() {
-    if (!m_wv_network_table) return;
+    m_network_filter_changed = true;
+    scheduleLogFlush();
+}
 
-    QString typeFilter = m_current_net_type_filter; // ALL, XHR, JS, CSS, IMG, DOC, OTHER
-    QString query = m_wv_filter_input ? m_wv_filter_input->text().trimmed() : "";
-
-    int visibleCount = 0;
-    for (int r = 0; r < m_wv_network_table->rowCount(); ++r) {
-        auto* urlItem = m_wv_network_table->item(r, 2);
-        if (!urlItem) continue;
-
-        std::string reqId = urlItem->data(Qt::UserRole).toString().toStdString();
-        auto it = m_wv_requests.find(reqId);
-        if (it == m_wv_requests.end()) continue;
-        const auto& req = it->second;
-
-        QString resType = normalizeResourceType(req.resource_type, req.mime_type, req.url);
-
-        bool typeMatch = true;
-        if (typeFilter == "XHR") {
-            typeMatch = (resType == "Fetch/XHR");
-        } else if (typeFilter == "JS") {
-            typeMatch = (resType == "JS");
-        } else if (typeFilter == "CSS") {
-            typeMatch = (resType == "CSS");
-        } else if (typeFilter == "IMG") {
-            typeMatch = (resType == "Img");
-        } else if (typeFilter == "DOC") {
-            typeMatch = (resType == "Doc");
-        } else if (typeFilter == "OTHER") {
-            typeMatch = (resType != "Fetch/XHR" && resType != "JS" && resType != "CSS" && resType != "Img" && resType != "Doc");
+void MainWindow::flushNetworkUpdates() {
+    if (m_wv_network_table->isVisible()) {
+        m_wv_network_table->setUpdatesEnabled(false);
+        auto apply = [this](const std::string& id, QTableWidgetItem* item) {
+            auto request = m_wv_requests.find(id);
+            if (request == m_wv_requests.end()) return;
+            int row = item->row();
+            bool wasVisible = !m_wv_network_table->isRowHidden(row);
+            bool visible = networkRequestMatches(request->second);
+            if (visible != wasVisible) {
+                m_wv_network_table->setRowHidden(row, !visible);
+                m_visible_network_count += visible ? 1 : -1;
+            }
+        };
+        if (m_network_filter_changed) {
+            for (const auto& [id, item] : m_network_items) apply(id, item);
+        } else {
+            for (const auto& id : m_dirty_network_requests) {
+                auto item = m_network_items.find(id);
+                if (item != m_network_items.end()) apply(id, item->second);
+            }
         }
-
-        bool queryMatch = true;
-        if (!query.isEmpty()) {
-            queryMatch = QString::fromStdString(req.url).contains(query, Qt::CaseInsensitive) ||
-                         QString::fromStdString(req.method).contains(query, Qt::CaseInsensitive) ||
-                         QString::number(req.status_code).contains(query);
-        }
-
-        bool show = typeMatch && queryMatch;
-        m_wv_network_table->setRowHidden(r, !show);
-        if (show) visibleCount++;
+        const bool changed = m_network_filter_changed || !m_dirty_network_requests.empty();
+        m_network_filter_changed = false;
+        m_dirty_network_requests.clear();
+        if (changed && m_wv_autoscroll->isChecked()) m_wv_network_table->scrollToBottom();
+        m_wv_network_table->setUpdatesEnabled(true);
     }
-
-    if (m_wv_net_status_label) {
-        m_wv_net_status_label->setText(QString("%1 条日志 · 显示 %2 / %3 个请求")
-            .arg(m_wv_console_count).arg(visibleCount).arg(m_wv_network_count));
-    }
+    m_wv_net_status_label->setText(QString("%1 条日志 · 显示 %2 / %3 个请求%4")
+        .arg(m_wv_console_count).arg(m_visible_network_count).arg(m_wv_network_count)
+        .arg(m_wv_pause->isChecked() ? " · 控制台已暂停显示" : ""));
 }
 
 void MainWindow::onWebNetworkRequest(const WebNetworkRequest& req) {
@@ -3886,18 +3950,26 @@ void MainWindow::onWebNetworkRequest(const WebNetworkRequest& req) {
     QString resType = normalizeResourceType(req.resource_type, req.mime_type, req.url);
     m_wv_requests[req.request_id].resource_type = resType.toStdString();
 
-    if (m_wv_network_table->rowCount() >= 1000) {
+    if (m_wv_network_table->rowCount() >= 1000 && m_network_items.find(req.request_id) == m_network_items.end()) {
         QTableWidgetItem* oldUrlItem = m_wv_network_table->item(0, 2);
         if (oldUrlItem) {
             std::string oldId = oldUrlItem->data(Qt::UserRole).toString().toStdString();
             m_wv_requests.erase(oldId);
             m_wv_request_times.erase(oldId);
+            m_network_items.erase(oldId);
+            m_dirty_network_requests.erase(oldId);
+            m_webview->forgetRequest(oldId);
         }
+        if (!m_wv_network_table->isRowHidden(0)) --m_visible_network_count;
         m_wv_network_table->removeRow(0);
     }
 
-    int row = m_wv_network_table->rowCount();
-    m_wv_network_table->insertRow(row);
+    auto existing = m_network_items.find(req.request_id);
+    int row = existing == m_network_items.end() ? m_wv_network_table->rowCount() : existing->second->row();
+    if (existing == m_network_items.end()) {
+        m_wv_network_table->insertRow(row);
+        m_wv_network_table->setRowHidden(row, true);
+    }
 
     // Col 0: status — pending
     auto* statusItem = new QTableWidgetItem("…");
@@ -3918,6 +3990,7 @@ void MainWindow::onWebNetworkRequest(const WebNetworkRequest& req) {
     auto* urlItem = new QTableWidgetItem(QString::fromStdString(req.url));
     urlItem->setData(Qt::UserRole, QString::fromStdString(req.request_id));
     m_wv_network_table->setItem(row, 2, urlItem);
+    m_network_items[req.request_id] = urlItem;
 
     // Col 3: resource type badge
     auto* typeItem = new QTableWidgetItem(resType);
@@ -3939,15 +4012,13 @@ void MainWindow::onWebNetworkRequest(const WebNetworkRequest& req) {
     // Col 4: timing
     m_wv_network_table->setItem(row, 4, new QTableWidgetItem("进行中…"));
 
-    filterNetworkTable();
-
-    if (m_wv_autoscroll && m_wv_autoscroll->isChecked()) {
-        m_wv_network_table->scrollToBottom();
-    }
+    m_dirty_network_requests.insert(req.request_id);
+    scheduleLogFlush();
 }
 
 void MainWindow::onWebNetworkResponse(const QString& reqId, int status, const QString& mimeType) {
     std::string rid = reqId.toStdString();
+    if (m_wv_requests.find(rid) == m_wv_requests.end()) return;
 
     // Calculate elapsed time
     qint64 elapsed = -1;
@@ -3976,9 +4047,10 @@ void MainWindow::onWebNetworkResponse(const QString& reqId, int status, const QS
     QString resType = normalizeResourceType(m_wv_requests[rid].resource_type, mimeType.toStdString(), m_wv_requests[rid].url);
     m_wv_requests[rid].resource_type = resType.toStdString();
 
-    for (int r = 0; r < m_wv_network_table->rowCount(); ++r) {
-        auto* item = m_wv_network_table->item(r, 2);
-        if (item && item->data(Qt::UserRole).toString() == reqId) {
+    auto rowItem = m_network_items.find(rid);
+    if (rowItem != m_network_items.end()) {
+        int r = rowItem->second->row();
+        {
             // Col 0: status code
             auto* statusItem = new QTableWidgetItem(QString::number(status));
             if (status >= 500)      statusItem->setForeground(QColor("#d2a8ff"));
@@ -4009,7 +4081,6 @@ void MainWindow::onWebNetworkResponse(const QString& reqId, int status, const QS
             auto* timeItem = new QTableWidgetItem(timing);
             timeItem->setForeground(elapsed > 2000 ? QColor("#f3c969") : QColor("#8ba2b9"));
             m_wv_network_table->setItem(r, 4, timeItem);
-            break;
         }
     }
 
@@ -4018,13 +4089,27 @@ void MainWindow::onWebNetworkResponse(const QString& reqId, int status, const QS
         populateNetworkDetail(m_wv_requests[rid]);
     }
 
-    filterNetworkTable();
+    m_dirty_network_requests.insert(rid);
+    scheduleLogFlush();
 }
 
 void MainWindow::clearWebViewConsole() {
     m_wv_console_count = 0;
     m_wv_network_count = 0;
     m_cached_wv_logs.clear();
+    m_web_log_cache_bytes = 0;
+    m_pending_web_log_text.clear();
+    m_web_log_rebuild_needed = false;
+    m_network_items.clear();
+    m_dirty_network_requests.clear();
+    m_visible_network_count = 0;
+    m_network_filter_changed = false;
+    m_webview->clearRequests();
+    m_raw_response_body.clear();
+    m_net_headers_view->clear();
+    m_net_payload_view->clear();
+    m_net_response_view->clear();
+    m_net_curl_view->clear();
     m_wv_requests.clear();
     m_wv_request_times.clear();
     m_current_selected_req_id.clear();
@@ -4155,7 +4240,7 @@ void MainWindow::executeCustomHdc() {
     m_btn_run_hdc->setEnabled(false);
     m_btn_kill_hdc->setEnabled(true);
 
-    m_hdc_terminal->append(QString("\n$ hdc %1 %2").arg(s.empty() ? "" : QString("-t %1").arg(QString::fromStdString(s)), input));
+    appendHdcOutput(QString("\n$ hdc %1 %2").arg(s.empty() ? "" : QString("-t %1").arg(QString::fromStdString(s)), input));
 
     std::vector<std::string> args;
     if (input.startsWith("shell ") || input.startsWith("shell\t")) {
@@ -4171,9 +4256,9 @@ void MainWindow::executeCustomHdc() {
         m_hdc_status_label->setText("就绪");
 
         if (r.success()) {
-            m_hdc_terminal->append(QString::fromStdString(r.out));
+            appendHdcOutput(QString::fromStdString(r.out));
         } else {
-            m_hdc_terminal->append(QString("<ERROR> %1").arg(QString::fromStdString(r.err.empty() ? r.out : r.err)));
+            appendHdcOutput(QString("<ERROR> %1").arg(QString::fromStdString(r.err.empty() ? r.out : r.err)));
         }
         m_hdc_terminal->verticalScrollBar()->setValue(m_hdc_terminal->verticalScrollBar()->maximum());
     });
@@ -4187,12 +4272,46 @@ void MainWindow::interruptHdcCommand() {
 }
 
 void MainWindow::clearHdcTerminal() {
+    m_hdc_history.reset();
     m_hdc_terminal->clear();
+    m_hdc_terminal->document()->setMaximumBlockCount(10000);
     m_hdc_status_label->setText("就绪");
 }
 
 void MainWindow::copyHdcOutput() {
+    if (m_hdc_history && m_hdc_history->isOpen()) {
+        m_hdc_history->flush();
+        m_hdc_history->seek(0);
+        copyToClipboard(QString::fromUtf8(m_hdc_history->readAll()), "终端控制台完整输出");
+        return;
+    }
     copyToClipboard(m_hdc_terminal->toPlainText(), "终端控制台输出");
+}
+
+void MainWindow::appendHdcOutput(const QString& text) {
+    if (!m_hdc_history) {
+        m_hdc_history = std::make_unique<QTemporaryFile>();
+        if (!m_hdc_history->open()) {
+            // Keep all output in the document if temporary storage is unavailable.
+            m_hdc_terminal->document()->setMaximumBlockCount(0);
+        }
+    }
+    if (m_hdc_history->isOpen()) {
+        const qint64 previousSize = m_hdc_history->size();
+        m_hdc_history->seek(previousSize);
+        QByteArray bytes = (text + '\n').toUtf8();
+        if (m_hdc_history->write(bytes) != bytes.size()) {
+            m_hdc_history->resize(previousSize);
+            m_hdc_history->seek(0);
+            m_hdc_terminal->document()->setMaximumBlockCount(0);
+            m_hdc_terminal->setPlainText(QString::fromUtf8(m_hdc_history->readAll()));
+            m_hdc_history->close();
+            showToast("临时存储不可用，已切换为完整保留终端输出");
+        }
+    }
+    QTextCursor cursor(m_hdc_terminal->document());
+    cursor.movePosition(QTextCursor::End);
+    cursor.insertText(text + '\n');
 }
 
 void MainWindow::exportHdcOutput() {
@@ -4200,7 +4319,19 @@ void MainWindow::exportHdcOutput() {
     if (!path.isEmpty()) {
         QFile file(path);
         if (file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-            file.write(m_hdc_terminal->toPlainText().toUtf8());
+            if (m_hdc_history && m_hdc_history->isOpen()) {
+                m_hdc_history->flush();
+                m_hdc_history->seek(0);
+                while (!m_hdc_history->atEnd()) {
+                    QByteArray chunk = m_hdc_history->read(64 * 1024);
+                    if (chunk.isEmpty() || file.write(chunk) != chunk.size()) {
+                        showToast("终端输出导出失败");
+                        return;
+                    }
+                }
+            } else {
+                file.write(m_hdc_terminal->toPlainText().toUtf8());
+            }
             showToast("终端输出已导出");
         }
     }
@@ -4335,7 +4466,7 @@ void MainWindow::openSettingsDialog() {
     uLayout->setSpacing(8);
 
     auto* verRow = new QHBoxLayout();
-    QString curVer = m_updater ? m_updater->currentVersion() : "2.2.1";
+    QString curVer = m_updater ? m_updater->currentVersion() : "2.2.2";
     auto* lblCurVer = new QLabel(QString("当前版本: v%1 (正式版)").arg(curVer));
     lblCurVer->setStyleSheet("color: #dbe5ee; font-size: 12px; font-weight: 500;");
     verRow->addWidget(lblCurVer, 1);
@@ -4431,7 +4562,7 @@ void MainWindow::onUpdateAvailable(const UpdateInfo& info, bool silent) {
 
 void MainWindow::onNoUpdateAvailable(bool silent) {
     if (!silent) {
-        QString curVer = m_updater ? m_updater->currentVersion() : "2.2.1";
+        QString curVer = m_updater ? m_updater->currentVersion() : "2.2.2";
         showToast(QString("当前已是最新版本 (v%1)").arg(curVer));
         statusBar()->showMessage(QString("当前已是最新版本 (v%1)").arg(curVer), 4000);
         QWidget* parentDlg = QApplication::activeModalWidget() ? QApplication::activeModalWidget() : this;

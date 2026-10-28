@@ -19,7 +19,7 @@ namespace harmonycast {
 
 QString NetworkDeviceDialog::savedDevicesFilePath() {
     QString p = QDir::homePath() + "/Library/Application Support/HarmonyCast/saved_devices.json";
-    if (QFile::exists(p)) {
+    if (!QStandardPaths::isTestModeEnabled() && QFile::exists(p)) {
         return p;
     }
     QString dir = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation) + "/HarmonyCast";
@@ -54,7 +54,7 @@ std::vector<SavedNetworkDevice> NetworkDeviceDialog::loadSavedDevices() {
         dev.name = obj["name"].toString().trimmed().toStdString();
         dev.port = obj.contains("port") ? obj["port"].toInt(8710) : 8710;
         if (dev.port <= 0 || dev.port > 65535) dev.port = 8710;
-        dev.updated_at = obj.contains("updated_at") ? obj["updated_at"].toInteger() : 0;
+        dev.updated_at = obj.value("updated_at").toVariant().toLongLong();
         result.push_back(dev);
     }
     return result;
@@ -439,18 +439,7 @@ void NetworkDeviceDialog::onTableDoubleClicked(int row, int column) {
     }
     const auto& dev = m_displayed_devices[row];
     std::string ep = dev.ip + ":" + std::to_string(dev.port);
-    bool is_conn = false;
-    for (const auto& t : m_connected_targets) {
-        if (t == ep || t == dev.ip) {
-            is_conn = true;
-            break;
-        }
-    }
-    if (is_conn) {
-        selectTarget(ep);
-    } else {
-        connectTarget(ep);
-    }
+    connectTarget(ep);
 }
 
 void NetworkDeviceDialog::onConnectAndSave() {

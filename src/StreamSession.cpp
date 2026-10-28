@@ -1,5 +1,6 @@
 #include "harmonycast/StreamSession.h"
 #include "harmonycast/Logger.h"
+#include "harmonycast/FramePresentation.h"
 #include <QTcpServer>
 #include <QThread>
 #include <QCoreApplication>
@@ -9,6 +10,7 @@
 #include <QImage>
 #include <QPointer>
 #include <iostream>
+#include <thread>
 
 namespace harmonycast {
 
@@ -26,7 +28,6 @@ StreamSession::StreamSession(std::shared_ptr<HdcClient> hdc,
       m_max_size(max_size),
       m_socket(new QTcpSocket(this)),
       m_heartbeat_timer(new QTimer(this)),
-      m_decoder(std::make_unique<VideoDecoder>()),
       m_control(std::make_shared<ControlChannel>(this)) {
 
     connect(m_socket, &QTcpSocket::connected, this, &StreamSession::onSocketConnected);
@@ -34,37 +35,8 @@ StreamSession::StreamSession(std::shared_ptr<HdcClient> hdc,
     connect(m_socket, &QTcpSocket::disconnected, this, &StreamSession::onSocketDisconnected);
     connect(m_heartbeat_timer, &QTimer::timeout, this, &StreamSession::sendHeartbeat);
 
-    m_demuxer.setHeaderCallback([this](const std::string& name, int w, int h) {
-        m_dev_width = w;
-        m_dev_height = h;
-        emit statusChanged(QString("画面已同步 · %1 × %2 (%3)")
-                               .arg(w).arg(h).arg(QString::fromStdString(name)));
-    });
+    m_socket->setReadBufferSize(4 * 1024 * 1024);
 
-    m_demuxer.setRawFrameCallback([this](const DecodedFrame& frame) {
-        m_dev_width = frame.width;
-        m_dev_height = frame.height;
-        emit frameReady(frame);
-    });
-
-    m_demuxer.setHandshakeCallback([this](const std::string&) {
-        if (m_socket && m_socket->isOpen()) {
-            m_socket->write("CONFIG_ACK\n");
-            m_socket->flush();
-        }
-        emit statusChanged("设备握手成功，开始接收流");
-    });
-
-    m_demuxer.setPacketCallback([this](const StreamPacket& pkt) {
-        if (!m_decoder || !m_decoder->isReady()) return;
-        if (pkt.type == 3 || pkt.type == 4 || pkt.type == 1 || pkt.type == 2) {
-            m_decoder->decode(pkt.payload, pkt.is_keyframe, pkt.pts);
-        }
-    });
-
-    m_decoder->setFrameCallback([this](const DecodedFrame& frame) {
-        emit frameReady(frame);
-    });
 }
 
 StreamSession::~StreamSession() {
@@ -128,8 +100,8 @@ bool StreamSession::launchServerAsync(const std::shared_ptr<HdcClient>& hdc,
 
         if (need_push) {
             hdc->fileSend(serial, local_bin.toStdString(), remote_bin);
-            hdc->run({"shell", "chmod", "755", remote_bin}, serial, 3000);
         }
+        hdc->run({"shell", "chmod", "755", remote_bin}, serial, 3000);
     }
 
     // Kill any previous capture instances
@@ -157,11 +129,7 @@ bool StreamSession::start() {
     m_local_port = pickFreePort();
     m_remote_port = m_local_port;
 
-    // Initialize hardware-accelerated video decoder
-    if (!m_decoder->init(1080, 1920, true)) {
-        emit statusChanged("硬件加速初始化降级为多线程软解");
-        m_decoder->init(1080, 1920, false);
-    }
+    startPipeline();
 
     auto hdc = m_hdc;
     std::string serial = m_device.serial;
@@ -172,7 +140,10 @@ bool StreamSession::start() {
     int max_size = m_max_size;
     QPointer<StreamSession> weak_this(this);
 
-    std::thread([weak_this, current_gen, hdc, serial, local_port, remote_port, fps, bitrate, max_size]() {
+    m_start_cancel = std::make_shared<std::atomic<bool>>(false);
+    auto cancelled = m_start_cancel;
+    std::thread([weak_this, current_gen, hdc, serial, local_port, remote_port, fps, bitrate, max_size, cancelled]() {
+        if (cancelled->load()) return;
         // 1. Setup port forwarding in worker thread
         if (!hdc || serial.empty() || !hdc->forwardPort(serial, local_port, remote_port)) {
             if (weak_this) {
@@ -186,6 +157,7 @@ bool StreamSession::start() {
         }
 
         // 2. Launch capture server on device in worker thread
+        if (cancelled->load()) return;
         launchServerAsync(hdc, serial, remote_port, fps, bitrate, max_size);
 
         // 3. Inform main thread to begin non-blocking socket connection attempts
@@ -232,10 +204,12 @@ void StreamSession::tryConnectSocket(int attempt, uint64_t gen) {
 }
 
 void StreamSession::stop() {
+    const bool needs_cleanup = m_running || m_forwarded || m_snapshot_ctx;
     if (m_running) {
         HC_LOG_INFO(QString("StreamSession stopped for %1").arg(QString::fromStdString(m_device.serial)));
     }
     m_running = false;
+    if (m_start_cancel) m_start_cancel->store(true);
     m_fallback_snapshot = false;
     m_session_gen++;
     m_heartbeat_timer->stop();
@@ -250,11 +224,10 @@ void StreamSession::stop() {
     }
     m_control->disconnectFromHost();
 
-    cleanup();
-    if (m_decoder) {
-        m_decoder->close();
-    }
-    m_demuxer.reset();
+    stopPipeline();
+    if (m_frame_mailbox) m_frame_mailbox->clear();
+    m_frame_mailbox.reset();
+    if (needs_cleanup) cleanup();
 }
 
 bool StreamSession::isRunning() const {
@@ -268,15 +241,13 @@ void StreamSession::cleanup() {
     std::string serial = m_device.serial;
     int local_port = m_local_port;
     int remote_port = m_remote_port;
-    bool forwarded = m_forwarded;
     m_forwarded = false;
 
-    std::thread([hdc, serial, local_port, remote_port, forwarded]() {
-        if (forwarded) {
+    std::thread([hdc, serial, local_port, remote_port]() {
+        if (local_port > 0) {
             hdc->removeForward(serial, local_port, remote_port);
         }
         hdc->run({"shell", "killall", "-9", "harmonycast_capture", "2>/dev/null"}, serial, 1000);
-        hdc->run({"shell", "rm", "-f", "/data/local/tmp/harmonycast_stream.jpeg"}, serial, 1000);
     }).detach();
 }
 
@@ -288,11 +259,78 @@ void StreamSession::onSocketConnected() {
 }
 
 void StreamSession::onSocketReadyRead() {
-    if (!m_running) return;
-    QByteArray data = m_socket->readAll();
-    if (!data.isEmpty()) {
-        m_demuxer.feed(std::span(reinterpret_cast<const uint8_t*>(data.constData()), data.size()));
+    if (!m_running || m_fallback_snapshot || m_decode_busy || !m_pipeline) return;
+    QByteArray data = m_socket->read(256 * 1024);
+    if (data.isEmpty()) return;
+    m_decode_busy = true;
+    auto* pipeline = m_pipeline;
+    QMetaObject::invokeMethod(pipeline, [pipeline, data = std::move(data)] { pipeline->consume(data); }, Qt::QueuedConnection);
+}
+
+void StreamSession::startPipeline() {
+    m_frame_mailbox = std::make_shared<FrameMailbox>();
+    m_decode_thread = new QThread(this);
+    m_pipeline = new VideoPipeline;
+    m_pipeline->moveToThread(m_decode_thread);
+    connect(m_decode_thread, &QThread::finished, m_pipeline, &QObject::deleteLater);
+    const uint64_t generation = m_session_gen;
+    auto mailbox = m_frame_mailbox;
+    connect(m_pipeline, &VideoPipeline::frameReady, m_pipeline, [this, mailbox, generation](const DecodedFrame& frame) {
+        if (mailbox->publish(frame)) {
+            QMetaObject::invokeMethod(this, [this, mailbox, generation] { deliverLatestFrame(mailbox, generation); }, Qt::QueuedConnection);
+        }
+    }, Qt::DirectConnection);
+    connect(m_pipeline, &VideoPipeline::batchProcessed, this, [this, generation] {
+        if (generation != m_session_gen) return;
+        m_decode_busy = false;
+        onSocketReadyRead();
+    });
+    connect(m_pipeline, &VideoPipeline::handshakeRequested, this, [this, generation] {
+        if (generation != m_session_gen || !m_running || m_fallback_snapshot) return;
+        m_socket->write("CONFIG_ACK\n");
+        emit statusChanged("设备握手成功，开始接收流");
+    });
+    m_decode_thread->start();
+    setPresentation(m_viewport, m_rotation, m_dpr);
+}
+
+void StreamSession::setPresentation(QSize viewport, int rotation, qreal dpr) {
+    m_viewport = viewport;
+    m_rotation = rotation;
+    m_dpr = dpr;
+    if (m_pipeline) {
+        auto* pipeline = m_pipeline;
+        QMetaObject::invokeMethod(pipeline, [pipeline, viewport, rotation, dpr] { pipeline->setPresentation(viewport, rotation, dpr); }, Qt::QueuedConnection);
     }
+    if (m_snapshot_ctx) {
+        std::lock_guard lock(m_snapshot_ctx->presentation_mutex);
+        m_snapshot_ctx->viewport = viewport;
+        m_snapshot_ctx->rotation = rotation;
+        m_snapshot_ctx->dpr = dpr;
+    }
+}
+
+void StreamSession::stopPipeline() {
+    if (!m_decode_thread) return;
+    m_decode_thread->requestInterruption();
+    m_decode_thread->quit();
+    m_decode_thread->wait();
+    delete m_decode_thread;
+    m_decode_thread = nullptr;
+    m_pipeline = nullptr;
+    m_decode_busy = false;
+}
+
+void StreamSession::deliverLatestFrame(const std::shared_ptr<FrameMailbox>& mailbox, uint64_t generation) {
+    auto frame = mailbox->take();
+    if (!frame || generation != m_session_gen || !m_running) return;
+    const int width = frame->source_width > 0 ? frame->source_width : frame->width;
+    const int height = frame->source_height > 0 ? frame->source_height : frame->height;
+    bool changed = m_dev_width != width || m_dev_height != height;
+    m_dev_width = width;
+    m_dev_height = height;
+    if (changed) updateSnapshotTargetSize();
+    emit frameReady(*frame);
 }
 
 void StreamSession::onSocketDisconnected() {
@@ -371,6 +409,11 @@ void StreamSession::updateSnapshotTargetSize() {
 void StreamSession::startSnapshotFallback() {
     if (m_fallback_snapshot) return;
     m_fallback_snapshot = true;
+    m_heartbeat_timer->stop();
+    m_socket->abort();
+    stopPipeline();
+    if (m_frame_mailbox) m_frame_mailbox->clear();
+    m_frame_mailbox = std::make_shared<FrameMailbox>();
     HC_LOG_WARN(QString("StreamSession starting snapshot fallback mode for %1").arg(QString::fromStdString(m_device.serial)));
 
     if (m_snapshot_ctx) {
@@ -381,13 +424,17 @@ void StreamSession::startSnapshotFallback() {
     auto ctx = std::make_shared<SnapshotWorkerContext>();
     ctx->hdc = m_hdc;
     ctx->serial = m_device.serial;
-    ctx->session_id = reinterpret_cast<uintptr_t>(this);
+    static std::atomic<uintptr_t> next_snapshot_id{0};
+    ctx->session_id = ++next_snapshot_id;
     m_snapshot_ctx = ctx;
+    setPresentation(m_viewport, m_rotation, m_dpr);
     updateSnapshotTargetSize();
     QPointer<StreamSession> weak_this(this);
 
-    std::thread([weak_this, ctx]() {
-        std::string remote_path = "/data/local/tmp/harmonycast_stream.jpeg";
+    auto mailbox = m_frame_mailbox;
+    const uint64_t generation = m_session_gen;
+    std::thread([weak_this, ctx, mailbox, generation]() {
+        std::string remote_path = "/data/local/tmp/harmonycast_stream_" + std::to_string(ctx->session_id) + ".jpeg";
         QString local_temp = QDir::tempPath() + QString("/harmonycast_stream_%1_%2.jpeg")
                                 .arg(QString::fromStdString(ctx->serial).replace(':', '_').replace('.', '_'))
                                 .arg(ctx->session_id);
@@ -396,13 +443,14 @@ void StreamSession::startSnapshotFallback() {
         ctx->hdc->wakeup(ctx->serial);
 
         int consecutive_errors = 0;
+        int source_width = 0, source_height = 0;
         while (!ctx->cancelled.load()) {
             auto t0 = std::chrono::steady_clock::now();
 
             std::vector<std::string> snap_cmd = {"shell", "snapshot_display", "-f", remote_path};
             int tw = ctx->target_width.load();
             int th = ctx->target_height.load();
-            if (tw > 0 && th > 0) {
+            if (source_width > 0 && tw > 0 && th > 0) {
                 snap_cmd.push_back("-w");
                 snap_cmd.push_back(std::to_string(tw));
                 snap_cmd.push_back("-h");
@@ -420,28 +468,32 @@ void StreamSession::startSnapshotFallback() {
                     if (img.load(local_temp)) {
                         consecutive_errors = 0;
 
-                        QImage native_img = (img.format() == QImage::Format_RGB32) ? img : img.convertToFormat(QImage::Format_RGB32);
+                        if (source_width == 0 || tw == 0) {
+                            source_width = img.width();
+                            source_height = img.height();
+                        }
                         DecodedFrame frame;
-                        frame.width = native_img.width();
-                        frame.height = native_img.height();
-                        frame.stride = native_img.bytesPerLine();
-                        frame.format = 4; // QImage::Format_RGB32
+                        frame.image = img.format() == QImage::Format_RGB32 ? img : img.convertToFormat(QImage::Format_RGB32);
+                        frame.width = frame.image.width();
+                        frame.height = frame.image.height();
+                        frame.stride = int(frame.image.bytesPerLine());
+                        frame.format = 4;
+                        frame.source_width = source_width;
+                        frame.source_height = source_height;
                         frame.is_keyframe = true;
-                        frame.data.assign(native_img.constBits(), native_img.constBits() + native_img.sizeInBytes());
-
-                        if (weak_this) {
-                            QMetaObject::invokeMethod(weak_this.data(), [weak_this, ctx, frame]() {
-                                if (weak_this && !ctx->cancelled.load() && weak_this->m_running) {
-                                    bool size_changed = (weak_this->m_dev_width != frame.width || weak_this->m_dev_height != frame.height);
-                                    weak_this->m_dev_width = frame.width;
-                                    weak_this->m_dev_height = frame.height;
-                                    if (size_changed) {
-                                        weak_this->updateSnapshotTargetSize();
-                                    }
-                                    emit weak_this->frameReady(frame);
-                                    QString tier = (std::min(frame.width, frame.height) >= 1080) ? "原画点对点" : ((std::min(frame.width, frame.height) >= 900) ? "超清 900P" : ((std::min(frame.width, frame.height) >= 720) ? "高清 720P" : "标清 540P"));
-                                    emit weak_this->statusChanged(QString("兼容快照流 · %1x%2 (%3)").arg(frame.width).arg(frame.height).arg(tier));
-                                }
+                        QSize viewport;
+                        int rotation;
+                        qreal dpr;
+                        {
+                            std::lock_guard lock(ctx->presentation_mutex);
+                            viewport = ctx->viewport;
+                            rotation = ctx->rotation;
+                            dpr = ctx->dpr;
+                        }
+                        prepareFramePresentation(frame, viewport, rotation, dpr);
+                        if (weak_this && mailbox->publish(frame)) {
+                            QMetaObject::invokeMethod(weak_this.data(), [weak_this, ctx, mailbox, generation]() {
+                                if (weak_this && !ctx->cancelled.load()) weak_this->deliverLatestFrame(mailbox, generation);
                             });
                         }
                     }

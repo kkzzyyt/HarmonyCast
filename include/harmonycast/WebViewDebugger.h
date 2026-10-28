@@ -13,6 +13,9 @@
 #include <string>
 #include <functional>
 #include <map>
+#include <deque>
+#include <QTimer>
+#include <QTemporaryDir>
 
 namespace harmonycast {
 
@@ -52,6 +55,8 @@ struct WebNetworkRequest {
     std::map<std::string, std::string> response_headers; // Response headers
     std::string response_body;
     bool response_body_loaded{false};
+    bool response_body_base64{false};
+    QString response_body_file;
     qint64 start_time_ms{0};
     qint64 elapsed_ms{-1};
 };
@@ -89,6 +94,8 @@ public:
     // Get cached request
     const WebNetworkRequest* getRequest(const std::string& requestId) const;
     const std::map<std::string, WebNetworkRequest>& allRequests() const { return m_requests; }
+    void clearRequests();
+    void forgetRequest(const std::string& id);
 
     // Generate cURL command from request
     static QString generateCurl(const WebNetworkRequest& req);
@@ -114,7 +121,14 @@ private:
     int m_msg_id{1};
 
     std::map<std::string, WebNetworkRequest> m_requests;
+    std::deque<std::string> m_request_order;
+    size_t m_body_cache_bytes{0};
+    uint64_t m_cache_generation{0};
     std::map<int, std::function<void(const QJsonObject&)>> m_callbacks;
+    std::map<int, qint64> m_callback_deadlines;
+    QTimer* m_callback_timer{nullptr};
+    std::unique_ptr<QTemporaryDir> m_response_files;
+    bool storeBodyOnDisk(WebNetworkRequest& request, const std::string& body);
 };
 
 } // namespace harmonycast

@@ -143,12 +143,21 @@ UpdateInfo UpdateChecker::parseManifest(const QByteArray& data) const {
         info.pageUrl = obj["html_url"].toString();
         info.releaseDate = obj["published_at"].toString().left(10);
 
-        // Search assets for macOS .dmg or .zip
+        // Keep each edition on its own platform/runtime when updating.
         QJsonArray assets = obj["assets"].toArray();
         for (const auto& a : assets) {
             QJsonObject assetObj = a.toObject();
             QString name = assetObj["name"].toString();
-            if (name.endsWith(".dmg", Qt::CaseInsensitive) || name.endsWith(".zip", Qt::CaseInsensitive)) {
+            bool matches = false;
+#if defined(HARMONYCAST_SERVER2012_COMPAT)
+            matches = name.endsWith("-Windows-Server2012-x64.zip", Qt::CaseInsensitive);
+#elif defined(Q_OS_WIN)
+            matches = name.endsWith("-Windows-x64.zip", Qt::CaseInsensitive);
+#elif defined(Q_OS_MACOS)
+            matches = name.endsWith(".dmg", Qt::CaseInsensitive) ||
+                      (name.contains("macOS", Qt::CaseInsensitive) && name.endsWith(".zip", Qt::CaseInsensitive));
+#endif
+            if (matches) {
                 info.downloadUrl = assetObj["browser_download_url"].toString();
                 break;
             }

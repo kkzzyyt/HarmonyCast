@@ -39,13 +39,18 @@ public:
     [[nodiscard]] int deviceWidth() const { return m_width; }
     [[nodiscard]] int deviceHeight() const { return m_height; }
     [[nodiscard]] const std::string& deviceName() const { return m_device_name; }
+    [[nodiscard]] int sourceWidth() const { return m_source_width > 0 ? m_source_width : m_width; }
+    [[nodiscard]] int sourceHeight() const { return m_source_height > 0 ? m_source_height : m_height; }
 
 private:
     std::vector<uint8_t> m_buffer;
+    size_t m_read_offset{0};
     bool m_header_parsed{false};
     std::string m_device_name;
     int m_width{0};
     int m_height{0};
+    int m_source_width{0};
+    int m_source_height{0};
 
     PacketCallback m_packet_cb;
     HeaderCallback m_header_cb;

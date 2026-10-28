@@ -1,5 +1,8 @@
 #include "harmonycast/HiLogSession.h"
 #include <QStringList>
+#include <QCoreApplication>
+#include <QTimer>
+#include <utility>
 
 namespace harmonycast {
 
@@ -37,16 +40,20 @@ void HiLogSession::start() {
 }
 
 void HiLogSession::stop() {
-    if (m_process) {
-        if (m_process->state() == QProcess::Running) {
-            m_process->terminate();
-            if (!m_process->waitForFinished(1000)) {
-                m_process->kill();
-                m_process->waitForFinished(500);
-            }
+    if (auto* process = std::exchange(m_process, nullptr)) {
+        disconnect(process, nullptr, this, nullptr);
+        if (process->state() == QProcess::NotRunning) {
+            delete process;
+        } else {
+            // Let the event loop finish shutdown instead of blocking the UI for 1.5s.
+            process->setParent(QCoreApplication::instance());
+            connect(process, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), process, &QObject::deleteLater);
+            process->terminate();
+            QTimer::singleShot(1000, process, [process] {
+                if (process->state() != QProcess::NotRunning) process->kill();
+                else process->deleteLater();
+            });
         }
-        delete m_process;
-        m_process = nullptr;
     }
     m_line_buffer.clear();
 }
@@ -61,10 +68,11 @@ void HiLogSession::onReadyRead() {
     m_line_buffer.append(m_process->readAllStandardOutput());
     std::vector<HiLogEntry> batch;
 
-    int idx = 0;
-    while ((idx = m_line_buffer.indexOf('\n')) >= 0) {
-        QByteArray line = m_line_buffer.left(idx);
-        m_line_buffer.remove(0, idx + 1);
+    qsizetype offset = 0;
+    qsizetype idx = 0;
+    while ((idx = m_line_buffer.indexOf('\n', offset)) >= 0) {
+        QByteArray line = m_line_buffer.mid(offset, idx - offset);
+        offset = idx + 1;
 
         if (line.endsWith('\r')) line.chop(1);
         if (line.isEmpty()) continue;
@@ -72,7 +80,7 @@ void HiLogSession::onReadyRead() {
         std::string raw_str = line.toStdString();
         HiLogEntry entry = m_parser.parseLine(raw_str, m_bundle);
 
-        {
+        if (m_retain_entries) {
             std::lock_guard<std::mutex> lock(m_mutex);
             if (m_entries.size() >= MAX_ENTRIES) {
                 m_entries.pop_front();
@@ -83,6 +91,7 @@ void HiLogSession::onReadyRead() {
         batch.push_back(std::move(entry));
     }
 
+    m_line_buffer.remove(0, offset);
     if (!batch.empty()) {
         emit entriesReady(batch);
     }

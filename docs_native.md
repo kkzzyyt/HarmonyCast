@@ -1,19 +1,19 @@
 # HarmonyCast C++ Native (跨平台高性能原生客户端)
 
-HarmonyCast 纯 C++20 + Qt6 + FFmpeg 硬件加速原生客户端，具备全链路硬件零拷贝、超低延迟触控以及微秒级日志解析性能。
+HarmonyCast 使用 C++20、Qt6 和 FFmpeg，支持硬件解码、软件解码与截图兼容回退。
 
----
+## 性能与内存管理
 
-## 架构优势
+- 视频拆包、解码、颜色转换和显示尺寸适配在后台线程执行；界面线程使用共享图像绘制。
+- 接收侧限制单次交给工作线程的数据量，待显示队列仅保留最新一帧。H.264 压缩帧仍按顺序解码，避免破坏帧间依赖。
+- 图像缓冲按所有权复用，截图保留完整源图；旋转、缩放及触控坐标有回归测试覆盖。
+- 日志每 50ms 合并刷新，搜索防抖 180ms。隐藏面板继续接收，重新显示时更新内容；暂停仅冻结显示。
+- HiLog 和 WebView 使用滚动缓存，去除重复原始文本；大响应体使用临时文件缓存，查看与复制保持完整内容。
+- HDC 输入命令按顺序执行并复用后台线程。终端界面限制为最近 10000 行，完整输出保存在临时文件中供复制、导出，清空或退出时释放。
 
-1. **显存级零拷贝渲染**：
-   - macOS: 集成 **VideoToolbox** 硬件解码，直通 `CVPixelBuffer` 显存句柄渲染，**CPU 占用 < 3%**。
-   - Windows: 集成 **Direct3D 11 / DXVA2** 硬件解码，原生显卡加速。
-2. **极速二进制触控通道**：
-   - 通过原生 `ControlChannel` 注入触控与按键包，**端到端触控延迟压至 2ms 以内**。
-3. **极小安装包与秒开体验**：
-   - 二进制体积仅约 **400KB**，macOS Standalone 打包约 **50MB**（含全套 Qt 与 FFmpeg 依赖）。
-   - 冷启动耗时 **< 150ms**。
+硬件解码后目前仍需要 CPU 颜色转换，不宣称全链路 GPU 零拷贝。实际 CPU、内存、帧率和延迟取决于设备、分辨率、连接方式及日志负载。
+
+详细验证与限制见 [性能验证说明](docs/performance.md)。
 
 ---
 
@@ -28,14 +28,13 @@ brew install qt ffmpeg cmake
 
 **编译命令**：
 ```bash
-cd cpp
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ```
 
 **运行测试**：
 ```bash
-./build/test_harmonycast_core
+ctest --test-dir build --output-on-failure
 ```
 
 **打包为独立 DMG 镜像**：
@@ -48,6 +47,8 @@ macdeployqt build/HarmonyCast.app -dmg
 
 ### 2. Windows 编译 (MSVC x64)
 
+以下是 Qt6 普通版构建。Windows Server 2012/2012 R2 使用独立的 [Qt5 兼容构建](docs/windows-server2012.md)，开启 `HARMONYCAST_SERVER2012_COMPAT` 并部署专用 FFmpeg 和 v142 / UCRT 运行库。
+
 **前置依赖**：
 - Visual Studio 2022 (带 C++ 桌面开发套件)
 - CMake 3.22+
@@ -56,7 +57,6 @@ macdeployqt build/HarmonyCast.app -dmg
 
 **编译命令**：
 ```cmd
-cd cpp
 cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%/scripts/buildsystems/vcpkg.cmake
 cmake --build build --config Release
 ```

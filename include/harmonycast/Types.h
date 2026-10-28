@@ -6,7 +6,9 @@
 #include <chrono>
 #include <memory>
 #include <string_view>
+#include <algorithm>
 #include <QMetaType>
+#include <QImage>
 
 namespace harmonycast {
 
@@ -54,6 +56,50 @@ struct Device {
         return serial == other.serial && state == other.state && is_network == other.is_network && port == other.port;
     }
 };
+
+inline std::string normalizeEndpoint(std::string target) {
+    while (!target.empty() && (target.front() == ' ' || target.front() == '\t')) target.erase(0, 1);
+    while (!target.empty() && (target.back() == ' ' || target.back() == '\t')) target.pop_back();
+    if (target.empty()) return target;
+
+    // If target is an IP address without port (contains '.' and no ':'), append default port 8710
+    if (target.find('.') != std::string::npos && target.find(':') == std::string::npos) {
+        target += ":8710";
+    }
+    return target;
+}
+
+inline bool isSameDevice(const std::string& serial_a, const std::string& serial_b) {
+    if (serial_a == serial_b) return true;
+    if (serial_a.empty() || serial_b.empty()) return false;
+    std::string norm_a = normalizeEndpoint(serial_a);
+    std::string norm_b = normalizeEndpoint(serial_b);
+    if (norm_a == norm_b) return true;
+
+    auto get_host = [](const std::string& s) -> std::string {
+        if (s.find('.') != std::string::npos) {
+            size_t col = s.find(':');
+            return (col != std::string::npos) ? s.substr(0, col) : s;
+        }
+        return s;
+    };
+    std::string host_a = get_host(serial_a);
+    std::string host_b = get_host(serial_b);
+    if (serial_a.find('.') != std::string::npos && serial_b.find('.') != std::string::npos) {
+        return host_a == host_b;
+    }
+    return false;
+}
+
+inline const Device* findMatchingDevice(const std::vector<Device>& devices, const std::string& serial) {
+    if (serial.empty()) return nullptr;
+    for (const auto& d : devices) {
+        if (isSameDevice(d.serial, serial)) {
+            return &d;
+        }
+    }
+    return nullptr;
+}
 
 struct NetworkInterfaceInfo {
     std::string interface_name;
@@ -175,6 +221,11 @@ struct DecodedFrame {
     bool is_keyframe{false};
     void* hw_surface{nullptr}; // CVPixelBufferRef on macOS or ID3D11Texture2D on Win
     std::vector<uint8_t> data; // CPU RGB24 buffer fallback
+    QImage image; // Implicitly shared, owning pixels across worker/UI boundaries.
+    QImage presentation_image;
+    int presentation_rotation{0};
+    int source_width{0};
+    int source_height{0};
 };
 
 } // namespace harmonycast

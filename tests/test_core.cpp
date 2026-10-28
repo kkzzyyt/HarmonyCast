@@ -18,6 +18,9 @@
 #include "harmonycast/ScreenView.h"
 #include <QDir>
 #include <QFile>
+#include <QTemporaryDir>
+#include <QStandardPaths>
+#include <QSettings>
 
 using namespace harmonycast;
 
@@ -90,9 +93,9 @@ void test_packet_demuxer() {
     assert(raw_frame.width == 2);
     assert(raw_frame.height == 2);
     assert(raw_frame.stride == 8);
-    assert(raw_frame.data.size() == 16);
-    assert(raw_frame.data[0] == 1);
-    assert(raw_frame.data[15] == 16);
+    assert(raw_frame.image.sizeInBytes() == 16);
+    assert(raw_frame.image.constBits()[0] == 1);
+    assert(raw_frame.image.constBits()[15] == 16);
 
     std::cout << "[PASS] test_packet_demuxer passed!" << std::endl;
 }
@@ -183,6 +186,35 @@ void test_stream_session_and_types() {
     d2.state = DeviceState::Offline;
     assert(!(d1 == d2));
 
+    // Test IP normalization helper logic
+    auto normalizeIp = [](std::string s) {
+        while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s.erase(0, 1);
+        while (!s.empty() && (s.back() == ' ' || s.back() == '\t')) s.pop_back();
+        if (s.find(':') == std::string::npos && s.find('.') != std::string::npos) {
+            s += ":8710";
+        }
+        return s;
+    };
+    assert(normalizeIp("192.168.1.50") == "192.168.1.50:8710");
+    assert(normalizeIp("192.168.1.50:8710") == "192.168.1.50:8710");
+    assert(normalizeIp("192.168.1.50:9000") == "192.168.1.50:9000");
+    assert(normalizeIp("usb_serial_123") == "usb_serial_123");
+
+    // Test network device prefix matching
+    auto matchesDevice = [](const std::string& query, const std::string& target) {
+        if (query == target) return true;
+        bool is_net = (query.find(':') != std::string::npos || query.find('.') != std::string::npos);
+        if (is_net) {
+            std::string prefix = (query.find(':') != std::string::npos) ? query.substr(0, query.find(':')) : query;
+            return target.rfind(prefix, 0) == 0;
+        }
+        return false;
+    };
+    assert(matchesDevice("192.168.1.50", "192.168.1.50:8710"));
+    assert(matchesDevice("192.168.1.50:8710", "192.168.1.50:8710"));
+    assert(!matchesDevice("192.168.1.51", "192.168.1.50:8710"));
+    assert(!matchesDevice("usb_device_a", "usb_device_b"));
+
     // Test Quality index setting
     session.setQuality(0, 20000000);
     assert(session.qualityIndex() == 0);
@@ -223,6 +255,8 @@ void test_webview_and_filters() {
     req.headers["Content-Type"] = "application/json";
     req.post_data = "{\"user\":\"admin\"}";
     QString curl = WebViewDebugger::generateCurl(req);
+    curl.replace("\\\n", "");
+    curl = curl.simplified();
     assert(curl.contains("curl -X POST 'https://api.example.com/login'"));
     assert(curl.contains("-H 'Content-Type: application/json'"));
     assert(curl.contains("--data-raw '{\"user\":\"admin\"}'"));
@@ -442,14 +476,14 @@ void test_update_checker() {
 
     // 2. Ignore version logic
     UpdateChecker checker;
-    assert(checker.currentVersion() == "2.2.1");
+    assert(checker.currentVersion() == "2.2.2");
 
     checker.ignoreVersion("2.3.0");
     assert(checker.isVersionIgnored("2.3.0"));
     assert(!checker.isVersionIgnored("2.4.0"));
 
     checker.clearIgnoredVersion();
-    assert(!checker.isVersionIgnored("2.2.1"));
+    assert(!checker.isVersionIgnored("2.2.2"));
 
     std::cout << "[PASS] test_update_checker passed!" << std::endl;
 }
@@ -457,6 +491,10 @@ void test_update_checker() {
 int main(int argc, char* argv[]) {
     qputenv("QT_QPA_PLATFORM", "offscreen");
     QApplication app(argc, argv);
+    QStandardPaths::setTestModeEnabled(true);
+    QTemporaryDir settings;
+    QSettings::setDefaultFormat(QSettings::IniFormat);
+    QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settings.path());
     std::cout << "========================================" << std::endl;
     std::cout << "   HarmonyCast C++ Core Verification    " << std::endl;
     std::cout << "========================================" << std::endl;

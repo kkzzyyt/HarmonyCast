@@ -34,6 +34,7 @@ void ScreenView::setRotation(int degrees) {
         m_rotation = r;
         m_cache_dirty = true;
         updateTargetRect();
+        emit presentationChanged(size(), m_rotation, devicePixelRatioF());
         update();
     }
 }
@@ -48,26 +49,27 @@ void ScreenView::setImage(const QImage& img, int dev_w, int dev_h) {
 }
 
 void ScreenView::updateFrame(const DecodedFrame& frame) {
-    if (frame.data.empty()) return;
-
-    QImage::Format fmt = QImage::Format_RGB888;
-    if (frame.format == 4) {
-        fmt = QImage::Format_RGB32;
-    } else if (frame.format == 5 || frame.format == 6) {
-        fmt = QImage::Format_ARGB32_Premultiplied;
-    } else if (frame.stride == frame.width * 4 || frame.format == 12 || frame.format == 26) {
-        fmt = QImage::Format_RGBA8888;
+    if (!frame.image.isNull()) {
+        m_image = frame.image;
+    } else {
+        // Preserve compatibility with callers supplying an external byte buffer.
+        if (frame.width <= 0 || frame.height <= 0 || frame.stride <= 0 ||
+            size_t(frame.stride) * size_t(frame.height) > frame.data.size()) return;
+        QImage::Format fmt = QImage::Format_RGB888;
+        if (frame.format == 4) fmt = QImage::Format_RGB32;
+        else if (frame.format == 5 || frame.format == 6) fmt = QImage::Format_ARGB32_Premultiplied;
+        else if (frame.stride == frame.width * 4 || frame.format == 12 || frame.format == 26) fmt = QImage::Format_RGBA8888;
+        m_image = QImage(frame.data.data(), frame.width, frame.height, frame.stride, fmt).copy();
     }
-
-    // Zero-copy wrapping: create QImage directly referencing frame data
-    QImage img(frame.data.data(), frame.width, frame.height, frame.stride, fmt);
-    m_image = img.copy(); // shallow copy if shared or deep copy once to survive callback
-    m_dev_width = frame.width;
-    m_dev_height = frame.height;
+    m_dev_width = frame.source_width > 0 ? frame.source_width : m_image.width();
+    m_dev_height = frame.source_height > 0 ? frame.source_height : m_image.height();
+    m_status_msg.clear();
     m_cache_dirty = true;
-
-    if (m_target_rect.isEmpty()) {
-        updateTargetRect();
+    updateTargetRect();
+    if (!frame.presentation_image.isNull() && frame.presentation_rotation == m_rotation &&
+        frame.presentation_image.size() == m_target_rect.size() * devicePixelRatioF()) {
+        m_scaled_cache = frame.presentation_image;
+        m_cache_dirty = false;
     }
     update();
 }
@@ -127,7 +129,6 @@ void ScreenView::regenerateDisplayCache() {
         m_scaled_cache = source.scaled(physical_target, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
     }
 
-    m_scaled_cache.setDevicePixelRatio(dpr);
     m_cache_dirty = false;
 }
 
@@ -135,6 +136,19 @@ void ScreenView::resizeEvent(QResizeEvent* event) {
     QWidget::resizeEvent(event);
     updateTargetRect();
     m_cache_dirty = true;
+    emit presentationChanged(isVisible() ? size() : QSize{}, m_rotation, devicePixelRatioF());
+}
+
+void ScreenView::hideEvent(QHideEvent* event) {
+    QWidget::hideEvent(event);
+    m_scaled_cache = QImage();
+    m_cache_dirty = true;
+    emit presentationChanged({}, m_rotation, devicePixelRatioF());
+}
+
+void ScreenView::showEvent(QShowEvent* event) {
+    QWidget::showEvent(event);
+    emit presentationChanged(size(), m_rotation, devicePixelRatioF());
 }
 
 void ScreenView::onFadeTick() {
@@ -210,7 +224,7 @@ void ScreenView::paintEvent(QPaintEvent*) {
             painter.drawText(0, cy + 65, width(), 30, Qt::AlignCenter, "让设备画面来到桌面");
             painter.setFont(QFont("PingFang SC", 12));
             painter.setPen(QColor("#748ca2"));
-            painter.drawText(0, cy + 98, width(), 25, Qt::AlignCenter, "连接 USB 设备，点击下方「开始投屏」");
+            painter.drawText(0, cy + 98, width(), 25, Qt::AlignCenter, "连接设备，点击上方「开始投屏」");
         }
         return;
     }
@@ -225,7 +239,7 @@ void ScreenView::paintEvent(QPaintEvent*) {
     }
 
     if (!m_scaled_cache.isNull()) {
-        painter.drawImage(m_target_rect.topLeft(), m_scaled_cache);
+        painter.drawImage(m_target_rect, m_scaled_cache);
     }
 
     // 3. Touch Ripple & Gesture Trail

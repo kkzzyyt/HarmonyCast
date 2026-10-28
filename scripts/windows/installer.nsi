@@ -41,6 +41,7 @@ Section "Install"
   CreateShortcut "$DESKTOP\鸿蒙投屏.lnk" "$INSTDIR\HarmonyCast.exe" "" "$INSTDIR\resources\app-icon.ico"
   CreateDirectory "$SMPROGRAMS\鸿蒙投屏"
   CreateShortcut "$SMPROGRAMS\鸿蒙投屏\鸿蒙投屏.lnk" "$INSTDIR\HarmonyCast.exe" "" "$INSTDIR\resources\app-icon.ico"
+  CreateShortcut "$SMPROGRAMS\鸿蒙投屏\鸿蒙投屏 (软件渲染模式).lnk" "$INSTDIR\HarmonyCast.exe" "--software-rendering" "$INSTDIR\resources\app-icon.ico"
   CreateShortcut "$SMPROGRAMS\鸿蒙投屏\卸载鸿蒙投屏.lnk" "$INSTDIR\Uninstall.exe"
   
   ; Generate Uninstaller
@@ -49,6 +50,10 @@ SectionEnd
 
 Section "Uninstall"
   Delete "$DESKTOP\鸿蒙投屏.lnk"
+  Delete "$DESKTOP\鸿蒙投屏 (软件渲染模式).lnk"
+  Delete "$SMPROGRAMS\鸿蒙投屏\鸿蒙投屏.lnk"
+  Delete "$SMPROGRAMS\鸿蒙投屏\鸿蒙投屏 (软件渲染模式).lnk"
+  Delete "$SMPROGRAMS\鸿蒙投屏\卸载鸿蒙投屏.lnk"
   RMDir /r "$SMPROGRAMS\鸿蒙投屏"
   RMDir /r "$INSTDIR"
 SectionEnd

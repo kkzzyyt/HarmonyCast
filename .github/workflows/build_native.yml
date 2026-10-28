@@ -143,9 +143,131 @@ jobs:
             build/HarmonyCast-*-Setup-x64.exe
             build/HarmonyCast-*-Windows-x64.zip
 
+  build-windows-server2012:
+    name: Build Windows Server 2012 compatibility edition
+    runs-on: windows-2022
+    env:
+      FFMPEG_DIR: ${{ github.workspace }}\.deps\ffmpeg-server2012
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Qt 5 for downlevel Windows
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '5.15.2'
+          host: 'windows'
+          target: 'desktop'
+          arch: 'win64_msvc2019_64'
+          cache: true
+
+      - name: Select MSVC v142 and downlevel SDK runtime
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+          toolset: '14.29'
+          sdk: '10.0.19041.0'
+
+      - name: Cache compatibility FFmpeg
+        id: ffmpeg-cache
+        uses: actions/cache@v4
+        with:
+          path: .deps/ffmpeg-server2012
+          key: windows2022-msvc142-sdk19041-ffmpeg613-${{ hashFiles('scripts/windows/build_server2012_ffmpeg.sh') }}
+
+      - name: Set up MSYS2 build tools
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MSYS
+          path-type: inherit
+          install: make nasm diffutils
+
+      - name: Build CPU-only FFmpeg for Server 2012
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        shell: msys2 {0}
+        run: |
+          git clone --depth 1 --branch n6.1.3 https://github.com/FFmpeg/FFmpeg.git ffmpeg-server2012-src
+          bash scripts/windows/build_server2012_ffmpeg.sh \
+            "$PWD/ffmpeg-server2012-src" "$FFMPEG_DIR" "$PWD/ffmpeg-server2012-build"
+
+      - name: Configure compatibility edition
+        shell: pwsh
+        run: |
+          cmake -B build-server2012 -A x64 -T v142 `
+            -DCMAKE_SYSTEM_VERSION=10.0.19041.0 `
+            -DHARMONYCAST_SERVER2012_COMPAT=ON `
+            -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR" -DFFMPEG_DIR="$env:FFMPEG_DIR"
+
+      - name: Build compatibility edition
+        run: cmake --build build-server2012 --config Release
+
+      - name: Deploy compatibility dependencies
+        shell: pwsh
+        run: |
+          & "$env:QT_ROOT_DIR\bin\windeployqt.exe" build-server2012\Release\HarmonyCast.exe --release --no-translations --no-compiler-runtime
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item "$env:FFMPEG_DIR\bin\*.dll" build-server2012\Release\
+          ./scripts/windows/deploy_server2012_runtime.ps1 -Destination build-server2012/Release
+
+      - name: Run compatibility core, decoder and update tests
+        shell: pwsh
+        run: |
+          $env:QT_QPA_PLATFORM_PLUGIN_PATH = "$env:QT_ROOT_DIR\plugins"
+          ctest --test-dir build-server2012 -C Release --output-on-failure
+
+      - name: Stage compatibility app
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force build-server2012/package | Out-Null
+          Get-ChildItem build-server2012/Release |
+            Where-Object { $_.Name -notlike 'test_*' -and $_.Name -notlike 'benchmark_*' } |
+            Copy-Item -Destination build-server2012/package -Recurse -Force
+
+      - name: Verify shipped compatibility runtime
+        shell: pwsh
+        run: |
+          python -m pip install -r scripts/windows/requirements-build.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m unittest discover -s tests -p test_windows_runtime.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/windows/check_server2012_runtime.py build-server2012/package
+
+      - name: Setup NSIS
+        uses: nsis-dev/setup-nsis@v1
+
+      - name: Package compatibility EXE, setup and ZIP
+        shell: pwsh
+        run: |
+          $repo = (Get-Location).Path
+          $ver = (Select-String -Path CMakeLists.txt -Pattern 'project\(HarmonyCast VERSION ([0-9.]+)').Matches.Groups[1].Value
+          $icon = "$repo\resources\app-icon.ico"
+          $staging = "$repo\build-server2012\package"
+          makensis /DICON_PATH="$icon" /DSTAGING_DIR="$staging" `
+            /DOUTPUT_EXE="$repo\build-server2012\HarmonyCast-$ver-Windows-Server2012-x64.exe" scripts\windows\portable.nsi
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          makensis /DICON_PATH="$icon" /DSTAGING_DIR="$staging" `
+            /DOUTPUT_SETUP="$repo\build-server2012\HarmonyCast-$ver-Setup-Server2012-x64.exe" scripts\windows\installer.nsi
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Compress-Archive -Path "$staging\*" -DestinationPath "build-server2012\HarmonyCast-$ver-Windows-Server2012-x64.zip"
+
+      - name: Upload compatibility artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: HarmonyCast-Windows-Server2012-x64
+          path: |
+            build-server2012/HarmonyCast-*-Windows-Server2012-x64.exe
+            build-server2012/HarmonyCast-*-Setup-Server2012-x64.exe
+            build-server2012/HarmonyCast-*-Windows-Server2012-x64.zip
+
   release:
     name: Publish GitHub Release
-    needs: [build-macos, build-windows]
+    needs: [build-macos, build-windows, build-windows-server2012]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -161,6 +283,12 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: HarmonyCast-Windows-x64
+          path: release-artifacts
+
+      - name: Download Windows Server 2012 Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: HarmonyCast-Windows-Server2012-x64
           path: release-artifacts
 
       - name: Create GitHub Release

@@ -6,6 +6,7 @@
 #include <span>
 #include <memory>
 #include <functional>
+#include <array>
 
 struct AVCodec;
 struct AVCodecContext;
@@ -50,6 +51,8 @@ private:
     int m_width{0};
     int m_height{0};
     uint64_t m_decoded_count{0};
+    int m_source_format{-1};
+    std::array<QImage, 2> m_images;
     FrameCallback m_frame_cb;
 
     bool initHwContext();
