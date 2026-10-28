@@ -2401,9 +2401,10 @@ void MainWindow::onDeviceComboActivated(int index) {
     std::string s = currentSerial();
     if (s.empty()) return;
 
+    bool is_net = (s.find(':') != std::string::npos || s.find('.') != std::string::npos);
     bool is_connected = false;
     for (const auto& d : m_cached_devices) {
-        if (d.serial == s || (s.find(':') != std::string::npos && d.serial.rfind(s.substr(0, s.find(':')), 0) == 0)) {
+        if (d.serial == s || (is_net && d.serial.rfind(s.substr(0, s.find(':')), 0) == 0)) {
             is_connected = true;
             break;
         }
@@ -2415,14 +2416,14 @@ void MainWindow::onDeviceComboActivated(int index) {
             .arg(is_connected ? " (已连接)" : " (离线目标，选择将自动连接)")
     );
 
-    if (!is_connected && s.find(':') != std::string::npos) {
+    if (!is_connected && is_net) {
         m_active_device_serial = s;
         switchToSingleDevice(s);
         return;
     }
 
     if (!m_active_device_serial.empty() && m_active_device_serial != s &&
-        (s.find(':') != std::string::npos || m_active_device_serial.find(':') != std::string::npos)) {
+        (is_net || m_active_device_serial.find(':') != std::string::npos || m_active_device_serial.find('.') != std::string::npos)) {
         m_active_device_serial = s;
         switchToSingleDevice(s);
         return;
@@ -2437,6 +2438,11 @@ void MainWindow::switchToSingleDevice(const std::string& endpoint) {
     while (!target.empty() && (target.front() == ' ' || target.front() == '\t')) target.erase(0, 1);
     while (!target.empty() && (target.back() == ' ' || target.back() == '\t')) target.pop_back();
     if (target.empty()) return;
+
+    // If target is an IP address without port, automatically append default port 8710
+    if (target.find(':') == std::string::npos && target.find('.') != std::string::npos) {
+        target += ":8710";
+    }
 
     std::string clean_target = target;
     if (size_t col = target.find(':'); col != std::string::npos) {
