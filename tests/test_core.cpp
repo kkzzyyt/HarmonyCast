@@ -16,6 +16,8 @@
 #include "harmonycast/CrashHandler.h"
 #include "harmonycast/UpdateChecker.h"
 #include "harmonycast/ScreenView.h"
+#include "harmonycast/MainWindow.h"
+#include <QMouseEvent>
 #include <QDir>
 #include <QFile>
 #include <QTemporaryDir>
@@ -502,6 +504,40 @@ void test_update_checker() {
     std::cout << "[PASS] test_update_checker passed!" << std::endl;
 }
 
+void test_idle_timeout() {
+    std::cout << "[RUN] test_idle_timeout..." << std::endl;
+
+    MainWindow win(nullptr, false);
+    assert(win.idleTimeoutSeconds() == 300); // 5 minutes default
+
+    // Test setting timeout
+    win.setIdleTimeoutSeconds(600);
+    assert(win.idleTimeoutSeconds() == 600);
+    win.setIdleTimeoutSeconds(0);
+    assert(win.idleTimeoutSeconds() == 0);
+    win.setIdleTimeoutSeconds(300);
+
+    // Test activity timestamp
+    qint64 t1 = win.lastUserActivityTime();
+    assert(t1 > 0);
+
+    // Note activity updates timestamp
+    win.noteUserActivity();
+    qint64 t2 = win.lastUserActivityTime();
+    assert(t2 >= t1);
+
+    // Event filter records activity on key and mouse events
+    QKeyEvent keyEvent(QEvent::KeyPress, Qt::Key_A, Qt::NoModifier);
+    qApp->sendEvent(&win, &keyEvent);
+    assert(win.lastUserActivityTime() >= t2);
+
+    // If not projecting, checkIdleTimeout does not crash or do anything
+    assert(!win.isProjecting());
+    win.checkIdleTimeout();
+
+    std::cout << "[PASS] test_idle_timeout passed!" << std::endl;
+}
+
 int main(int argc, char* argv[]) {
     qputenv("QT_QPA_PLATFORM", "offscreen");
     QApplication app(argc, argv);
@@ -522,6 +558,7 @@ int main(int argc, char* argv[]) {
     test_device_info_parsing();
     test_logger_and_crash_handler();
     test_update_checker();
+    test_idle_timeout();
 
     std::cout << "\n>>> ALL C++ CORE TESTS PASSED! <<<" << std::endl;
     return 0;

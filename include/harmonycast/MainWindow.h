@@ -45,6 +45,13 @@ public:
     explicit MainWindow(QWidget* parent = nullptr, bool startBackgroundServices = true);
     ~MainWindow() override;
 
+    [[nodiscard]] int idleTimeoutSeconds() const { return m_idle_timeout_secs; }
+    void setIdleTimeoutSeconds(int secs) { m_idle_timeout_secs = secs; }
+    [[nodiscard]] qint64 lastUserActivityTime() const { return m_last_user_activity; }
+    void noteUserActivity();
+    [[nodiscard]] bool isProjecting() const { return m_projecting; }
+    void checkIdleTimeout();
+
 private slots:
     // Navigation
     void switchModule(int index);
@@ -328,6 +335,9 @@ private:
     bool m_hdc_running{false};
     bool m_auto_start_mirror{true};
     bool m_user_stopped_mirror{false};
+    int m_idle_timeout_secs{300};
+    qint64 m_last_user_activity{0};
+    QTimer* m_idle_timer{nullptr};
     std::string m_pending_auto_start_serial;
     std::string m_active_device_serial;
     std::unordered_map<std::string, DeviceState> m_previous_device_states;

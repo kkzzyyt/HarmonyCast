@@ -26,7 +26,7 @@ public:
     void setRotation(int degrees);
     [[nodiscard]] int rotation() const { return m_rotation; }
 
-    void setActive(bool active) { m_active = active; update(); }
+    void setActive(bool active) { m_active = active; if (active) m_status_msg.clear(); update(); }
     [[nodiscard]] bool isActive() const { return m_active; }
 
     void setStatusMessage(const QString& msg) { m_status_msg = msg; update(); }

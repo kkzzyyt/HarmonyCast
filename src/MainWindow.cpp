@@ -46,6 +46,19 @@ MainWindow::MainWindow(QWidget* parent, bool startBackgroundServices)
       m_settings(std::make_unique<QSettings>("HarmonyCast", "HarmonyCast")) {
 
     m_auto_start_mirror = m_settings->value("auto_start_mirror", true).toBool();
+    m_idle_timeout_secs = m_settings->value("idle_timeout_seconds", 300).toInt();
+    m_last_user_activity = QDateTime::currentMSecsSinceEpoch();
+
+    m_idle_timer = new QTimer(this);
+    m_idle_timer->setInterval(5000);
+    connect(m_idle_timer, &QTimer::timeout, this, &MainWindow::checkIdleTimeout);
+    if (startBackgroundServices) {
+        m_idle_timer->start();
+    }
+
+    if (qApp) {
+        qApp->installEventFilter(this);
+    }
 
     setWindowTitle("鸿蒙投屏 · HarmonyCast");
     resize(1120, 800);
@@ -127,6 +140,12 @@ MainWindow::MainWindow(QWidget* parent, bool startBackgroundServices)
 }
 
 MainWindow::~MainWindow() {
+    if (qApp) {
+        qApp->removeEventFilter(this);
+    }
+    if (m_idle_timer) {
+        m_idle_timer->stop();
+    }
     m_dev_mgr->stopPolling();
     stopMirror(false);
     if (m_hilog) m_hilog->stop();
@@ -412,7 +431,44 @@ void MainWindow::showToast(const QString& msg) {
     statusBar()->showMessage(msg, 3500);
 }
 
+void MainWindow::noteUserActivity() {
+    m_last_user_activity = QDateTime::currentMSecsSinceEpoch();
+}
+
+void MainWindow::checkIdleTimeout() {
+    if (!m_projecting) return;
+    if (m_idle_timeout_secs <= 0) return;
+
+    qint64 now = QDateTime::currentMSecsSinceEpoch();
+    qint64 idleMs = now - m_last_user_activity;
+    qint64 timeoutMs = static_cast<qint64>(m_idle_timeout_secs) * 1000;
+
+    if (idleMs >= timeoutMs) {
+        HC_LOG_INFO(QString("Idle timeout triggered: %1s elapsed without user activity (threshold: %2s)").arg(idleMs / 1000).arg(m_idle_timeout_secs));
+
+        int minutes = m_idle_timeout_secs / 60;
+        QString timeDesc = (m_idle_timeout_secs % 60 == 0 && minutes > 0)
+            ? QString("%1 分钟").arg(minutes)
+            : QString("%1 秒").arg(m_idle_timeout_secs);
+
+        m_user_stopped_mirror = true;
+        m_pending_auto_start_serial.clear();
+        stopMirror(false);
+
+        QString toastMsg = QString("⏱️ 已超过 %1 无操作，投屏连接已自动超时断开以节省设备电量").arg(timeDesc);
+        QString statusMsg = QString("由于超过 %1 无用户操作，投屏连接已自动超时断开以节省电量与系统资源").arg(timeDesc);
+        QString screenMsg = QString("已超过 %1 无操作\n投屏长连接已自动超时断开以节省设备电量与系统资源，点击【开始投屏】即可重新连接").arg(timeDesc);
+
+        showToast(toastMsg);
+        statusBar()->showMessage(statusMsg, 8000);
+        if (m_screen) {
+            m_screen->setStatusMessage(screenMsg);
+        }
+    }
+}
+
 void MainWindow::keyPressEvent(QKeyEvent* event) {
+    noteUserActivity();
     if (m_projecting && m_pages->currentIndex() == 1) {
         if (event->key() == Qt::Key_Back || event->key() == Qt::Key_Backspace) {
             sendKey("back");
@@ -423,6 +479,23 @@ void MainWindow::keyPressEvent(QKeyEvent* event) {
 }
 
 bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
+    switch (event->type()) {
+    case QEvent::MouseMove:
+    case QEvent::MouseButtonPress:
+    case QEvent::MouseButtonRelease:
+    case QEvent::MouseButtonDblClick:
+    case QEvent::Wheel:
+    case QEvent::KeyPress:
+    case QEvent::KeyRelease:
+    case QEvent::TouchBegin:
+    case QEvent::TouchUpdate:
+    case QEvent::TouchEnd:
+        noteUserActivity();
+        break;
+    default:
+        break;
+    }
+
     if ((watched == m_log_view || watched == m_wv_console_view || watched == m_wv_network_table) && event->type() == QEvent::Show) scheduleLogFlush();
     if ((watched == m_log_view || watched == m_wv_console_view) && event->type() == QEvent::Wheel) {
         auto* wheelEvent = static_cast<QWheelEvent*>(event);
@@ -2754,6 +2827,7 @@ void MainWindow::openDeviceCenter() {
 // Mirroring Session Control
 // ==========================================
 void MainWindow::startMirror() {
+    noteUserActivity();
     std::string s = currentSerial();
     if (s.empty()) {
         showToast("请先选择已连接的设备");
@@ -2844,6 +2918,7 @@ void MainWindow::startMirror() {
     });
 
     m_screen->setTouchCallback([this, s](TouchAction act, int x, int y, int dw, int dh){
+        noteUserActivity();
         static QPoint down_pt;
         static int64_t down_time = 0;
 
@@ -4454,7 +4529,7 @@ void MainWindow::checkPreviousCrash() {
 void MainWindow::openSettingsDialog() {
     auto* dlg = new QDialog(this);
     dlg->setWindowTitle("系统偏好设置 · HarmonyCast");
-    dlg->resize(560, 480);
+    dlg->resize(560, 530);
     dlg->setStyleSheet(
         "QDialog { background: #0c1219; color: #dbe5ee; } "
         "QGroupBox { font-weight: bold; font-size: 13px; color: #5ce0c1; border: 1px solid #1c2b3d; border-radius: 6px; margin-top: 12px; padding-top: 12px; background: #090e15; } "
@@ -4485,6 +4560,34 @@ void MainWindow::openSettingsDialog() {
     auto* cb_update = new QCheckBox("启动时自动检查最新版本更新", grpGeneral);
     cb_update->setChecked(autoUpdate);
     gLayout->addWidget(cb_update);
+
+    auto* timeoutRow = new QHBoxLayout();
+    auto* lblTimeout = new QLabel("无操作超时自动断开:");
+    lblTimeout->setStyleSheet("color: #dbe5ee; font-size: 13px;");
+    timeoutRow->addWidget(lblTimeout);
+
+    auto* comboTimeout = new QComboBox(grpGeneral);
+    comboTimeout->addItem("5 分钟 (默认推荐)", 300);
+    comboTimeout->addItem("10 分钟", 600);
+    comboTimeout->addItem("15 分钟", 900);
+    comboTimeout->addItem("30 分钟", 1800);
+    comboTimeout->addItem("从不断开", 0);
+
+    int curIdx = comboTimeout->findData(m_idle_timeout_secs);
+    if (curIdx >= 0) {
+        comboTimeout->setCurrentIndex(curIdx);
+    } else {
+        comboTimeout->addItem(QString("%1 秒").arg(m_idle_timeout_secs), m_idle_timeout_secs);
+        comboTimeout->setCurrentIndex(comboTimeout->count() - 1);
+    }
+    comboTimeout->setStyleSheet("QComboBox { background: #070c13; color: #dbe5ee; border: 1px solid #1c2b3d; border-radius: 4px; padding: 2px 8px; font-size: 12px; min-width: 140px; }");
+    timeoutRow->addWidget(comboTimeout);
+    timeoutRow->addStretch();
+    gLayout->addLayout(timeoutRow);
+
+    auto* hintTimeout = IconManager::label("当投屏运行中且超过设定时长未检测到任何按键、鼠标点击或触控操作时，将自动终止长连接以防止设备发热耗电及带宽浪费。", "Muted");
+    hintTimeout->setWordWrap(true);
+    gLayout->addWidget(hintTimeout);
 
     l->addWidget(grpGeneral);
 
@@ -4605,10 +4708,12 @@ void MainWindow::openSettingsDialog() {
     btn_box->addWidget(btn_close);
 
     auto* btn_save = IconManager::button("保存设置", "Primary");
-    connect(btn_save, &QPushButton::clicked, dlg, [this, cb_auto, cb_update, editUrl, dlg]() {
+    connect(btn_save, &QPushButton::clicked, dlg, [this, cb_auto, cb_update, comboTimeout, editUrl, dlg]() {
         m_auto_start_mirror = cb_auto->isChecked();
         m_settings->setValue("auto_start_mirror", m_auto_start_mirror);
         m_settings->setValue("auto_check_update", cb_update->isChecked());
+        m_idle_timeout_secs = comboTimeout->currentData().toInt();
+        m_settings->setValue("idle_timeout_seconds", m_idle_timeout_secs);
         QString newUrl = editUrl->text().trimmed();
         if (!newUrl.isEmpty()) {
             m_settings->setValue("update_check_url", newUrl);

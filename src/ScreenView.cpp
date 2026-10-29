@@ -217,7 +217,7 @@ void ScreenView::paintEvent(QPaintEvent*) {
         painter.setPen(QColor("#cfdfeb"));
         painter.setFont(QFont("PingFang SC", 15, QFont::Medium));
         if (!m_status_msg.isEmpty()) {
-            painter.drawText(0, cy + 65, width(), 30, Qt::AlignCenter, m_status_msg);
+            painter.drawText(QRect(16, cy + 50, width() - 32, 70), Qt::AlignCenter | Qt::TextWordWrap, m_status_msg);
         } else if (m_active) {
             painter.drawText(0, cy + 65, width(), 30, Qt::AlignCenter, "正在连接设备画面…");
         } else {
