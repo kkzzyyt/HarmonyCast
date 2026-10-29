@@ -46,7 +46,7 @@ StreamSession::~StreamSession() {
 
 int StreamSession::pickFreePort() {
     QTcpServer server;
-    if (server.listen(QHostAddress::LocalHost, 0)) {
+    if (server.listen(QHostAddress(QStringLiteral("127.0.0.1")), 0)) {
         quint16 port = server.serverPort();
         server.close();
         return port;
@@ -80,7 +80,7 @@ bool StreamSession::launchServerAsync(const std::shared_ptr<HdcClient>& hdc,
     QString local_bin;
     for (const auto& path : candidates) {
         if (QFile::exists(path)) {
-            local_bin = QFileInfo(path).canonicalFilePath();
+            local_bin = QDir::toNativeSeparators(QFileInfo(path).absoluteFilePath());
             break;
         }
     }
@@ -108,8 +108,8 @@ bool StreamSession::launchServerAsync(const std::shared_ptr<HdcClient>& hdc,
     // Kill any previous capture instances
     hdc->run({"shell", "killall", "-9", "harmonycast_capture", "harmonycast_capture_arm64", "2>/dev/null"}, serial, 1000);
 
-    // Launch remote capture server in background
-    std::string cmd = QString("%1 -p %2 -f %3 -b %4%5 &")
+    // Launch remote capture server in background with output redirected to avoid blocking hdc shell
+    std::string cmd = QString("nohup %1 -p %2 -f %3 -b %4%5 >/dev/null 2>&1 &")
                           .arg(QString::fromStdString(remote_bin))
                           .arg(remote_port)
                           .arg(fps)
@@ -147,8 +147,9 @@ bool StreamSession::start() {
         if (cancelled->load()) return;
         // 1. Setup port forwarding in worker thread
         if (!hdc || serial.empty() || !hdc->forwardPort(serial, local_port, remote_port)) {
-            if (weak_this) {
-                QMetaObject::invokeMethod(weak_this.data(), [weak_this, current_gen]() {
+            auto* session = weak_this.data();
+            if (session) {
+                QMetaObject::invokeMethod(session, [weak_this, current_gen]() {
                     if (!weak_this || !weak_this->m_running || weak_this->m_session_gen != current_gen) return;
                     emit weak_this->statusChanged("端口映射失败，尝试兼容快照流…");
                     weak_this->startSnapshotFallback();
@@ -162,8 +163,9 @@ bool StreamSession::start() {
         launchServerAsync(hdc, serial, remote_port, fps, bitrate, max_size);
 
         // 3. Inform main thread to begin non-blocking socket connection attempts
-        if (weak_this) {
-            QMetaObject::invokeMethod(weak_this.data(), [weak_this, current_gen]() {
+        auto* session = weak_this.data();
+        if (session) {
+            QMetaObject::invokeMethod(session, [weak_this, current_gen]() {
                 if (!weak_this || !weak_this->m_running || weak_this->m_session_gen != current_gen) return;
                 weak_this->m_forwarded = true;
                 emit weak_this->statusChanged("正在连接设备视频流…");
@@ -193,7 +195,7 @@ void StreamSession::tryConnectSocket(int attempt, uint64_t gen) {
     }
 
     if (m_socket->state() == QAbstractSocket::UnconnectedState) {
-        m_socket->connectToHost(QHostAddress::LocalHost, m_local_port);
+        m_socket->connectToHost(QHostAddress(QStringLiteral("127.0.0.1")), m_local_port);
     }
 
     QTimer::singleShot(250, this, [this, attempt, gen]() {
@@ -445,10 +447,15 @@ void StreamSession::startSnapshotFallback() {
     const uint64_t generation = m_session_gen;
     std::thread([weak_this, ctx, mailbox, generation]() {
         std::string remote_path = "/data/local/tmp/harmonycast_stream_" + std::to_string(ctx->session_id) + ".jpeg";
-        QString local_temp = QDir::tempPath() + QString("/harmonycast_stream_%1_%2.jpeg")
-                                .arg(QString::fromStdString(ctx->serial).replace(':', '_').replace('.', '_'))
-                                .arg(ctx->session_id);
-        std::string local_path = local_temp.toStdString();
+        QString local_temp[2] = {
+            QDir::toNativeSeparators(QDir::tempPath() + QString("/hc_snap_%1_%2_0.jpeg")
+                .arg(QString::fromStdString(ctx->serial).replace(':', '_').replace('.', '_'))
+                .arg(ctx->session_id)),
+            QDir::toNativeSeparators(QDir::tempPath() + QString("/hc_snap_%1_%2_1.jpeg")
+                .arg(QString::fromStdString(ctx->serial).replace(':', '_').replace('.', '_'))
+                .arg(ctx->session_id))
+        };
+        int buf_idx = 0;
 
         ctx->hdc->wakeup(ctx->serial);
 
@@ -466,69 +473,103 @@ void StreamSession::startSnapshotFallback() {
                 snap_cmd.push_back("-h");
                 snap_cmd.push_back(std::to_string(th));
             }
-            auto res_snap = ctx->hdc->run(snap_cmd, ctx->serial, 3000);
+            auto res_snap = ctx->hdc->run(snap_cmd, ctx->serial, 8000);
             if (ctx->cancelled.load()) break;
 
             if (res_snap.success()) {
-                bool res_recv = ctx->hdc->fileRecv(ctx->serial, remote_path, local_path);
-                if (ctx->cancelled.load()) break;
+                const QString& current_temp = local_temp[buf_idx];
+                std::string current_local_path = current_temp.toStdString();
+                buf_idx = 1 - buf_idx;
 
-                if (res_recv && QFile::exists(local_temp)) {
-                    QImage img;
-                    if (img.load(local_temp)) {
-                        consecutive_errors = 0;
+                bool res_recv = ctx->hdc->fileRecv(ctx->serial, remote_path, current_local_path);
+                if (ctx->cancelled.load()) {
+                    break;
+                }
 
-                        if (source_width == 0 || tw == 0) {
-                            source_width = img.width();
-                            source_height = img.height();
+                bool loaded = false;
+                if (res_recv && QFile::exists(current_temp)) {
+                    QFile file(current_temp);
+                    if (file.open(QIODevice::ReadOnly)) {
+                        QByteArray data = file.readAll();
+                        file.close();
+                        if (data.size() >= 4 &&
+                            static_cast<uint8_t>(data[0]) == 0xFF &&
+                            static_cast<uint8_t>(data[1]) == 0xD8 &&
+                            static_cast<uint8_t>(data[data.size() - 2]) == 0xFF &&
+                            static_cast<uint8_t>(data[data.size() - 1]) == 0xD9) {
+
+                            QImage img;
+                            if (img.loadFromData(data, "JPEG")) {
+                                consecutive_errors = 0;
+                                loaded = true;
+
+                                if (source_width == 0 || tw == 0) {
+                                    source_width = img.width();
+                                    source_height = img.height();
+                                }
+                                DecodedFrame frame;
+                                frame.image = img.format() == QImage::Format_RGB32 ? img : img.convertToFormat(QImage::Format_RGB32);
+                                frame.width = frame.image.width();
+                                frame.height = frame.image.height();
+                                frame.stride = int(frame.image.bytesPerLine());
+                                frame.format = 4;
+                                frame.source_width = source_width;
+                                frame.source_height = source_height;
+                                frame.is_keyframe = true;
+                                QSize viewport;
+                                int rotation;
+                                qreal dpr;
+                                {
+                                    std::lock_guard lock(ctx->presentation_mutex);
+                                    viewport = ctx->viewport;
+                                    rotation = ctx->rotation;
+                                    dpr = ctx->dpr;
+                                }
+                                prepareFramePresentation(frame, viewport, rotation, dpr);
+                                auto* session = weak_this.data();
+                                if (session && mailbox->publish(frame)) {
+                                    QMetaObject::invokeMethod(session, [weak_this, ctx, mailbox, generation]() {
+                                        if (weak_this && !ctx->cancelled.load()) weak_this->deliverLatestFrame(mailbox, generation);
+                                    });
+                                }
+                            }
                         }
-                        DecodedFrame frame;
-                        frame.image = img.format() == QImage::Format_RGB32 ? img : img.convertToFormat(QImage::Format_RGB32);
-                        frame.width = frame.image.width();
-                        frame.height = frame.image.height();
-                        frame.stride = int(frame.image.bytesPerLine());
-                        frame.format = 4;
-                        frame.source_width = source_width;
-                        frame.source_height = source_height;
-                        frame.is_keyframe = true;
-                        QSize viewport;
-                        int rotation;
-                        qreal dpr;
-                        {
-                            std::lock_guard lock(ctx->presentation_mutex);
-                            viewport = ctx->viewport;
-                            rotation = ctx->rotation;
-                            dpr = ctx->dpr;
-                        }
-                        prepareFramePresentation(frame, viewport, rotation, dpr);
-                        if (weak_this && mailbox->publish(frame)) {
-                            QMetaObject::invokeMethod(weak_this.data(), [weak_this, ctx, mailbox, generation]() {
-                                if (weak_this && !ctx->cancelled.load()) weak_this->deliverLatestFrame(mailbox, generation);
-                            });
-                        }
-                    } else {
-                        consecutive_errors++;
                     }
-                    QFile::remove(local_temp);
-                } else {
+                }
+
+                if (!loaded) {
                     consecutive_errors++;
+                    HC_LOG_WARN(QString("Snapshot recv/parse failed for %1 (consecutive=%2)")
+                                    .arg(QString::fromStdString(ctx->serial))
+                                    .arg(consecutive_errors));
+                    int backoff_ms = std::min(800, 150 + consecutive_errors * 30);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(backoff_ms));
                 }
             } else {
                 consecutive_errors++;
+                HC_LOG_WARN(QString("Snapshot command failed (exit=%1, out='%2', err='%3') for %4")
+                                .arg(res_snap.exit_code)
+                                .arg(QString::fromStdString(res_snap.out).trimmed())
+                                .arg(QString::fromStdString(res_snap.err).trimmed())
+                                .arg(QString::fromStdString(ctx->serial)));
                 if (consecutive_errors % 4 == 0) {
                     ctx->hdc->wakeup(ctx->serial);
                 }
+                int backoff_ms = std::min(800, 150 + consecutive_errors * 30);
+                std::this_thread::sleep_for(std::chrono::milliseconds(backoff_ms));
             }
 
-            if (consecutive_errors >= 5) {
+            if (consecutive_errors >= 25) {
                 HC_LOG_ERROR(QString("Snapshot fallback failed %1 consecutive times, terminating session for %2")
                                  .arg(consecutive_errors)
                                  .arg(QString::fromStdString(ctx->serial)));
-                if (weak_this) {
-                    QMetaObject::invokeMethod(weak_this.data(), [weak_this]() {
-                        if (weak_this && weak_this->m_running) {
+                auto* session = weak_this.data();
+                if (session) {
+                    QMetaObject::invokeMethod(session, [weak_this]() {
+                        if (!weak_this || !weak_this->m_running) return;
+                        weak_this->stop();
+                        if (weak_this) {
                             emit weak_this->streamFinished("设备画面流传输异常中断，已自动停止投屏");
-                            weak_this->stop();
                         }
                     });
                 }
@@ -543,7 +584,8 @@ void StreamSession::startSnapshotFallback() {
         }
 
         ctx->hdc->run({"shell", "rm", "-f", remote_path}, ctx->serial, 1000);
-        QFile::remove(local_temp);
+        QFile::remove(local_temp[0]);
+        QFile::remove(local_temp[1]);
     }).detach();
 }
 

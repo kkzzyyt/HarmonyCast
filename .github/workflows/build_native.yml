@@ -252,7 +252,7 @@ jobs:
           $ver = (Select-String -Path CMakeLists.txt -Pattern 'project\(HarmonyCast VERSION ([0-9.]+)').Matches.Groups[1].Value
           $icon = "$repo\resources\app-icon.ico"
           $staging = "$repo\build-server2012\package"
-          makensis /DICON_PATH="$icon" /DSTAGING_DIR="$staging" /DOUTPUT_EXE="$repo\build-server2012\HarmonyCast-$ver-Windows-Server2012-x64.exe" scripts\windows\portable.nsi
+          makensis /DSERVER2012 /DICON_PATH="$icon" /DSTAGING_DIR="$staging" /DOUTPUT_EXE="$repo\build-server2012\HarmonyCast-$ver-Windows-Server2012-x64.exe" scripts\windows\portable.nsi
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           makensis /DICON_PATH="$icon" /DSTAGING_DIR="$staging" /DOUTPUT_SETUP="$repo\build-server2012\HarmonyCast-$ver-Setup-Server2012-x64.exe" scripts\windows\installer.nsi
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

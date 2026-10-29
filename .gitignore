@@ -20,4 +20,5 @@ coverage.xml
 *.mobileprovision
 package_output/
 *.dmg
+.astro/
 

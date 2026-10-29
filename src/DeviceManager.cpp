@@ -40,11 +40,27 @@ void DeviceManager::refresh(bool forceEmit) {
     auto hdc = m_hdc;
     std::thread([weak_this, hdc]() {
         if (!hdc) return;
-        auto current = hdc->listDevices();
+        auto currentOpt = hdc->listDevicesChecked();
 
         if (weak_this) {
-            QMetaObject::invokeMethod(weak_this.data(), [weak_this, current = std::move(current)]() {
+            QMetaObject::invokeMethod(weak_this.data(), [weak_this, currentOpt = std::move(currentOpt)]() {
                 if (!weak_this) return;
+
+                if (!currentOpt.has_value()) {
+                    weak_this->m_consecutive_poll_failures++;
+                    // Ignore transient HDC command latency or query timeouts (< 3 cycles) to prevent false disconnects
+                    if (weak_this->m_consecutive_poll_failures < 3) {
+                        weak_this->m_is_refreshing = false;
+                        if (weak_this->m_needs_refresh.exchange(false)) {
+                            weak_this->refresh(false);
+                        }
+                        return;
+                    }
+                } else {
+                    weak_this->m_consecutive_poll_failures = 0;
+                }
+
+                auto current = currentOpt.value_or(std::vector<Device>{});
 
                 std::vector<Device> added;
                 std::vector<Device> removed;

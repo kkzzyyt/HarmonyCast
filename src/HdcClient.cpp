@@ -116,6 +116,12 @@ CommandResult HdcClient::runProcess(const std::string& hdc_path,
         qargs << QString::fromStdString(a);
     }
 
+#if defined(Q_OS_WIN) && QT_VERSION >= QT_VERSION_CHECK(5, 7, 0)
+    process.setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments* pArgs) {
+        pArgs->flags |= 0x08000000; // CREATE_NO_WINDOW
+    });
+#endif
+
     process.start(QString::fromStdString(hdc_path), qargs);
     if (!process.waitForStarted(2000)) {
         return {-1, "", "Failed to start HDC executable: " + hdc_path};
@@ -140,13 +146,13 @@ CommandResult HdcClient::run(const std::vector<std::string>& args,
     return runProcess(m_hdc_path, args, serial, timeout_ms);
 }
 
-std::vector<Device> HdcClient::listDevices() const {
-    std::vector<Device> devices;
+std::optional<std::vector<Device>> HdcClient::listDevicesChecked() const {
     auto res = run({"list", "targets"});
     if (!res.success()) {
-        return devices;
+        return std::nullopt;
     }
 
+    std::vector<Device> devices;
     std::istringstream stream(res.out);
     std::string line;
     while (std::getline(stream, line)) {
@@ -196,6 +202,10 @@ std::vector<Device> HdcClient::listDevices() const {
         devices.push_back(std::move(dev));
     }
     return devices;
+}
+
+std::vector<Device> HdcClient::listDevices() const {
+    return listDevicesChecked().value_or(std::vector<Device>{});
 }
 
 bool HdcClient::forwardPort(const std::string& serial, int local_port, int remote_port) const {

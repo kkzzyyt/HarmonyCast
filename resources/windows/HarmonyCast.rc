@@ -1,3 +1,7 @@
 #define IDI_ICON1 101
+#ifndef RT_MANIFEST
+#define RT_MANIFEST 24
+#endif
 
 IDI_ICON1 ICON "app-icon.ico"
+1 RT_MANIFEST "HarmonyCast.manifest"

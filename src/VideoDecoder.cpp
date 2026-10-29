@@ -69,6 +69,7 @@ void VideoDecoder::close() {
         m_hw_device_ctx = nullptr;
     }
     m_hw_active = false;
+    m_hw_transfer_failures = 0;
     m_decoded_count = 0;
     m_source_format = -1;
     m_images = {};
@@ -177,8 +178,16 @@ void VideoDecoder::emitFrame(AVFrame* frame) {
             char err[128];
             av_strerror(ret, err, sizeof(err));
             std::cerr << "[VideoDecoder] av_hwframe_transfer_data failed: " << err << std::endl;
+            m_hw_transfer_failures++;
+            if (m_hw_transfer_failures >= 3) {
+                std::cerr << "[VideoDecoder] Persistent hardware transfer failure, falling back to software decoding." << std::endl;
+                int w = m_width;
+                int h = m_height;
+                init(w, h, false);
+            }
             return;
         }
+        m_hw_transfer_failures = 0;
         render_frame = m_sw_frame;
     }
 

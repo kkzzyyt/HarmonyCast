@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(HarmonyCast VERSION 2.2.3 LANGUAGES CXX)
+project(HarmonyCast VERSION 2.2.4 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -190,31 +190,43 @@ if(APPLE)
 else()
     if(WIN32)
         list(APPEND APP_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/resources/windows/HarmonyCast.rc")
-        add_library(d3d12_stub SHARED
-            src/windows/d3d12_stub.cpp
-            src/windows/d3d12.def
-        )
-        set_target_properties(d3d12_stub PROPERTIES
-            OUTPUT_NAME "d3d12"
-            PREFIX ""
-        )
-        if(MSVC)
-            target_link_options(d3d12_stub PRIVATE /SUBSYSTEM:WINDOWS,6.02)
+        if(HARMONYCAST_SERVER2012_COMPAT)
+            add_library(d3d12_stub SHARED
+                src/windows/d3d12_stub.cpp
+                src/windows/d3d12.def
+            )
+            set_target_properties(d3d12_stub PROPERTIES
+                OUTPUT_NAME "d3d12"
+                PREFIX ""
+            )
+            if(MSVC)
+                target_link_options(d3d12_stub PRIVATE /SUBSYSTEM:WINDOWS,6.02)
+            endif()
         endif()
     endif()
     add_executable(HarmonyCast WIN32 ${APP_SOURCES})
     if(WIN32)
-        add_dependencies(HarmonyCast d3d12_stub)
-        add_custom_command(TARGET HarmonyCast POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                $<TARGET_FILE:d3d12_stub>
-                $<TARGET_FILE_DIR:HarmonyCast>/d3d12.dll
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${CMAKE_CURRENT_SOURCE_DIR}/scripts/windows/HarmonyCast-SoftwareRendering.cmd"
-                "$<TARGET_FILE_DIR:HarmonyCast>/HarmonyCast-SoftwareRendering.cmd"
-            COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/resources" "$<TARGET_FILE_DIR:HarmonyCast>/resources"
-            COMMENT "Copying resources, software rendering script, and d3d12 stub to target directory"
-        )
+        if(HARMONYCAST_SERVER2012_COMPAT)
+            add_dependencies(HarmonyCast d3d12_stub)
+            add_custom_command(TARGET HarmonyCast POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    $<TARGET_FILE:d3d12_stub>
+                    $<TARGET_FILE_DIR:HarmonyCast>/d3d12.dll
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${CMAKE_CURRENT_SOURCE_DIR}/scripts/windows/HarmonyCast-SoftwareRendering.cmd"
+                    "$<TARGET_FILE_DIR:HarmonyCast>/HarmonyCast-SoftwareRendering.cmd"
+                COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/resources" "$<TARGET_FILE_DIR:HarmonyCast>/resources"
+                COMMENT "Copying resources, software rendering script, and d3d12 stub to target directory"
+            )
+        else()
+            add_custom_command(TARGET HarmonyCast POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${CMAKE_CURRENT_SOURCE_DIR}/scripts/windows/HarmonyCast-SoftwareRendering.cmd"
+                    "$<TARGET_FILE_DIR:HarmonyCast>/HarmonyCast-SoftwareRendering.cmd"
+                COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/resources" "$<TARGET_FILE_DIR:HarmonyCast>/resources"
+                COMMENT "Copying resources and software rendering script to target directory"
+            )
+        endif()
     else()
         add_custom_command(TARGET HarmonyCast POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/resources" "$<TARGET_FILE_DIR:HarmonyCast>/resources"

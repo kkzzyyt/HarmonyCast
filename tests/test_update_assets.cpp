@@ -20,7 +20,7 @@ static QString checkRelease(const QStringList& names) {
     }).toJson(QJsonDocument::Compact);
 
     QTcpServer server;
-    if (!server.listen(QHostAddress::LocalHost, 0)) throw std::runtime_error("HTTP fixture failed to listen");
+    if (!server.listen(QHostAddress(QStringLiteral("127.0.0.1")), 0)) throw std::runtime_error("HTTP fixture failed to listen");
     QObject::connect(&server, &QTcpServer::newConnection, &server, [&] {
         auto* socket = server.nextPendingConnection();
         socket->setParent(&server);

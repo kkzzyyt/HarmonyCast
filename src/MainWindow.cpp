@@ -46,7 +46,7 @@ MainWindow::MainWindow(QWidget* parent, bool startBackgroundServices)
       m_settings(std::make_unique<QSettings>("HarmonyCast", "HarmonyCast")) {
 
     m_auto_start_mirror = m_settings->value("auto_start_mirror", true).toBool();
-    m_idle_timeout_secs = m_settings->value("idle_timeout_seconds", 300).toInt();
+    m_idle_timeout_secs = m_settings->value("idle_timeout_seconds", 0).toInt();
     m_last_user_activity = QDateTime::currentMSecsSinceEpoch();
 
     m_idle_timer = new QTimer(this);
@@ -55,6 +55,14 @@ MainWindow::MainWindow(QWidget* parent, bool startBackgroundServices)
     if (startBackgroundServices) {
         m_idle_timer->start();
     }
+
+    m_keep_awake_timer = new QTimer(this);
+    m_keep_awake_timer->setInterval(25000);
+    connect(m_keep_awake_timer, &QTimer::timeout, this, [this]() {
+        if (m_projecting && !currentSerial().empty() && m_hdc) {
+            m_hdc->wakeupAsync(currentSerial());
+        }
+    });
 
     if (qApp) {
         qApp->installEventFilter(this);
@@ -128,7 +136,7 @@ MainWindow::MainWindow(QWidget* parent, bool startBackgroundServices)
         }
     });
 
-    if (startBackgroundServices) m_dev_mgr->startPolling(1500);
+    if (startBackgroundServices) m_dev_mgr->startPolling(2500);
     switchModule(0);
 
     if (startBackgroundServices) QTimer::singleShot(800, this, &MainWindow::checkPreviousCrash);
@@ -214,7 +222,7 @@ void MainWindow::setupUi() {
     bottom_box->setContentsMargins(0, 0, 0, 0);
     bottom_box->setSpacing(6);
 
-    auto* version_label = IconManager::label("HarmonyCast\nv2.2.3", "Muted");
+    auto* version_label = IconManager::label("HarmonyCast\nv2.2.4", "Muted");
     bottom_box->addWidget(version_label, 1);
 
     m_settings_btn = IconManager::iconButton("settings", "系统设置", "IconBtnSettings", 30, 30);
@@ -2262,6 +2270,10 @@ void MainWindow::setWorkspaceLayout(const QString& mode) {
         m_mirror_page->hide();
         m_log_panel->show();
     }
+
+    if (m_log_panel->isVisible() && !m_hilog && !currentSerial().empty()) {
+        restartHiLogForCurrentDevice();
+    }
 }
 
 void MainWindow::switchLogSubtab(int index) {
@@ -2577,8 +2589,16 @@ void MainWindow::onDeviceSelected(int index) {
         m_active_device_serial = s;
 
         if (device_changed) {
-            // 切换设备后，缓存日志清空，从新展示当前设备的日志信息
-            restartHiLogForCurrentDevice();
+            // 切换设备后，缓存日志清空；若为无线设备或日志面板未展示则不自动采集以保证投屏带宽
+            if (!is_net && m_log_panel && m_log_panel->isVisible()) {
+                restartHiLogForCurrentDevice();
+            } else {
+                clearHiLog();
+                if (m_hilog) {
+                    m_hilog->stop();
+                    m_hilog.reset();
+                }
+            }
 
             if (m_projecting) {
                 stopMirror(false);
@@ -2875,8 +2895,9 @@ void MainWindow::startMirror() {
     m_state_badge->setText("连接中…");
     m_screen->setActive(true);
 
-    // Wake up device screen asynchronously
+    // Wake up device screen asynchronously and start periodic keep-awake
     m_hdc->wakeupAsync(s);
+    if (m_keep_awake_timer) m_keep_awake_timer->start();
 
     int bitrates[] = {20000000, 12000000, 6000000, 2500000};
     int br = bitrates[std::clamp(m_bitrate_idx, 0, 3)];
@@ -2912,10 +2933,11 @@ void MainWindow::startMirror() {
         if (m_projecting) {
             showToast(QString("⚠️ 投屏长连接已断开: %1").arg(error));
             statusBar()->showMessage(QString("投屏长连接异常断开: %1").arg(error), 6000);
-            m_screen->setStatusMessage(QString("投屏长连接已断开\n%1").arg(error));
+            m_screen->setStatusMessage(QString("投屏长连接已断开\n%1\n\n请检查设备状态后点击上方「开始投屏」重试").arg(error));
+            m_user_stopped_mirror = true;
             stopMirror(false);
         }
-    });
+    }, Qt::QueuedConnection);
 
     m_screen->setTouchCallback([this, s](TouchAction act, int x, int y, int dw, int dh){
         noteUserActivity();
@@ -2929,6 +2951,19 @@ void MainWindow::startMirror() {
             int64_t dur = std::max(50LL, QDateTime::currentMSecsSinceEpoch() - down_time);
             int dx = std::abs(x - down_pt.x());
             int dy = std::abs(y - down_pt.y());
+
+            // Low-latency direct binary injection when native control channel is active
+            if (m_stream && m_stream->controlChannel() && m_stream->controlChannel()->isConnected()) {
+                if (dx < 10 && dy < 10) {
+                    m_stream->controlChannel()->sendTouch(TouchAction::Down, x, y, dw, dh);
+                    m_stream->controlChannel()->sendTouch(TouchAction::Up, x, y, dw, dh);
+                } else {
+                    m_stream->controlChannel()->sendTouch(TouchAction::Down, down_pt.x(), down_pt.y(), dw, dh);
+                    m_stream->controlChannel()->sendTouch(TouchAction::Move, x, y, dw, dh);
+                    m_stream->controlChannel()->sendTouch(TouchAction::Up, x, y, dw, dh);
+                }
+                return;
+            }
 
             if (dx < 10 && dy < 10) {
                 // Single touch click
@@ -2945,8 +2980,8 @@ void MainWindow::startMirror() {
 
     m_stream->start();
 
-    // Start HiLog simultaneously if not already running for this device
-    if (!m_hilog) {
+    // Only start HiLog simultaneously if log panel is visible and not on bandwidth-constrained network device
+    if (!m_hilog && !is_net && m_log_panel && m_log_panel->isVisible()) {
         m_hilog = std::make_unique<HiLogSession>(m_hdc->path(), s, "", "all", this);
         connect(m_hilog.get(), &HiLogSession::entriesReady, this, &MainWindow::onHiLogEntries);
         connect(m_hilog.get(), &HiLogSession::finished, this, [this](int exitCode) {
@@ -2967,6 +3002,7 @@ void MainWindow::stopMirror(bool userInitiated) {
         m_pending_auto_start_serial.clear();
     }
     if (!m_projecting) return;
+    if (m_keep_awake_timer) m_keep_awake_timer->stop();
     m_projecting = false;
     m_start_btn->show();
     m_stop_btn->hide();
@@ -3231,6 +3267,11 @@ void MainWindow::sendKey(const QString& key) {
     else if (key == "power") keyCode = 18;
 
     if (keyCode > 0) {
+        if (m_stream && m_stream->controlChannel() && m_stream->controlChannel()->isConnected()) {
+            m_stream->controlChannel()->sendKey(KeyAction::Down, keyCode);
+            m_stream->controlChannel()->sendKey(KeyAction::Up, keyCode);
+            return;
+        }
         m_hdc->executeAsync({"shell", "uinput", "-K", "-d", std::to_string(keyCode), "-u", std::to_string(keyCode)}, s, [](const CommandResult&){});
     }
 }
@@ -3515,6 +3556,17 @@ void MainWindow::restartHiLogForCurrentDevice() {
     if (m_hilog) {
         m_hilog->stop();
         m_hilog.reset();
+    }
+
+    bool is_net = (s.find(':') != std::string::npos || s.find('.') != std::string::npos);
+    if (is_net) {
+        HC_LOG_INFO(QString("HiLog session auto-start skipped for network device %1 to preserve bandwidth").arg(QString::fromStdString(s)));
+        return;
+    }
+
+    if (!m_log_panel || !m_log_panel->isVisible()) {
+        HC_LOG_INFO(QString("HiLog session deferred for device %1 (log panel hidden)").arg(QString::fromStdString(s)));
+        return;
     }
 
     m_hilog = std::make_unique<HiLogSession>(m_hdc->path(), s, "", "all", this);
@@ -4659,7 +4711,7 @@ void MainWindow::openSettingsDialog() {
     uLayout->setSpacing(8);
 
     auto* verRow = new QHBoxLayout();
-    QString curVer = m_updater ? m_updater->currentVersion() : "2.2.3";
+    QString curVer = m_updater ? m_updater->currentVersion() : "2.2.4";
     auto* lblCurVer = new QLabel(QString("当前版本: v%1 (正式版)").arg(curVer));
     lblCurVer->setStyleSheet("color: #dbe5ee; font-size: 12px; font-weight: 500;");
     verRow->addWidget(lblCurVer, 1);
@@ -4757,7 +4809,7 @@ void MainWindow::onUpdateAvailable(const UpdateInfo& info, bool silent) {
 
 void MainWindow::onNoUpdateAvailable(bool silent) {
     if (!silent) {
-        QString curVer = m_updater ? m_updater->currentVersion() : "2.2.3";
+        QString curVer = m_updater ? m_updater->currentVersion() : "2.2.4";
         showToast(QString("当前已是最新版本 (v%1)").arg(curVer));
         statusBar()->showMessage(QString("当前已是最新版本 (v%1)").arg(curVer), 4000);
         QWidget* parentDlg = QApplication::activeModalWidget() ? QApplication::activeModalWidget() : this;

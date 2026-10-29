@@ -17,7 +17,7 @@ public:
     explicit DeviceManager(std::shared_ptr<HdcClient> hdc, QObject* parent = nullptr);
     ~DeviceManager() override;
 
-    void startPolling(int interval_ms = 1500);
+    void startPolling(int interval_ms = 2500);
     void stopPolling();
 
     [[nodiscard]] std::vector<Device> devices() const;
@@ -40,6 +40,7 @@ private:
     std::atomic<bool> m_is_refreshing{false};
     std::atomic<bool> m_needs_refresh{false};
     std::atomic<bool> m_needs_force_emit{false};
+    int m_consecutive_poll_failures{0};
 };
 
 } // namespace harmonycast

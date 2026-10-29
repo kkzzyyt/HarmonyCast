@@ -43,6 +43,7 @@ public:
                       std::function<void(CommandResult)> callback) const;
 
     std::vector<Device> listDevices() const;
+    std::optional<std::vector<Device>> listDevicesChecked() const;
 
     bool forwardPort(const std::string& serial, int local_port, int remote_port) const;
     bool removeForward(const std::string& serial, int local_port, int remote_port) const;

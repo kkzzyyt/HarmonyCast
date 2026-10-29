@@ -48,6 +48,7 @@ private:
     SwsContext* m_sws_ctx{nullptr};
 
     bool m_hw_active{false};
+    int m_hw_transfer_failures{0};
     int m_width{0};
     int m_height{0};
     uint64_t m_decoded_count{0};

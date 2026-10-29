@@ -10,7 +10,7 @@
 namespace harmonycast {
 
 struct UpdateInfo {
-    QString currentVersion{"2.2.3"};
+    QString currentVersion{"2.2.4"};
     QString latestVersion;
     QString releaseTitle;
     QString changelog;
@@ -56,7 +56,7 @@ private slots:
 private:
     QNetworkAccessManager* m_nam{nullptr};
     QNetworkReply* m_current_reply{nullptr};
-    QString m_current_version{"2.2.3"};
+    QString m_current_version{"2.2.4"};
     QString m_update_url{"https://api.github.com/repos/kkzzyyt/HarmonyCast/releases/latest"};
     bool m_silent_check{true};
 

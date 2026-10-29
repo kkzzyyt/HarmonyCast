@@ -175,6 +175,28 @@ void test_stream_session_and_types() {
     assert(!session.isFallbackSnapshot());
     assert(session.device().serial == "127.0.0.1:8710");
 
+    // Regression test for streamFinished triggering self-destruction without crash
+    {
+        auto test_session = std::make_unique<StreamSession>(hdc, dev);
+        bool finished_received = false;
+        QObject::connect(test_session.get(), &StreamSession::streamFinished, test_session.get(), [&](const QString& msg) {
+            assert(msg.contains("异常中断"));
+            finished_received = true;
+            test_session.reset();
+        }, Qt::DirectConnection);
+
+        QPointer<StreamSession> weak_session(test_session.get());
+        if (weak_session) {
+            weak_session->stop();
+            if (weak_session) {
+                emit weak_session->streamFinished("设备画面流传输异常中断，已自动停止投屏");
+            }
+        }
+        assert(finished_received);
+        assert(!weak_session);
+        assert(!test_session);
+    }
+
     // Test Device equality with state
     Device d1;
     d1.serial = "192.168.1.100:8710";
@@ -201,6 +223,11 @@ void test_stream_session_and_types() {
     };
     assert(normalizeIp("192.168.1.50") == "192.168.1.50:8710");
     assert(normalizeIp("192.168.1.50:8710") == "192.168.1.50:8710");
+
+    // Test listDevicesChecked
+    auto checked_devs = hdc->listDevicesChecked();
+    assert(checked_devs.has_value());
+    assert(checked_devs->size() == hdc->listDevices().size());
     assert(normalizeIp("192.168.1.50:9000") == "192.168.1.50:9000");
     assert(normalizeIp("usb_serial_123") == "usb_serial_123");
 
@@ -492,14 +519,14 @@ void test_update_checker() {
 
     // 2. Ignore version logic
     UpdateChecker checker;
-    assert(checker.currentVersion() == "2.2.3");
+    assert(checker.currentVersion() == "2.2.4");
 
     checker.ignoreVersion("2.3.0");
     assert(checker.isVersionIgnored("2.3.0"));
     assert(!checker.isVersionIgnored("2.4.0"));
 
     checker.clearIgnoredVersion();
-    assert(!checker.isVersionIgnored("2.2.3"));
+    assert(!checker.isVersionIgnored("2.2.4"));
 
     std::cout << "[PASS] test_update_checker passed!" << std::endl;
 }
@@ -508,7 +535,7 @@ void test_idle_timeout() {
     std::cout << "[RUN] test_idle_timeout..." << std::endl;
 
     MainWindow win(nullptr, false);
-    assert(win.idleTimeoutSeconds() == 300); // 5 minutes default
+    assert(win.idleTimeoutSeconds() == 0); // Default to never disconnect (0)
 
     // Test setting timeout
     win.setIdleTimeoutSeconds(600);
