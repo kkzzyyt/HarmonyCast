@@ -67,6 +67,7 @@ private slots:
     void onSocketConnected();
     void onSocketReadyRead();
     void onSocketDisconnected();
+    void onSocketError(QAbstractSocket::SocketError error);
     void sendHeartbeat();
 
 private:

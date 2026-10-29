@@ -51,6 +51,8 @@ private slots:
 
     // Device events
     void onDevicesUpdated(const std::vector<Device>& devices);
+    void onDeviceConnected(const Device& device);
+    void onDeviceDisconnected(const Device& device);
     void onDeviceSelected(int index);
     void onDeviceComboActivated(int index);
     void refreshDevices();
@@ -328,6 +330,7 @@ private:
     bool m_user_stopped_mirror{false};
     std::string m_pending_auto_start_serial;
     std::string m_active_device_serial;
+    std::unordered_map<std::string, DeviceState> m_previous_device_states;
     uint64_t m_switch_generation{0};
     int m_wv_console_count{0};
     int m_wv_network_count{0};

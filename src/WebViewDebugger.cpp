@@ -318,6 +318,7 @@ void WebViewDebugger::onWsDisconnected() {
     m_callbacks.clear();
     m_callback_deadlines.clear();
     m_callback_timer->stop();
+    emit disconnected();
 }
 
 void WebViewDebugger::onWsTextMessage(const QString& message) {

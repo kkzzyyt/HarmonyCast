@@ -72,12 +72,23 @@ MainWindow::MainWindow(QWidget* parent, bool startBackgroundServices)
     applyTheme();
 
     connect(m_dev_mgr.get(), &DeviceManager::devicesUpdated, this, &MainWindow::onDevicesUpdated);
+    connect(m_dev_mgr.get(), &DeviceManager::deviceConnected, this, &MainWindow::onDeviceConnected);
+    connect(m_dev_mgr.get(), &DeviceManager::deviceDisconnected, this, &MainWindow::onDeviceDisconnected);
     connect(m_updater.get(), &UpdateChecker::updateAvailable, this, &MainWindow::onUpdateAvailable);
     connect(m_updater.get(), &UpdateChecker::noUpdateAvailable, this, &MainWindow::onNoUpdateAvailable);
     connect(m_updater.get(), &UpdateChecker::checkFailed, this, &MainWindow::onUpdateCheckFailed);
     connect(m_webview.get(), &WebViewDebugger::consoleMessageReceived, this, &MainWindow::onWebConsoleMessage);
     connect(m_webview.get(), &WebViewDebugger::networkRequestReceived, this, &MainWindow::onWebNetworkRequest);
     connect(m_webview.get(), &WebViewDebugger::networkResponseReceived, this, &MainWindow::onWebNetworkResponse);
+    connect(m_webview.get(), &WebViewDebugger::disconnected, this, [this] {
+        if (m_pages->currentIndex() == 2) {
+            showToast("⚠️ WebView 调试长连接已断开");
+            statusBar()->showMessage("WebView 调试连接已断开，如需继续调试请在设备上打开页面并重新检测", 6000);
+            if (m_wv_net_status_label) {
+                m_wv_net_status_label->setText("WebView 调试连接已断开 · 点击上方「重新检测」可重新连接");
+            }
+        }
+    });
     connect(m_webview.get(), &WebViewDebugger::pagesLoaded, this, [this](const std::vector<WebViewPage>& pages){
         if (pages.empty()) {
             showToast("当前设备未检测到运行中的 WebView 界面");
@@ -2274,7 +2285,46 @@ void MainWindow::setWebViewSubtab(int index) {
 // ==========================================
 // Device Discovery & Status Events
 // ==========================================
+void MainWindow::onDeviceConnected(const Device& device) {
+    std::string s = device.serial;
+    HC_LOG_INFO(QString("Device connected event: %1").arg(QString::fromStdString(s)));
+    statusBar()->showMessage(QString("检测到新设备接入: %1").arg(QString::fromStdString(s)), 4000);
+}
+
+void MainWindow::onDeviceDisconnected(const Device& device) {
+    std::string s = device.serial;
+    HC_LOG_WARN(QString("Device disconnected event: %1").arg(QString::fromStdString(s)));
+
+    bool is_current = (!m_active_device_serial.empty() && s == m_active_device_serial) || s == currentSerial();
+    if (!is_current && s.find(':') != std::string::npos && !m_active_device_serial.empty()) {
+        std::string prefix = s.substr(0, s.find(':'));
+        if (m_active_device_serial.rfind(prefix, 0) == 0) {
+            is_current = true;
+        }
+    }
+
+    if (is_current) {
+        showToast(QString("⚠️ 设备连接已异常中断: %1").arg(QString::fromStdString(s)));
+        statusBar()->showMessage(QString("设备 %1 异常断开，请检查 USB 或网络连接").arg(QString::fromStdString(s)), 8000);
+
+        if (m_projecting) {
+            stopMirror(false);
+            m_screen->setStatusMessage(QString("设备连接已断开 (%1)\n请检查设备连接状态后重试").arg(QString::fromStdString(s)));
+        }
+
+        if (m_hilog && m_hilog->isRunning()) {
+            m_hilog->stop();
+        }
+        if (m_webview) {
+            m_webview->disconnectPage();
+        }
+    } else {
+        statusBar()->showMessage(QString("设备已断开: %1").arg(QString::fromStdString(s)), 4000);
+    }
+}
+
 void MainWindow::onDevicesUpdated(const std::vector<Device>& devices) {
+    bool had_devices = !m_cached_devices.empty() || !m_active_device_serial.empty();
     m_cached_devices = devices;
     QString currentSel = m_device_combo->currentData().toString();
     m_device_combo->blockSignals(true);
@@ -2324,6 +2374,25 @@ void MainWindow::onDevicesUpdated(const std::vector<Device>& devices) {
         }
     }
 
+    // Check for offline transitions of connected devices
+    for (const auto& dev : devices) {
+        auto it = m_previous_device_states.find(dev.serial);
+        if (it != m_previous_device_states.end() && it->second == DeviceState::Connected && dev.state == DeviceState::Offline) {
+            bool is_curr = (dev.serial == m_active_device_serial || dev.serial == currentSel.toStdString());
+            if (is_curr) {
+                showToast(QString("⚠️ 设备 [%1] 状态异常：已离线").arg(QString::fromStdString(dev.serial)));
+                statusBar()->showMessage(QString("当前设备 %1 进入离线状态，长连接已中断").arg(QString::fromStdString(dev.serial)), 8000);
+                if (m_projecting) {
+                    stopMirror(false);
+                    m_screen->setStatusMessage(QString("设备已离线 (%1)\n长连接异常中断，请重新连接").arg(QString::fromStdString(dev.serial)));
+                }
+            } else {
+                statusBar()->showMessage(QString("设备 %1 已离线").arg(QString::fromStdString(dev.serial)), 4000);
+            }
+        }
+        m_previous_device_states[dev.serial] = dev.state;
+    }
+
     // Append saved offline network devices from saved_devices.json
     auto saved_list = NetworkDeviceDialog::loadSavedDevices();
     for (const auto& saved : saved_list) {
@@ -2352,13 +2421,22 @@ void MainWindow::onDevicesUpdated(const std::vector<Device>& devices) {
     m_device_combo->blockSignals(false);
 
     if (devices.empty()) {
+        m_cached_devices.clear();
+        m_active_device_serial.clear();
+        m_previous_device_states.clear();
         renderEmptyInfo();
         m_state_badge->setText("待连接");
         m_hdc_target_badge->setText("目标: 无");
         m_hdc_target_prefix->setText("");
         m_screen->clear();
         m_screen->setStatusMessage("未连接设备，请点击右上角设备维护中心连接设备");
-        stopMirror(false);
+        if (m_projecting) {
+            stopMirror(false);
+        }
+        if (had_devices) {
+            showToast("⚠️ 所有设备连接已断开");
+            statusBar()->showMessage("未检测到任何在线设备，长连接已断开", 6000);
+        }
         return;
     }
 
@@ -2758,7 +2836,9 @@ void MainWindow::startMirror() {
 
     connect(m_stream.get(), &StreamSession::streamFinished, this, [this](const QString& error){
         if (m_projecting) {
-            showToast(QString("投屏断开: %1").arg(error));
+            showToast(QString("⚠️ 投屏长连接已断开: %1").arg(error));
+            statusBar()->showMessage(QString("投屏长连接异常断开: %1").arg(error), 6000);
+            m_screen->setStatusMessage(QString("投屏长连接已断开\n%1").arg(error));
             stopMirror(false);
         }
     });
@@ -2794,6 +2874,11 @@ void MainWindow::startMirror() {
     if (!m_hilog) {
         m_hilog = std::make_unique<HiLogSession>(m_hdc->path(), s, "", "all", this);
         connect(m_hilog.get(), &HiLogSession::entriesReady, this, &MainWindow::onHiLogEntries);
+        connect(m_hilog.get(), &HiLogSession::finished, this, [this](int exitCode) {
+            if (!currentSerial().empty() && m_pages->currentIndex() == 1) {
+                statusBar()->showMessage(QString("HiLog 日志采集进程已结束 (代码 %1)").arg(exitCode), 4000);
+            }
+        });
         m_hilog->setRetentionEnabled(false);
         m_hilog->start();
     }
@@ -3359,6 +3444,11 @@ void MainWindow::restartHiLogForCurrentDevice() {
 
     m_hilog = std::make_unique<HiLogSession>(m_hdc->path(), s, "", "all", this);
     connect(m_hilog.get(), &HiLogSession::entriesReady, this, &MainWindow::onHiLogEntries);
+    connect(m_hilog.get(), &HiLogSession::finished, this, [this](int exitCode) {
+        if (!currentSerial().empty() && m_pages->currentIndex() == 1) {
+            statusBar()->showMessage(QString("HiLog 日志采集进程已结束 (代码 %1)").arg(exitCode), 4000);
+        }
+    });
     m_hilog->setRetentionEnabled(false);
     m_hilog->start();
     HC_LOG_INFO(QString("HiLog session freshly restarted for device %1").arg(QString::fromStdString(s)));

@@ -33,6 +33,7 @@ StreamSession::StreamSession(std::shared_ptr<HdcClient> hdc,
     connect(m_socket, &QTcpSocket::connected, this, &StreamSession::onSocketConnected);
     connect(m_socket, &QTcpSocket::readyRead, this, &StreamSession::onSocketReadyRead);
     connect(m_socket, &QTcpSocket::disconnected, this, &StreamSession::onSocketDisconnected);
+    connect(m_socket, &QAbstractSocket::errorOccurred, this, &StreamSession::onSocketError);
     connect(m_heartbeat_timer, &QTimer::timeout, this, &StreamSession::sendHeartbeat);
 
     m_socket->setReadBufferSize(4 * 1024 * 1024);
@@ -335,9 +336,18 @@ void StreamSession::deliverLatestFrame(const std::shared_ptr<FrameMailbox>& mail
 
 void StreamSession::onSocketDisconnected() {
     if (m_running && !m_fallback_snapshot) {
-        emit statusChanged("设备端硬件投屏中断，自动切换为兼容快照流…");
+        HC_LOG_WARN("StreamSession TCP socket disconnected, attempting snapshot fallback");
+        emit statusChanged("设备端硬件投屏长连接中断，自动切换为兼容快照流…");
         startSnapshotFallback();
     }
+}
+
+void StreamSession::onSocketError(QAbstractSocket::SocketError socketError) {
+    if (!m_running || m_fallback_snapshot) return;
+    QString errStr = m_socket ? m_socket->errorString() : "未知网络套接字错误";
+    HC_LOG_WARN(QString("StreamSession socket error (%1): %2").arg(socketError).arg(errStr));
+    emit statusChanged(QString("视频流连接异常 (%1)，尝试降级至兼容快照流…").arg(errStr));
+    startSnapshotFallback();
 }
 
 void StreamSession::setQuality(int quality_idx, int bitrate) {
@@ -496,14 +506,33 @@ void StreamSession::startSnapshotFallback() {
                                 if (weak_this && !ctx->cancelled.load()) weak_this->deliverLatestFrame(mailbox, generation);
                             });
                         }
+                    } else {
+                        consecutive_errors++;
                     }
                     QFile::remove(local_temp);
+                } else {
+                    consecutive_errors++;
                 }
             } else {
                 consecutive_errors++;
                 if (consecutive_errors % 4 == 0) {
                     ctx->hdc->wakeup(ctx->serial);
                 }
+            }
+
+            if (consecutive_errors >= 5) {
+                HC_LOG_ERROR(QString("Snapshot fallback failed %1 consecutive times, terminating session for %2")
+                                 .arg(consecutive_errors)
+                                 .arg(QString::fromStdString(ctx->serial)));
+                if (weak_this) {
+                    QMetaObject::invokeMethod(weak_this.data(), [weak_this]() {
+                        if (weak_this && weak_this->m_running) {
+                            emit weak_this->streamFinished("设备画面流传输异常中断，已自动停止投屏");
+                            weak_this->stop();
+                        }
+                    });
+                }
+                break;
             }
 
             auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();

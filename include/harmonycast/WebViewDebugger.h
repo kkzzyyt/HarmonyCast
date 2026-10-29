@@ -106,6 +106,7 @@ signals:
     void networkRequestReceived(const WebNetworkRequest& req);
     void networkResponseReceived(const QString& request_id, int status, const QString& mime);
     void errorOccurred(const QString& err);
+    void disconnected();
 
 private slots:
     void onWsConnected();

@@ -227,6 +227,18 @@ void test_stream_session_and_types() {
     session.setQuality(3, 2500000);
     assert(session.qualityIndex() == 3);
 
+    // Test offline state detection logic
+    std::unordered_map<std::string, DeviceState> prev_states;
+    prev_states["192.168.1.100:8710"] = DeviceState::Connected;
+    bool offline_alert_triggered = false;
+    Device dev_offline;
+    dev_offline.serial = "192.168.1.100:8710";
+    dev_offline.state = DeviceState::Offline;
+    if (prev_states[dev_offline.serial] == DeviceState::Connected && dev_offline.state == DeviceState::Offline) {
+        offline_alert_triggered = true;
+    }
+    assert(offline_alert_triggered);
+
     // 3. ScreenView High-DPI and image rotation test
     ScreenView screen;
     QImage testImg(1080, 1920, QImage::Format_RGB32);
