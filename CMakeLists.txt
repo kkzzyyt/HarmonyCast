@@ -189,7 +189,10 @@ if(APPLE)
     )
 else()
     if(WIN32)
-        list(APPEND APP_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/resources/windows/HarmonyCast.rc")
+        list(APPEND APP_SOURCES
+            "${CMAKE_CURRENT_SOURCE_DIR}/resources/windows/HarmonyCast.rc"
+            "${CMAKE_CURRENT_SOURCE_DIR}/resources/windows/HarmonyCast.manifest"
+        )
         if(HARMONYCAST_SERVER2012_COMPAT)
             add_library(d3d12_stub SHARED
                 src/windows/d3d12_stub.cpp

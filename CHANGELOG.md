@@ -45,6 +45,8 @@ Format adheres to [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and 
 - [进程] 设备端服务端启动命令使用 `nohup ... >/dev/null 2>&1 &` 彻底分离，解决此前因管道未关闭导致 3 秒超时挂起的问题。
 - [Windows] HDC process execution configured with `CREATE_NO_WINDOW (0x08000000)`, eliminating console window flickering.
 - [Windows] HDC 命令行调用注入 `CREATE_NO_WINDOW` 标记，消除高频执行时的控制台黑框闪烁。
+- [Windows] Resolved MSVC duplicate manifest collision (CVT1100 / LNK1123) by feeding the manifest through CMake target sources and guarding resource file embedding.
+- [Windows] 修复 MSVC 链接器清单资源冲突报错（CVT1100 / LNK1123），改为由 CMake 原生传递 manifest 并规避资源文件重复编译。
 - [macOS] Signal `streamFinished` connected via `Qt::QueuedConnection` and stream stopped prior to notification, preventing self-destruction crashes during active stack unwinding.
 - [macOS] `streamFinished` 信号连接升级为 `Qt::QueuedConnection` 并重构停止时序，杜绝会话销毁时的空指针与段错误崩溃。
 
