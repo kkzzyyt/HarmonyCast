@@ -32,8 +32,7 @@ enters fullscreen; Esc returns. The original `com.yarward.*` application filter
 is retained: select **全部应用** (all applications) or enter your own package or
 namespace. The current UI is primarily Chinese.
 
-HDC is discovered in common DevEco Studio locations or PATH, or selected in
-Settings. Prebuilt HDC/libusb files are excluded from Git; see
+HDC is bundled directly within the macOS and Windows release packages for zero-dependency plug-and-play execution. It can also be discovered in common DevEco Studio locations or PATH, or manually selected in Settings; see
 [resources/hdc/README.md](resources/hdc/README.md).
 
 ## Compatibility

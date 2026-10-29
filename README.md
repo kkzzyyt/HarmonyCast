@@ -88,7 +88,7 @@ Windows Server 2012/2012 R2 提供独立的 [兼容构建方案](docs/windows-se
 - **CMake** 3.22+
 - **Qt 6**（组件：`Core`, `Gui`, `Widgets`, `Network`, `Svg`, `SvgWidgets`, `WebSockets`）
 - **FFmpeg 4.4+ / 6.0+**（包含 `libavcodec`, `libavutil`, `libswscale`）
-- **HDC 命令行工具**（包含在 OpenHarmony SDK 或 DevEco Studio 中）
+- **HDC 命令行工具**（包含在 OpenHarmony SDK 或 DevEco Studio 中；客户端发布包内亦已内置，支持 0 依赖开箱即用）
 
 ### 2. macOS 快速构建
 

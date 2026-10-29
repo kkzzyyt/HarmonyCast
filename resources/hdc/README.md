@@ -1,22 +1,16 @@
-# Optional local HDC bundle
+# Bundled HDC binaries
 
-Prebuilt HDC and libusb files from the original local workspace are excluded
-from Git. Install HDC using the official HarmonyOS/OpenHarmony SDK, then select
-the executable in HarmonyCast Settings or add it to PATH. The macOS application
-also looks for common DevEco Studio installations.
+This directory contains prebuilt HDC (OpenHarmony Device Connector) and libusb binaries for out-of-the-box, zero-dependency client execution across platforms:
 
-For a local self-contained build, place the compatible Darwin ARM64 files here:
+- **macOS (Darwin ARM64)**:
+  - `hdc` (executable)
+  - `libusb_shared.dylib` (shared library)
+- **Windows (x64 / Windows Server 2012 / Win 8 / 10 / 11)**:
+  - `hdc.exe` (PE32+ console executable, Subsystem 6.0)
+  - `libusb_shared.dll` (dynamic library)
 
-```text
-hdc
-libusb_shared.dylib
-```
+The client automatically discovers and prioritizes these bundled binaries before falling back to system PATH or DevEco Studio SDK installations.
 
-`HarmonyCast.spec` bundles these files only when both are present. Otherwise it
-builds an application that requires an externally installed HDC. Check the exact
-components' redistribution and corresponding-source requirements before
-publishing a bundled binary application. See `THIRD_PARTY_NOTICES.md`.
-
-HDC: https://github.com/openharmony/developtools_hdc
-
-libusb: https://github.com/libusb/libusb
+HDC upstream: https://github.com/openharmony/developtools_hdc (Apache-2.0)
+libusb upstream: https://github.com/libusb/libusb (LGPL-2.1)
+See `THIRD_PARTY_NOTICES.md` for license notices and redistribution notes.

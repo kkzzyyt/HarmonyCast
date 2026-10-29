@@ -16,6 +16,7 @@ REQUIRED_FILES = (
     "Qt5Network.dll", "Qt5Svg.dll", "Qt5WebSockets.dll", "platforms/qwindows.dll",
     "avcodec-60.dll", "avutil-58.dll", "swscale-7.dll",
     "msvcp140.dll", "vcruntime140.dll", "ucrtbase.dll",
+    "resources/hdc/hdc.exe", "resources/hdc/libusb_shared.dll",
 )
 WINDOWS10_IMPORTS = {
     "GetDpiForWindow", "GetDpiForSystem", "GetSystemDpiForProcess",

@@ -126,6 +126,11 @@ class Server2012RuntimeTests(unittest.TestCase):
         (self.root / "Qt5Gui.dll").write_bytes(pe_image([("user32.dll", "GetDpiForWindow")]))
         self.assertTrue(any("GetDpiForWindow" in error for error in runtime.check_directory(self.root)))
 
+    def test_rejects_missing_bundled_hdc(self):
+        (self.root / "resources/hdc/hdc.exe").unlink()
+        errors = runtime.check_directory(self.root)
+        self.assertTrue(any("Missing runtime file: resources/hdc/hdc.exe" in error for error in errors))
+
     def test_rejects_incomplete_package(self):
         (self.root / "platforms/qwindows.dll").unlink()
         self.assertTrue(any("qwindows.dll" in error for error in runtime.check_directory(self.root)))

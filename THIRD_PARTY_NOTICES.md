@@ -14,22 +14,15 @@ and `NOTICE`. The files below retain their original licenses and attribution.
 - The wrapper fixes macOS HDC argument handling and implements its own bounded packet receiver, process ownership, compatibility preview, log tools, and Qt user interface.
 - `native/capture_server.c` and the RISC-V startup entry are new HarmonyCast components. They use the device's public OpenHarmony C APIs for continuous capture, H.264 surface encoding, and RGBA fallback. Device system libraries are used for linking and are not redistributed.
 
-## Optional local HDC and libusb build inputs
+## Bundled HDC and libusb build inputs
 
-- The original local `resources/hdc/hdc` is the Darwin ARM64 HDC distributed with the upstream
-  OpenHarmony_Scrcpy snapshot above. HDC source is maintained at
-  https://github.com/openharmony/developtools_hdc under Apache-2.0; the Apache
-  license text is included in `licenses/OpenHarmony_Scrcpy-LICENSE.txt`.
-- The original local `resources/hdc/libusb_shared.dylib` is the accompanying dynamic USB library.
-  libusb is licensed under LGPL-2.1-or-later; its license is included in
-  `licenses/libusb-LGPL-2.1.txt`. The source project is
-  https://github.com/libusb/libusb and the bundled copy comes from the same
-  OpenHarmony_Scrcpy distribution. The precise libusb source revision/build flags
-  of that prebuilt distribution have not been independently established here.
-- These prebuilt HDC/libusb files are excluded from this Git repository. Users
-  can select their own SDK-installed HDC executable in Settings. Binary app releases
-  require checking source availability and the redistribution obligations for
-  the exact versions of all bundled dependencies.
+- The bundled Darwin ARM64 `resources/hdc/hdc` and Windows x64 `resources/hdc/hdc.exe` are prebuilt HDC binaries built from OpenHarmony developtools_hdc (Apache-2.0).
+  Upstream source: https://github.com/openharmony/developtools_hdc.
+  Apache 2.0 license text is available in `licenses/OpenHarmony_Scrcpy-LICENSE.txt`.
+- The bundled dynamic USB libraries `resources/hdc/libusb_shared.dylib` and `resources/hdc/libusb_shared.dll` are licensed under LGPL-2.1-or-later.
+  Upstream source: https://github.com/libusb/libusb.
+  License text is included in `licenses/libusb-LGPL-2.1.txt`.
+- These binaries are bundled within the macOS and Windows release packages to allow 0-dependency execution out-of-the-box. Users may also select an alternative SDK-installed HDC executable in Settings.
 
 ## Runtime dependencies
 

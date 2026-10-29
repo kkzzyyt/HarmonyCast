@@ -118,6 +118,12 @@ jobs:
           $staging_dir = "$repo_root\build\Release"
           $portable_out = "$repo_root\build\HarmonyCast-$ver-Windows-x64.exe"
           $setup_out = "$repo_root\build\HarmonyCast-$ver-Setup-x64.exe"
+
+          # Clean up test/benchmark binaries and linker artifacts before packaging
+          Remove-Item -Force -ErrorAction SilentlyContinue build\Release\test_*
+          Remove-Item -Force -ErrorAction SilentlyContinue build\Release\benchmark_*
+          Remove-Item -Force -ErrorAction SilentlyContinue build\Release\*.lib
+          Remove-Item -Force -ErrorAction SilentlyContinue build\Release\*.exp
           
           # 1. Build Single-File Portable EXE ("就一个exe文件")
           makensis /DICON_PATH="$icon_path" /DSTAGING_DIR="$staging_dir" /DOUTPUT_EXE="$portable_out" scripts\windows\portable.nsi
@@ -224,7 +230,7 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force build-server2012/package | Out-Null
           Get-ChildItem build-server2012/Release |
-            Where-Object { $_.Name -notlike 'test_*' -and $_.Name -notlike 'benchmark_*' } |
+            Where-Object { $_.Name -notlike 'test_*' -and $_.Name -notlike 'benchmark_*' -and $_.Extension -notmatch '^\.(lib|exp)$' } |
             Copy-Item -Destination build-server2012/package -Recurse -Force
 
       - name: Verify shipped compatibility runtime

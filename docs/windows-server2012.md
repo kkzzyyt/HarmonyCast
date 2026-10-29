@@ -4,7 +4,7 @@
 
 项目新增独立的 `HARMONYCAST_SERVER2012_COMPAT` 构建选项，目标为带桌面环境的 Server 2012/2012 R2 x64。该构建使用 Qt 5.15.2、MSVC v142、Windows SDK 10.0.19041.0 的下层兼容运行库，以及自行编译的 FFmpeg 6.1.3。视频默认使用 CPU 解码，窗口使用 QWidget 光栅绘制，保留投屏、截图、触控、日志和 WebView 调试功能。
 
-这是兼容构建目标，尚需在目标服务器验证启动、HDC 连接及实际投屏；GitHub 的 Windows 2022 runner 不能代替 Server 2012 真机验证。HDC 是独立程序，需另行提供能在该服务器运行的 HDC 版本。
+这是兼容构建目标，尚需在目标服务器验证启动、HDC 连接及实际投屏；GitHub 的 Windows 2022 runner 不能代替 Server 2012 真机验证。客户端已内置兼容 Windows Server 2012 / 2012 R2（子系统版本 6.0，仅依赖 UCRT）的 HDC 命令行及配套动态库（`resources/hdc/hdc.exe` 与 `resources/hdc/libusb_shared.dll`），开箱即用，无需预装 DevEco Studio 或配置环境变量。
 
 ## 自动构建
 

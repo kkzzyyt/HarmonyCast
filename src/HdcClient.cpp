@@ -27,14 +27,15 @@ std::string HdcClient::findHdc() {
         appDir + "/../Resources/hdc/hdc",
         appDir + "/../Resources/resources/hdc/hdc",
         appDir + "/../Resources/hdc",
+        appDir + "/resources/hdc/hdc",
         appDir + "/hdc/hdc",
         appDir + "/hdc",
         QDir::currentPath() + "/resources/hdc/hdc",
-        appDir + "/hdc.exe",
-        appDir + "/hdc/hdc.exe",
         appDir + "/resources/hdc/hdc.exe",
-        QDir::currentPath() + "/hdc.exe",
-        QDir::currentPath() + "/resources/hdc/hdc.exe"
+        appDir + "/hdc/hdc.exe",
+        appDir + "/hdc.exe",
+        QDir::currentPath() + "/resources/hdc/hdc.exe",
+        QDir::currentPath() + "/hdc.exe"
     };
 
     for (const auto& path : bundled_candidates) {
@@ -93,6 +94,20 @@ CommandResult HdcClient::runProcess(const std::string& hdc_path,
                                     int timeout_ms) {
     QProcess process;
     QStringList qargs;
+
+    QFileInfo hdcFi(QString::fromStdString(hdc_path));
+    if (hdcFi.exists() && hdcFi.isAbsolute()) {
+        QString hdcDir = hdcFi.dir().absolutePath();
+        process.setWorkingDirectory(hdcDir);
+        QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+#ifdef Q_OS_WIN
+        env.insert("PATH", hdcDir + ";" + env.value("PATH"));
+#else
+        env.insert("PATH", hdcDir + ":" + env.value("PATH"));
+        env.insert("DYLD_LIBRARY_PATH", hdcDir + ":" + env.value("DYLD_LIBRARY_PATH"));
+#endif
+        process.setProcessEnvironment(env);
+    }
 
     if (!serial.empty()) {
         qargs << "-t" << QString::fromStdString(serial);

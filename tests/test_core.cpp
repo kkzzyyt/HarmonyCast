@@ -163,6 +163,8 @@ void test_stream_session_and_types() {
 
     // 2. StreamSession fallback state and quality tiers
     auto hdc = std::make_shared<HdcClient>();
+    assert(hdc->isAvailable());
+    assert(!hdc->path().empty());
     Device dev;
     dev.serial = "127.0.0.1:8710";
     dev.is_network = true;
@@ -476,14 +478,14 @@ void test_update_checker() {
 
     // 2. Ignore version logic
     UpdateChecker checker;
-    assert(checker.currentVersion() == "2.2.2");
+    assert(checker.currentVersion() == "2.2.3");
 
     checker.ignoreVersion("2.3.0");
     assert(checker.isVersionIgnored("2.3.0"));
     assert(!checker.isVersionIgnored("2.4.0"));
 
     checker.clearIgnoredVersion();
-    assert(!checker.isVersionIgnored("2.2.2"));
+    assert(!checker.isVersionIgnored("2.2.3"));
 
     std::cout << "[PASS] test_update_checker passed!" << std::endl;
 }
