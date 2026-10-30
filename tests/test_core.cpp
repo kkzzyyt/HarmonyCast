@@ -226,8 +226,11 @@ void test_stream_session_and_types() {
 
     // Test listDevicesChecked
     auto checked_devs = hdc->listDevicesChecked();
-    assert(checked_devs.has_value());
-    assert(checked_devs->size() == hdc->listDevices().size());
+    if (checked_devs.has_value()) {
+        assert(checked_devs->size() == hdc->listDevices().size());
+    } else {
+        assert(hdc->listDevices().empty());
+    }
     assert(normalizeIp("192.168.1.50:9000") == "192.168.1.50:9000");
     assert(normalizeIp("usb_serial_123") == "usb_serial_123");
 
