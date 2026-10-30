@@ -222,8 +222,13 @@ jobs:
       - name: Run compatibility core, decoder and update tests
         shell: pwsh
         run: |
-          $env:QT_QPA_PLATFORM_PLUGIN_PATH = "$env:QT_ROOT_DIR\plugins"
-          ctest --test-dir build-server2012 -C Release --output-on-failure
+          $env:QT_QPA_PLATFORM_PLUGIN_PATH = "$env:QT_ROOT_DIR\plugins\platforms"
+          $env:QT_PLUGIN_PATH = "$env:QT_ROOT_DIR\plugins"
+          if (Test-Path "$env:QT_ROOT_DIR\plugins\platforms") {
+              New-Item -ItemType Directory -Force build-server2012\Release\platforms | Out-Null
+              Copy-Item "$env:QT_ROOT_DIR\plugins\platforms\*.dll" build-server2012\Release\platforms\ -Force
+          }
+          ctest --test-dir build-server2012 -C Release --output-on-failure --verbose
 
       - name: Stage compatibility app
         shell: pwsh

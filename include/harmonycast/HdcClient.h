@@ -44,6 +44,7 @@ public:
 
     std::vector<Device> listDevices() const;
     std::optional<std::vector<Device>> listDevicesChecked() const;
+    static std::vector<Device> parseDeviceList(const std::string& output);
 
     bool forwardPort(const std::string& serial, int local_port, int remote_port) const;
     bool removeForward(const std::string& serial, int local_port, int remote_port) const;

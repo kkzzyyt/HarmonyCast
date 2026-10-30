@@ -41,7 +41,8 @@ cmake --build build-server2012 --config Release
 & "$env:QT_ROOT_DIR\bin\windeployqt.exe" build-server2012\Release\HarmonyCast.exe --release --no-translations --no-compiler-runtime
 Copy-Item "$env:FFMPEG_DIR\bin\*.dll" build-server2012\Release\
 ./scripts/windows/deploy_server2012_runtime.ps1 -Destination build-server2012/Release
-$env:QT_QPA_PLATFORM_PLUGIN_PATH = "$env:QT_ROOT_DIR\plugins"
+$env:QT_QPA_PLATFORM_PLUGIN_PATH = "$env:QT_ROOT_DIR\plugins\platforms"
+$env:QT_PLUGIN_PATH = "$env:QT_ROOT_DIR\plugins"
 ctest --test-dir build-server2012 -C Release --output-on-failure
 python -m pip install -r scripts/windows/requirements-build.txt
 python -m unittest discover -s tests -p test_windows_runtime.py

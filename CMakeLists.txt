@@ -260,6 +260,8 @@ target_link_libraries(test_harmonycast_performance PRIVATE harmonycast_core)
 target_compile_definitions(test_harmonycast_performance PRIVATE HARMONYCAST_TEST_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
 add_test(NAME PerformanceRegressionTests COMMAND test_harmonycast_performance)
 
+set_tests_properties(CoreTests UpdateAssetTests PerformanceRegressionTests PROPERTIES TIMEOUT 60)
+
 add_executable(benchmark_harmonycast tests/benchmark_core.cpp)
 target_link_libraries(benchmark_harmonycast PRIVATE harmonycast_core)
 

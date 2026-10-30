@@ -129,7 +129,7 @@ CommandResult HdcClient::runProcess(const std::string& hdc_path,
 
     if (!process.waitForFinished(timeout_ms)) {
         process.kill();
-        process.waitForFinished(500);
+        process.close();
         return {-2, "", "HDC command timed out after " + std::to_string(timeout_ms) + " ms"};
     }
 
@@ -146,14 +146,9 @@ CommandResult HdcClient::run(const std::vector<std::string>& args,
     return runProcess(m_hdc_path, args, serial, timeout_ms);
 }
 
-std::optional<std::vector<Device>> HdcClient::listDevicesChecked() const {
-    auto res = run({"list", "targets"});
-    if (!res.success()) {
-        return std::nullopt;
-    }
-
+std::vector<Device> HdcClient::parseDeviceList(const std::string& output) {
     std::vector<Device> devices;
-    std::istringstream stream(res.out);
+    std::istringstream stream(output);
     std::string line;
     while (std::getline(stream, line)) {
         while (!line.empty() && (line.back() == '\r' || line.back() == ' ' || line.back() == '\t')) {
@@ -202,6 +197,14 @@ std::optional<std::vector<Device>> HdcClient::listDevicesChecked() const {
         devices.push_back(std::move(dev));
     }
     return devices;
+}
+
+std::optional<std::vector<Device>> HdcClient::listDevicesChecked() const {
+    auto res = run({"list", "targets"});
+    if (!res.success()) {
+        return std::nullopt;
+    }
+    return parseDeviceList(res.out);
 }
 
 std::vector<Device> HdcClient::listDevices() const {

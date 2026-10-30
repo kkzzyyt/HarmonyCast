@@ -3,6 +3,10 @@
 #include <vector>
 #include <string>
 #include <cstring>
+#ifdef _WIN32
+#include <crtdbg.h>
+#include <windows.h>
+#endif
 #include <QApplication>
 #include "harmonycast/Types.h"
 #include "harmonycast/PacketDemuxer.h"
@@ -224,13 +228,27 @@ void test_stream_session_and_types() {
     assert(normalizeIp("192.168.1.50") == "192.168.1.50:8710");
     assert(normalizeIp("192.168.1.50:8710") == "192.168.1.50:8710");
 
-    // Test listDevicesChecked
-    auto checked_devs = hdc->listDevicesChecked();
-    if (checked_devs.has_value()) {
-        assert(checked_devs->size() == hdc->listDevices().size());
-    } else {
-        assert(hdc->listDevices().empty());
-    }
+    // Test parseDeviceList parsing logic
+    std::string mock_hdc_out =
+        "192.168.1.100:8710\tConnected\n"
+        "usb_dev_123\tOffline\n"
+        "10.0.0.5:8710 Unauthorized\n"
+        "[Empty]\n";
+    auto parsed = HdcClient::parseDeviceList(mock_hdc_out);
+    assert(parsed.size() == 3);
+    assert(parsed[0].serial == "192.168.1.100:8710");
+    assert(parsed[0].state == DeviceState::Connected);
+    assert(parsed[0].is_network == true);
+    assert(parsed[0].ip == "192.168.1.100");
+    assert(parsed[0].port == 8710);
+    assert(parsed[1].serial == "usb_dev_123");
+    assert(parsed[1].state == DeviceState::Offline);
+    assert(parsed[1].is_network == false);
+    assert(parsed[2].serial == "10.0.0.5:8710");
+    assert(parsed[2].state == DeviceState::Unauthorized);
+
+    assert(HdcClient::parseDeviceList("[Empty]\n").empty());
+    assert(HdcClient::parseDeviceList("").empty());
     assert(normalizeIp("192.168.1.50:9000") == "192.168.1.50:9000");
     assert(normalizeIp("usb_serial_123") == "usb_serial_123");
 
@@ -569,6 +587,11 @@ void test_idle_timeout() {
 }
 
 int main(int argc, char* argv[]) {
+#ifdef _WIN32
+    _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
+    _set_error_mode(_OUT_TO_STDERR);
+    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+#endif
     qputenv("QT_QPA_PLATFORM", "offscreen");
     QApplication app(argc, argv);
     QStandardPaths::setTestModeEnabled(true);
