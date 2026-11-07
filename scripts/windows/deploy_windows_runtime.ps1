@@ -31,17 +31,15 @@ if ($env:VCINSTALLDIR -and (Test-Path (Join-Path $env:VCINSTALLDIR 'Redist\MSVC'
 
 $crtFound = $false
 if ($redistRoot) {
-    $runtime = Get-ChildItem $redistRoot -Directory |
-        Sort-Object { [version]($_.Name -replace '^([0-9\.]+).*','$1') } -Descending |
-        Select-Object -First 1
-    if ($runtime) {
-        $crtDirs = Get-ChildItem $runtime.FullName -Directory -Recurse |
-            Where-Object { $_.FullName -like "*x64*CRT*" }
-        foreach ($d in $crtDirs) {
-            Copy-Item "$($d.FullName)\*.dll" $Destination -Force
-            Write-Host "Deployed CRT DLLs from $($d.FullName)"
-            $crtFound = $true
-        }
+    # Recursively find x64 CRT directory under redist root regardless of subfolder naming scheme
+    $crtDirs = Get-ChildItem $redistRoot -Directory -Recurse |
+        Where-Object { $_.FullName -like "*x64*CRT*" } |
+        Sort-Object LastWriteTime -Descending
+    foreach ($d in $crtDirs) {
+        Copy-Item "$($d.FullName)\*.dll" $Destination -Force
+        Write-Host "Deployed CRT DLLs from $($d.FullName)"
+        $crtFound = $true
+        break
     }
 }
 
