@@ -44,6 +44,8 @@ public:
     bool start();
     void stop();
     [[nodiscard]] bool isRunning() const;
+    [[nodiscard]] bool isConnected() const { return isRunning(); }
+    [[nodiscard]] bool isActive() const { return m_running; }
 
     [[nodiscard]] const Device& device() const { return m_device; }
     [[nodiscard]] std::shared_ptr<ControlChannel> controlChannel() const { return m_control; }
@@ -84,6 +86,7 @@ private:
     uint64_t m_session_gen{0};
 
     QTcpSocket* m_socket{nullptr};
+    bool m_socket_connected{false};
     QTimer* m_heartbeat_timer{nullptr};
 
     QThread* m_decode_thread{nullptr};

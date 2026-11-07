@@ -21,6 +21,7 @@
 #include "harmonycast/UpdateChecker.h"
 #include "harmonycast/ScreenView.h"
 #include "harmonycast/MainWindow.h"
+#include "harmonycast/DeviceManager.h"
 #include <QMouseEvent>
 #include <QDir>
 #include <QFile>
@@ -267,6 +268,14 @@ void test_stream_session_and_types() {
     assert(!matchesDevice("192.168.1.51", "192.168.1.50:8710"));
     assert(!matchesDevice("usb_device_a", "usb_device_b"));
 
+    // Test isSameDevice helper
+    assert(isSameDevice("192.168.1.50", "192.168.1.50:8710"));
+    assert(isSameDevice("192.168.1.50:8710", "192.168.1.50"));
+    assert(isSameDevice("192.168.1.50:8710", "192.168.1.50:8710"));
+    assert(!isSameDevice("192.168.1.50:8710", "192.168.1.51:8710"));
+    assert(isSameDevice("usb_device_a", "usb_device_a"));
+    assert(!isSameDevice("usb_device_a", "usb_device_b"));
+
     // Test Quality index setting
     session.setQuality(0, 20000000);
     assert(session.qualityIndex() == 0);
@@ -288,6 +297,124 @@ void test_stream_session_and_types() {
         offline_alert_triggered = true;
     }
     assert(offline_alert_triggered);
+
+    // Test DeviceManager state transition event generation logic (Offline -> Connected MUST NOT trigger disconnect)
+    std::vector<Device> previous_list = { dev_offline };
+    Device dev_online;
+    dev_online.serial = "192.168.1.100:8710";
+    dev_online.state = DeviceState::Connected;
+    std::vector<Device> current_list = { dev_online };
+
+    std::vector<Device> test_connected;
+    std::vector<Device> test_disconnected;
+    for (const auto& cur : current_list) {
+        auto it = std::find_if(previous_list.begin(), previous_list.end(),
+                               [&cur](const Device& old) { return isSameDevice(old.serial, cur.serial); });
+        if (it == previous_list.end()) {
+            if (cur.state == DeviceState::Connected) test_connected.push_back(cur);
+        } else {
+            if (it->state != DeviceState::Connected && cur.state == DeviceState::Connected) {
+                test_connected.push_back(cur);
+            } else if (it->state == DeviceState::Connected && cur.state != DeviceState::Connected) {
+                test_disconnected.push_back(cur);
+            }
+        }
+    }
+    for (const auto& old : previous_list) {
+        auto it = std::find_if(current_list.begin(), current_list.end(),
+                               [&old](const Device& cur) { return isSameDevice(cur.serial, old.serial); });
+        if (it == current_list.end()) {
+            if (old.state == DeviceState::Connected) test_disconnected.push_back(old);
+        }
+    }
+    assert(test_connected.size() == 1);
+    assert(test_connected[0].serial == "192.168.1.100:8710");
+    assert(test_disconnected.empty()); // No false disconnect event!
+
+    // Test Network Device Debounce logic (transient 1-2 poll drops must not emit disconnect)
+    {
+        Device net_dev;
+        net_dev.serial = "10.10.204.234:8710";
+        net_dev.is_network = true;
+        net_dev.state = DeviceState::Connected;
+
+        std::unordered_map<std::string, int> miss_counts;
+        std::vector<Device> active_pool = { net_dev };
+
+        // Poll 1: Device drops due to Wi-Fi jitter (empty current list)
+        std::vector<Device> poll1_current = {};
+        std::vector<Device> poll1_preserved;
+        std::vector<Device> poll1_disconnected;
+        for (const auto& old_dev : active_pool) {
+            auto it = std::find_if(poll1_current.begin(), poll1_current.end(),
+                                   [&old_dev](const Device& dev) { return isSameDevice(dev.serial, old_dev.serial); });
+            if (it == poll1_current.end()) {
+                int& misses = miss_counts[old_dev.serial];
+                misses++;
+                int threshold = old_dev.is_network ? 3 : 2;
+                if (misses < threshold) {
+                    poll1_preserved.push_back(old_dev);
+                } else {
+                    poll1_disconnected.push_back(old_dev);
+                }
+            }
+        }
+        assert(poll1_preserved.size() == 1);
+        assert(poll1_disconnected.empty()); // Must NOT disconnect on cycle 1
+        assert(miss_counts[net_dev.serial] == 1);
+
+        // Poll 2: Device drops again (cycle 2)
+        std::vector<Device> poll2_current = {};
+        std::vector<Device> poll2_preserved;
+        std::vector<Device> poll2_disconnected;
+        for (const auto& old_dev : active_pool) {
+            auto it = std::find_if(poll2_current.begin(), poll2_current.end(),
+                                   [&old_dev](const Device& dev) { return isSameDevice(dev.serial, old_dev.serial); });
+            if (it == poll2_current.end()) {
+                int& misses = miss_counts[old_dev.serial];
+                misses++;
+                int threshold = old_dev.is_network ? 3 : 2;
+                if (misses < threshold) {
+                    poll2_preserved.push_back(old_dev);
+                } else {
+                    poll2_disconnected.push_back(old_dev);
+                }
+            }
+        }
+        assert(poll2_preserved.size() == 1);
+        assert(poll2_disconnected.empty()); // Must NOT disconnect on cycle 2
+        assert(miss_counts[net_dev.serial] == 2);
+
+        // Poll 3: Device drops for 3rd consecutive cycle -> declared disconnected
+        std::vector<Device> poll3_current = {};
+        std::vector<Device> poll3_preserved;
+        std::vector<Device> poll3_disconnected;
+        for (const auto& old_dev : active_pool) {
+            auto it = std::find_if(poll3_current.begin(), poll3_current.end(),
+                                   [&old_dev](const Device& dev) { return isSameDevice(dev.serial, old_dev.serial); });
+            if (it == poll3_current.end()) {
+                int& misses = miss_counts[old_dev.serial];
+                misses++;
+                int threshold = old_dev.is_network ? 3 : 2;
+                if (misses < threshold) {
+                    poll3_preserved.push_back(old_dev);
+                } else {
+                    poll3_disconnected.push_back(old_dev);
+                }
+            }
+        }
+        assert(poll3_preserved.empty());
+        assert(poll3_disconnected.size() == 1);
+        assert(poll3_disconnected[0].serial == "10.10.204.234:8710");
+
+        // Recovery test: if device reappears before threshold, miss_count resets to 0
+        miss_counts[net_dev.serial] = 2; // Was missing for 2 cycles
+        std::vector<Device> poll_rec_current = { net_dev };
+        for (const auto& dev : poll_rec_current) {
+            miss_counts[dev.serial] = 0;
+        }
+        assert(miss_counts[net_dev.serial] == 0);
+    }
 
     // 3. ScreenView High-DPI and image rotation test
     ScreenView screen;
@@ -459,6 +586,84 @@ void test_device_info_parsing() {
     assert(chip == "rk3566");
     assert(brand == "Yarward");
 
+    // Verify bm dump JSON parsing for app versions
+    std::string mock_bm_json =
+        "{\n"
+        "    \"name\": \"com.yarward.bedside\",\n"
+        "    \"versionCode\": 20401,\n"
+        "    \"versionName\": \"2.4.1\",\n"
+        "    \"targetVersion\": 11,\n"
+        "    \"hapModuleInfos\": [\n"
+        "        {\n"
+        "            \"name\": \"entry\",\n"
+        "            \"mainAbility\": \"CustomBedsideAbility\"\n"
+        "        }\n"
+        "    ],\n"
+        "    \"userInfo\": [\n"
+        "        {\n"
+        "            \"userId\": 100,\n"
+        "            \"installTime\": 1709210000000,\n"
+        "            \"updateTime\": 1718000000000\n"
+        "        }\n"
+        "    ]\n"
+        "}\n";
+
+    auto parsed_app = DeviceManager::parseBundleDetail("com.yarward.bedside", mock_bm_json);
+    assert(parsed_app.bundle == "com.yarward.bedside");
+    assert(parsed_app.version_name == "2.4.1");
+    assert(parsed_app.version_code == 20401);
+    assert(parsed_app.target_api == 11);
+    assert(parsed_app.main_ability == "CustomBedsideAbility");
+    assert(!parsed_app.install_time.empty() && parsed_app.install_time != "未知");
+    assert(!parsed_app.update_time.empty() && parsed_app.update_time != "未知");
+
+    // Verify bm dump text fallback parsing
+    std::string mock_bm_text =
+        "bundleName: com.yarward.call\n"
+        "versionName: 3.0.0-rc1\n"
+        "versionCode: 30005\n"
+        "targetVersion: 10\n"
+        "mainAbility: CallEntryAbility\n";
+    auto parsed_text_app = DeviceManager::parseBundleDetail("com.yarward.call", mock_bm_text);
+    assert(parsed_text_app.bundle == "com.yarward.call");
+    assert(parsed_text_app.version_name == "3.0.0-rc1");
+    assert(parsed_text_app.version_code == 30005);
+    assert(parsed_text_app.target_api == 10);
+    assert(parsed_text_app.main_ability == "CallEntryAbility");
+
+    // Verify ICU / MCU firmware version parsing
+    DeviceInfo icu_info1;
+    std::string mock_icu_raw1 =
+        "model: H36M\n"
+        "Version: v1.9\n"
+        "HardwareVersion: v1.0\n"
+        "StopWatchDog: 1\n"
+        "StopDelay: 0\n";
+    DeviceManager::parseIcuInfo(icu_info1, mock_icu_raw1);
+    assert(icu_info1.icu_available == true);
+    assert(icu_info1.icu_model == "H36M");
+    assert(icu_info1.icu_version == "v1.9");
+    assert(icu_info1.hardware_version == "v1.0");
+    assert(icu_info1.watchdog_stopped == true);
+    assert(icu_info1.watchdog_desc == "已暂停 (调试防复位)");
+    assert(icu_info1.power_delay == "0");
+
+    DeviceInfo icu_info2;
+    std::string mock_icu_raw2 =
+        "model: YH-H35M\n"
+        "mcu_version: 2.1.0\n"
+        "hardware_version: 1.2\n"
+        "stop_watchdog: 0\n"
+        "power_delay: 5\n";
+    DeviceManager::parseIcuInfo(icu_info2, mock_icu_raw2);
+    assert(icu_info2.icu_available == true);
+    assert(icu_info2.icu_model == "YH-H35M");
+    assert(icu_info2.icu_version == "2.1.0");
+    assert(icu_info2.hardware_version == "1.2");
+    assert(icu_info2.watchdog_stopped == false);
+    assert(icu_info2.watchdog_desc == "运行中 (超时复位)");
+    assert(icu_info2.power_delay == "5");
+
     std::cout << "[PASS] test_device_info_parsing passed!" << std::endl;
 }
 
@@ -540,14 +745,14 @@ void test_update_checker() {
 
     // 2. Ignore version logic
     UpdateChecker checker;
-    assert(checker.currentVersion() == "2.2.4");
+    assert(checker.currentVersion() == "2.2.5");
 
     checker.ignoreVersion("2.3.0");
     assert(checker.isVersionIgnored("2.3.0"));
     assert(!checker.isVersionIgnored("2.4.0"));
 
     checker.clearIgnoredVersion();
-    assert(!checker.isVersionIgnored("2.2.4"));
+    assert(!checker.isVersionIgnored("2.2.5"));
 
     std::cout << "[PASS] test_update_checker passed!" << std::endl;
 }

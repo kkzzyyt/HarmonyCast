@@ -5,6 +5,7 @@
 #include <QObject>
 #include <QTimer>
 #include <vector>
+#include <unordered_map>
 #include <mutex>
 #include <memory>
 #include <atomic>
@@ -23,6 +24,8 @@ public:
     [[nodiscard]] std::vector<Device> devices() const;
     [[nodiscard]] std::optional<Device> findDevice(const std::string& serial) const;
     void queryDeviceInfoAsync(const std::string& serial, std::function<void(DeviceInfo)> callback);
+    static YarwardAppInfo parseBundleDetail(const std::string& bundle, const std::string& raw_dump);
+    static void parseIcuInfo(DeviceInfo& info, const std::string& raw_icu);
 
 public slots:
     void refresh(bool forceEmit = false);
@@ -37,6 +40,7 @@ private:
     QTimer* m_timer{nullptr};
     mutable std::mutex m_mutex;
     std::vector<Device> m_devices;
+    std::unordered_map<std::string, int> m_miss_counts;
     std::atomic<bool> m_is_refreshing{false};
     std::atomic<bool> m_needs_refresh{false};
     std::atomic<bool> m_needs_force_emit{false};

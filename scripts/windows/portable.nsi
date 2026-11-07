@@ -11,6 +11,8 @@ SilentInstall silent
 AutoCloseWindow true
 ShowInstDetails nevershow
 
+!include "FileFunc.nsh"
+
 Name "HarmonyCast"
 Caption "HarmonyCast"
 Icon "${ICON_PATH}"
@@ -31,8 +33,11 @@ Section
   System::Call 'Kernel32::SetEnvironmentVariable(t "QT_QUICK_BACKEND", t "software")'
 !endif
 
+  ; Forward all command-line arguments (such as --software-rendering)
+  ${GetParameters} $R0
+
   ; Launch the application and wait until user exits
-  ExecWait '"$PLUGINSDIR\app\HarmonyCast.exe"'
+  ExecWait '"$PLUGINSDIR\app\HarmonyCast.exe" $R0'
   
   ; When ExecWait finishes, NSIS automatically purges $PLUGINSDIR
 SectionEnd

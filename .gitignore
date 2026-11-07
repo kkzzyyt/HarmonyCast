@@ -21,4 +21,5 @@ coverage.xml
 package_output/
 *.dmg
 .astro/
+Testing/
 

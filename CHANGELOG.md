@@ -8,6 +8,32 @@ Format adheres to [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and 
 
 ---
 
+## [2.2.5] - 2026-11-07
+
+### Highlights / 核心亮点
+- **Hermetic Windows Runtime**: Bundled full Microsoft Visual C++ CRT (`msvcp140.dll`, `vcruntime140.dll`, `vcruntime140_1.dll`) and UCRT dependencies directly into Windows Release packages, completely eliminating startup failures on clean Windows machines.
+- **Windows 全环境零依赖加固**：通用 Windows 发行包全面内嵌 MSVC 核心运行时与 UCRT 基础库，彻底终结纯净 Windows 系统因缺少 VC 运行库导致的直接闪退与打不开问题。
+- **Zero-Black-Screen Auto-Recovery**: Automatically detect Remote Desktop (RDP) sessions, previous crash states, or GPU D3D11/12 initialization failures, seamlessly falling back to safe software rasterization.
+- **黑屏自愈与安全渲染**：自动检测远程桌面（RDP）、异常崩溃历史与 GPU 交换链状态，自适应回退至软件光栅化，杜绝窗口全黑。
+- **Wi-Fi Multi-Device Anti-Flapping**: Implemented a 3-cycle debounce mechanism for network devices and decoupled streaming session lifetime from polling results, eliminating false disconnections in complex hospital Wi-Fi subnets.
+- **无线多设备防抖抗抖动**：引入 3 周期丢帧防抖算法，并将底层视频流长连接与后台轮询彻底解耦，彻底解决局域网多设备并发下的偶发误断连与视频流强杀问题。
+- **CI Runtime Verification Gate**: Integrated automated PE binary inspection (`check_windows_runtime.py`) into GitHub Actions CI pipeline, strictly blocking any build artifact with missing runtime libraries.
+- **CI 运行时自动化守门人**：引入二进制依赖自动化校验门禁，若打包缺失任何关键 DLL 直接阻断发布。
+- **NSIS Argument Forwarding**: Portable single-file executable now forwards all command-line arguments (such as `--software-rendering`) to `HarmonyCast.exe`.
+- **单文件参数透传**：便携单文件 EXE 现已完整透传所有启动参数，支持直接附加 `--software-rendering` 安全模式运行。
+
+### Fixed / 修复
+- [Network] Prevented `MainWindow::onDeviceDisconnected` from prematurely terminating active `StreamSession` instances when TCP video connection is healthy.
+- [网络] 修复后台目标扫描短暂漏查导致活跃投屏被意外强制终止的问题。
+- [Stream] Improved capture server handshake retry logic with 24-attempt backoff window, preventing spurious fallback to slow snapshot mode.
+- [推流] 增加采屏服务端启动阶段平滑重试窗口（24次约7.2秒），防止首次握手瞬间误降级为慢速快照流。
+- [CI] Added `ilammy/msvc-dev-cmd@v1` and `deploy_windows_runtime.ps1` to standard Windows build job, ensuring `windeployqt` and deployment scripts find MSVC toolsets.
+- [CI] 修复 Windows 构建流水线缺失 MSVC 编译环境变量的问题，确保 `windeployqt` 正确识别工具链并完整打包运行时。
+- [Device] Enhanced ICU / MCU firmware information extraction across diverse sysfs naming conventions (`Version`, `HardwareVersion`, `StopDelay`).
+- [设备] 优化 ICU/MCU 固件节点解析，自适应匹配大小写与驼峰命名，提升病房终端硬件版本识别准确率。
+
+---
+
 ## [2.2.4] - 2026-10-29
 
 ### Highlights / 核心亮点

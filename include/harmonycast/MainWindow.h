@@ -341,6 +341,7 @@ private:
     QTimer* m_keep_awake_timer{nullptr};
     std::string m_pending_auto_start_serial;
     std::string m_active_device_serial;
+    bool m_updating_device_combo{false};
     std::unordered_map<std::string, DeviceState> m_previous_device_states;
     uint64_t m_switch_generation{0};
     int m_wv_console_count{0};

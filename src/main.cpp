@@ -52,6 +52,18 @@ int main(int argc, char* argv[]) {
         use_software_rendering = true;
     }
 
+    // Remote Desktop (RDP) sessions: hardware Direct3D 11/12 swapchains frequently fail
+    // or produce blank/black frames across remote connections. Automatically use software rendering.
+    if (GetSystemMetrics(SM_REMOTESESSION) != 0) {
+        use_software_rendering = true;
+    }
+
+    // Auto-recovery after crash: if the previous execution terminated abnormally (e.g. GPU crash),
+    // automatically fall back to safe software rasterization to protect application startup.
+    if (harmonycast::CrashHandler::hasCrashFromPreviousRun()) {
+        use_software_rendering = true;
+    }
+
     if (use_software_rendering) {
         qputenv("QT_OPENGL", "software");
         qputenv("QSG_RHI_BACKEND", "software");

@@ -222,7 +222,7 @@ void MainWindow::setupUi() {
     bottom_box->setContentsMargins(0, 0, 0, 0);
     bottom_box->setSpacing(6);
 
-    auto* version_label = IconManager::label("HarmonyCast\nv2.2.4", "Muted");
+    auto* version_label = IconManager::label("HarmonyCast\nv2.2.5", "Muted");
     bottom_box->addWidget(version_label, 1);
 
     m_settings_btn = IconManager::iconButton("settings", "系统设置", "IconBtnSettings", 30, 30);
@@ -1265,7 +1265,12 @@ void MainWindow::fetchAppLogsAction(const QString& bundle) {
 void MainWindow::setWatchdogStatusAction(bool stop) {
     std::string s = currentSerial();
     if (s.empty()) return;
-    QString cmd = stop ? "echo -n 1 > /sys/class/ICU/version/StopWatchDog" : "echo -n 0 > /sys/class/ICU/version/StopWatchDog";
+    QString cmd = QString(
+        "if [ -e /sys/class/ICU/version/StopWatchDog ]; then echo -n %1 > /sys/class/ICU/version/StopWatchDog; "
+        "elif [ -e /sys/class/icu/version/StopWatchDog ]; then echo -n %1 > /sys/class/icu/version/StopWatchDog; "
+        "elif [ -e /sys/class/ICU/version/stopwatchdog ]; then echo -n %1 > /sys/class/ICU/version/stopwatchdog; "
+        "else echo -n %1 > /sys/class/ICU/version/StopWatchDog; fi"
+    ).arg(stop ? "1" : "0");
     m_hdc->executeAsync({"shell", cmd.toStdString()}, s, [this, stop](const CommandResult& r){
         if (r.success()) {
             showToast(stop ? "已暂停看门狗 (调试防复位)" : "已恢复看门狗监控");
@@ -1279,7 +1284,12 @@ void MainWindow::setWatchdogStatusAction(bool stop) {
 void MainWindow::feedWatchdogAction() {
     std::string s = currentSerial();
     if (s.empty()) return;
-    m_hdc->executeAsync({"shell", "echo -n 1 > /sys/class/ICU/version/FeedWatchdog"}, s, [this](const CommandResult& r){
+    std::string cmd =
+        "if [ -e /sys/class/ICU/version/FeedWatchdog ]; then echo -n 1 > /sys/class/ICU/version/FeedWatchdog; "
+        "elif [ -e /sys/class/icu/version/FeedWatchdog ]; then echo -n 1 > /sys/class/icu/version/FeedWatchdog; "
+        "elif [ -e /sys/class/ICU/version/feedwatchdog ]; then echo -n 1 > /sys/class/ICU/version/feedwatchdog; "
+        "else echo -n 1 > /sys/class/ICU/version/FeedWatchdog; fi";
+    m_hdc->executeAsync({"shell", cmd}, s, [this](const CommandResult& r){
         if (r.success()) {
             showToast("看门狗手动喂狗成功 (FeedWatchdog=1)");
         } else {
@@ -2380,15 +2390,14 @@ void MainWindow::onDeviceDisconnected(const Device& device) {
     std::string s = device.serial;
     HC_LOG_WARN(QString("Device disconnected event: %1").arg(QString::fromStdString(s)));
 
-    bool is_current = (!m_active_device_serial.empty() && s == m_active_device_serial) || s == currentSerial();
-    if (!is_current && s.find(':') != std::string::npos && !m_active_device_serial.empty()) {
-        std::string prefix = s.substr(0, s.find(':'));
-        if (m_active_device_serial.rfind(prefix, 0) == 0) {
-            is_current = true;
-        }
-    }
+    bool is_current = isSameDevice(s, m_active_device_serial) || isSameDevice(s, currentSerial());
 
     if (is_current) {
+        if (m_projecting && m_stream && m_stream->isActive()) {
+            HC_LOG_WARN(QString("Device %1 reported disconnected by polling, but StreamSession is active. Preserving stream.").arg(QString::fromStdString(s)));
+            return;
+        }
+
         showToast(QString("⚠️ 设备连接已异常中断: %1").arg(QString::fromStdString(s)));
         statusBar()->showMessage(QString("设备 %1 异常断开，请检查 USB 或网络连接").arg(QString::fromStdString(s)), 8000);
 
@@ -2412,6 +2421,7 @@ void MainWindow::onDevicesUpdated(const std::vector<Device>& devices) {
     bool had_devices = !m_cached_devices.empty() || !m_active_device_serial.empty();
     m_cached_devices = devices;
     QString currentSel = m_device_combo->currentData().toString();
+    m_updating_device_combo = true;
     m_device_combo->blockSignals(true);
     m_device_combo->clear();
 
@@ -2452,9 +2462,11 @@ void MainWindow::onDevicesUpdated(const std::vector<Device>& devices) {
                 stateDesc
             ), Qt::ToolTipRole);
 
-        if (!m_pending_auto_start_serial.empty() && s == m_pending_auto_start_serial) {
+        if (!m_pending_auto_start_serial.empty() && isSameDevice(s, m_pending_auto_start_serial)) {
             foundIdx = static_cast<int>(i);
-        } else if (foundIdx < 0 && QString::fromStdString(s) == currentSel) {
+        } else if (foundIdx < 0 && !currentSel.isEmpty() && isSameDevice(s, currentSel.toStdString())) {
+            foundIdx = static_cast<int>(i);
+        } else if (foundIdx < 0 && !m_active_device_serial.empty() && isSameDevice(s, m_active_device_serial)) {
             foundIdx = static_cast<int>(i);
         }
     }
@@ -2463,7 +2475,7 @@ void MainWindow::onDevicesUpdated(const std::vector<Device>& devices) {
     for (const auto& dev : devices) {
         auto it = m_previous_device_states.find(dev.serial);
         if (it != m_previous_device_states.end() && it->second == DeviceState::Connected && dev.state == DeviceState::Offline) {
-            bool is_curr = (dev.serial == m_active_device_serial || dev.serial == currentSel.toStdString());
+            bool is_curr = isSameDevice(dev.serial, m_active_device_serial) || isSameDevice(dev.serial, currentSel.toStdString());
             if (is_curr) {
                 showToast(QString("⚠️ 设备 [%1] 状态异常：已离线").arg(QString::fromStdString(dev.serial)));
                 statusBar()->showMessage(QString("当前设备 %1 进入离线状态，长连接已中断").arg(QString::fromStdString(dev.serial)), 8000);
@@ -2490,9 +2502,11 @@ void MainWindow::onDevicesUpdated(const std::vector<Device>& devices) {
             m_device_combo->setItemData(idx,
                 QString("%1\n选择此项将切换至 %1 (自动断开其他设备)").arg(QString::fromStdString(ep)),
                 Qt::ToolTipRole);
-            if (!m_pending_auto_start_serial.empty() && ep == m_pending_auto_start_serial) {
+            if (!m_pending_auto_start_serial.empty() && isSameDevice(ep, m_pending_auto_start_serial)) {
                 foundIdx = idx;
-            } else if (foundIdx < 0 && QString::fromStdString(ep) == currentSel) {
+            } else if (foundIdx < 0 && !currentSel.isEmpty() && isSameDevice(ep, currentSel.toStdString())) {
+                foundIdx = idx;
+            } else if (foundIdx < 0 && !m_active_device_serial.empty() && isSameDevice(ep, m_active_device_serial)) {
                 foundIdx = idx;
             }
         }
@@ -2504,6 +2518,7 @@ void MainWindow::onDevicesUpdated(const std::vector<Device>& devices) {
         m_device_combo->setCurrentIndex(0);
     }
     m_device_combo->blockSignals(false);
+    m_updating_device_combo = false;
 
     if (devices.empty()) {
         m_cached_devices.clear();
@@ -2525,8 +2540,23 @@ void MainWindow::onDevicesUpdated(const std::vector<Device>& devices) {
         return;
     }
 
+    // Refresh display info for currently selected device
     if (m_device_combo->count() > 0) {
-        onDeviceSelected(m_device_combo->currentIndex());
+        std::string s = currentSerial();
+        if (!s.empty()) {
+            m_hdc_target_badge->setText(QString("目标: %1").arg(QString::fromStdString(s)));
+            m_hdc_target_prefix->setText(QString("-t %1").arg(QString::fromStdString(s)));
+            const Device* matched = findMatchingDevice(m_cached_devices, s);
+            bool is_conn = (matched && matched->state == DeviceState::Connected);
+            m_device_combo->setToolTip(
+                QString("当前设备: %1%2")
+                    .arg(QString::fromStdString(s))
+                    .arg(is_conn ? " (已连接)" : " (离线目标，选择将自动连接)")
+            );
+            if (is_conn && m_active_device_serial.empty()) {
+                m_active_device_serial = s;
+            }
+        }
     }
 
     if (m_pages->currentIndex() == 0 && !m_info_loading) {
@@ -2559,24 +2589,14 @@ void MainWindow::onDeviceSelected(int index) {
         return;
     }
 
+    if (m_updating_device_combo) return;
+
     m_hdc_target_badge->setText(QString("目标: %1").arg(QString::fromStdString(s)));
     m_hdc_target_prefix->setText(QString("-t %1").arg(QString::fromStdString(s)));
 
     bool is_net = (s.find(':') != std::string::npos || s.find('.') != std::string::npos);
-    bool is_connected = false;
-    for (const auto& d : m_cached_devices) {
-        bool match = (d.serial == s);
-        if (!match && is_net) {
-            std::string prefix = (s.find(':') != std::string::npos) ? s.substr(0, s.find(':')) : s;
-            match = (d.serial.rfind(prefix, 0) == 0);
-        }
-        if (match) {
-            if (d.state == DeviceState::Connected) {
-                is_connected = true;
-            }
-            break;
-        }
-    }
+    const Device* matched = findMatchingDevice(m_cached_devices, s);
+    bool is_connected = (matched && matched->state == DeviceState::Connected);
 
     m_device_combo->setToolTip(
         QString("当前设备: %1%2")
@@ -2584,8 +2604,14 @@ void MainWindow::onDeviceSelected(int index) {
             .arg(is_connected ? " (已连接)" : " (离线目标，选择将自动连接)")
     );
 
+    // If offline network device was selected, automatically connect to it
+    if (!is_connected && is_net) {
+        switchToSingleDevice(s);
+        return;
+    }
+
     if (is_connected) {
-        bool device_changed = (m_active_device_serial != s);
+        bool device_changed = !isSameDevice(m_active_device_serial, s);
         m_active_device_serial = s;
 
         if (device_changed) {
@@ -2602,7 +2628,7 @@ void MainWindow::onDeviceSelected(int index) {
 
             if (m_projecting) {
                 stopMirror(false);
-                QTimer::singleShot(100, this, [this]() {
+                QTimer::singleShot(150, this, [this]() {
                     startMirror();
                 });
             }
@@ -2615,59 +2641,13 @@ void MainWindow::onDeviceSelected(int index) {
 }
 
 void MainWindow::onDeviceComboActivated(int index) {
-    if (index < 0) return;
-    std::string s = currentSerial();
-    if (s.empty()) return;
-
-    bool is_net = (s.find(':') != std::string::npos || s.find('.') != std::string::npos);
-    bool is_connected = false;
-    for (const auto& d : m_cached_devices) {
-        bool match = (d.serial == s);
-        if (!match && is_net) {
-            std::string prefix = (s.find(':') != std::string::npos) ? s.substr(0, s.find(':')) : s;
-            match = (d.serial.rfind(prefix, 0) == 0);
-        }
-        if (match) {
-            if (d.state == DeviceState::Connected) {
-                is_connected = true;
-            }
-            break;
-        }
-    }
-
-    m_device_combo->setToolTip(
-        QString("当前设备: %1%2")
-            .arg(QString::fromStdString(s))
-            .arg(is_connected ? " (已连接)" : " (离线目标，选择将自动连接)")
-    );
-
-    if (!is_connected && is_net) {
-        m_active_device_serial = s;
-        switchToSingleDevice(s);
-        return;
-    }
-
-    if (!m_active_device_serial.empty() && m_active_device_serial != s &&
-        (is_net || m_active_device_serial.find(':') != std::string::npos || m_active_device_serial.find('.') != std::string::npos)) {
-        m_active_device_serial = s;
-        switchToSingleDevice(s);
-        return;
-    }
-
     onDeviceSelected(index);
 }
 
 void MainWindow::switchToSingleDevice(const std::string& endpoint) {
     if (!m_hdc) return;
-    std::string target = endpoint;
-    while (!target.empty() && (target.front() == ' ' || target.front() == '\t')) target.erase(0, 1);
-    while (!target.empty() && (target.back() == ' ' || target.back() == '\t')) target.pop_back();
+    std::string target = normalizeEndpoint(endpoint);
     if (target.empty()) return;
-
-    // If target is an IP address without port, automatically append default port 8710
-    if (target.find(':') == std::string::npos && target.find('.') != std::string::npos) {
-        target += ":8710";
-    }
 
     std::string clean_target = target;
     if (size_t col = target.find(':'); col != std::string::npos) {
@@ -2712,48 +2692,41 @@ void MainWindow::switchToSingleDevice(const std::string& endpoint) {
         auto current_devs = m_hdc->listDevices();
         for (const auto& d : current_devs) {
             if (d.serial.find(':') != std::string::npos) {
-                std::string clean_d = d.serial.substr(0, d.serial.find(':'));
-                if (clean_d != clean_target && d.serial != target) {
-                    m_hdc->run({"tconn", d.serial, "-remove"});
+                if (!isSameDevice(d.serial, target)) {
+                    m_hdc->run({"tconn", d.serial, "-remove"}, "", 2000);
                 }
             }
         }
 
         if (gen != m_switch_generation) return;
 
-        // Connect to target
-        if (target.find(':') != std::string::npos) {
+        // Connect to target if network device
+        if (target.find(':') != std::string::npos || target.find('.') != std::string::npos) {
             // If target was already offline or stuck in HDC, remove first to reset socket state
             for (const auto& d : current_devs) {
-                if ((d.serial == target || d.serial == clean_target) && d.state == DeviceState::Offline) {
-                    m_hdc->run({"tconn", target, "-remove"});
+                if (isSameDevice(d.serial, target) && d.state == DeviceState::Offline) {
+                    m_hdc->run({"tconn", target, "-remove"}, "", 2000);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(200));
                     break;
                 }
             }
-            m_hdc->run({"tconn", target});
+            m_hdc->run({"tconn", target}, "", 5000);
             NetworkDeviceDialog::saveDevice(clean_target, "", 8710);
         }
 
         if (gen != m_switch_generation) return;
 
-        // Poll device list until target connects or unauthorized/offline is confirmed (up to 3.5s)
+        // Poll device list until target connects or unauthorized/offline is confirmed (up to 4s)
         std::vector<Device> fresh_devs;
         bool is_online = false;
         DeviceState dev_state = DeviceState::Disconnected;
-        int max_attempts = (target.find(':') != std::string::npos) ? 8 : 2;
+        int max_attempts = (target.find(':') != std::string::npos || target.find('.') != std::string::npos) ? 16 : 4;
 
         for (int attempt = 0; attempt < max_attempts; ++attempt) {
             if (gen != m_switch_generation) return;
             fresh_devs = m_hdc->listDevices();
             for (const auto& d : fresh_devs) {
-                bool match = (d.serial == target);
-                if (!match && target.find(':') != std::string::npos) {
-                    std::string clean = target.substr(0, target.find(':'));
-                    if (d.serial.rfind(clean, 0) == 0) {
-                        match = true;
-                    }
-                }
-                if (match) {
+                if (isSameDevice(d.serial, target)) {
                     dev_state = d.state;
                     if (d.state == DeviceState::Connected) {
                         is_online = true;
@@ -2764,6 +2737,10 @@ void MainWindow::switchToSingleDevice(const std::string& endpoint) {
             if (is_online || dev_state == DeviceState::Unauthorized) {
                 break;
             }
+            // Retry tconn once after ~1.5s if not yet seen in HDC target list
+            if (attempt == 6 && !is_online && (target.find(':') != std::string::npos || target.find('.') != std::string::npos)) {
+                m_hdc->run({"tconn", target}, "", 3000);
+            }
             std::this_thread::sleep_for(std::chrono::milliseconds(250));
         }
 
@@ -2772,7 +2749,6 @@ void MainWindow::switchToSingleDevice(const std::string& endpoint) {
 
             m_device_combo->setEnabled(true);
             m_state_badge->setStyleSheet("");
-            m_pending_auto_start_serial = target;
             m_user_stopped_mirror = false;
 
             if (dev_state == DeviceState::Unauthorized) {
@@ -2786,6 +2762,7 @@ void MainWindow::switchToSingleDevice(const std::string& endpoint) {
                 showToast(QString("连接失败: 无法连接至 %1").arg(QString::fromStdString(target)));
                 m_pending_auto_start_serial.clear();
             } else {
+                m_pending_auto_start_serial = target;
                 m_screen->setStatusMessage(QString("已连接 %1，正在同步画面…").arg(QString::fromStdString(target)));
                 statusBar()->showMessage(QString("已稳定连接设备 %1，正在投屏…").arg(QString::fromStdString(target)), 3500);
             }
@@ -2855,22 +2832,10 @@ void MainWindow::startMirror() {
     }
 
     bool is_net = (s.find(':') != std::string::npos || s.find('.') != std::string::npos);
-    bool is_connected = false;
-    DeviceState cur_state = DeviceState::Disconnected;
-    for (const auto& d : m_cached_devices) {
-        bool match = (d.serial == s);
-        if (!match && is_net) {
-            std::string prefix = (s.find(':') != std::string::npos) ? s.substr(0, s.find(':')) : s;
-            match = (d.serial.rfind(prefix, 0) == 0);
-        }
-        if (match) {
-            cur_state = d.state;
-            if (d.state == DeviceState::Connected) {
-                is_connected = true;
-            }
-            break;
-        }
-    }
+    const Device* matched = findMatchingDevice(m_cached_devices, s);
+    bool is_connected = (matched && matched->state == DeviceState::Connected);
+    DeviceState cur_state = matched ? matched->state : DeviceState::Disconnected;
+
     if (!is_connected) {
         if (cur_state == DeviceState::Unauthorized) {
             showToast("所选设备未授权，请在设备屏幕上点击【允许USB调试】");
@@ -2903,17 +2868,11 @@ void MainWindow::startMirror() {
     int br = bitrates[std::clamp(m_bitrate_idx, 0, 3)];
 
     Device dev;
-    dev.serial = s;
-    for (const auto& d : m_cached_devices) {
-        bool match = (d.serial == s);
-        if (!match && is_net) {
-            std::string prefix = (s.find(':') != std::string::npos) ? s.substr(0, s.find(':')) : s;
-            match = (d.serial.rfind(prefix, 0) == 0);
-        }
-        if (match) {
-            dev = d;
-            break;
-        }
+    if (matched) {
+        dev = *matched;
+    } else {
+        dev.serial = s;
+        dev.is_network = is_net;
     }
 
     m_stream = std::make_unique<StreamSession>(m_hdc, dev, 60, br, 0, this);
@@ -4711,7 +4670,7 @@ void MainWindow::openSettingsDialog() {
     uLayout->setSpacing(8);
 
     auto* verRow = new QHBoxLayout();
-    QString curVer = m_updater ? m_updater->currentVersion() : "2.2.4";
+    QString curVer = m_updater ? m_updater->currentVersion() : "2.2.5";
     auto* lblCurVer = new QLabel(QString("当前版本: v%1 (正式版)").arg(curVer));
     lblCurVer->setStyleSheet("color: #dbe5ee; font-size: 12px; font-weight: 500;");
     verRow->addWidget(lblCurVer, 1);
@@ -4809,7 +4768,7 @@ void MainWindow::onUpdateAvailable(const UpdateInfo& info, bool silent) {
 
 void MainWindow::onNoUpdateAvailable(bool silent) {
     if (!silent) {
-        QString curVer = m_updater ? m_updater->currentVersion() : "2.2.4";
+        QString curVer = m_updater ? m_updater->currentVersion() : "2.2.5";
         showToast(QString("当前已是最新版本 (v%1)").arg(curVer));
         statusBar()->showMessage(QString("当前已是最新版本 (v%1)").arg(curVer), 4000);
         QWidget* parentDlg = QApplication::activeModalWidget() ? QApplication::activeModalWidget() : this;

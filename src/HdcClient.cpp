@@ -222,7 +222,10 @@ bool HdcClient::forwardPort(const std::string& serial, int local_port, int remot
 }
 
 bool HdcClient::removeForward(const std::string& serial, int local_port, int remote_port) const {
-    auto res = run({"fport", "rm", "tcp:" + std::to_string(local_port), "tcp:" + std::to_string(remote_port)}, serial);
+    auto res = run({"fport", "rm", "tcp:" + std::to_string(local_port) + " tcp:" + std::to_string(remote_port)}, serial, 1500);
+    if (!res.success()) {
+        res = run({"fport", "rm", "tcp:" + std::to_string(local_port), "tcp:" + std::to_string(remote_port)}, serial, 1500);
+    }
     return res.success();
 }
 

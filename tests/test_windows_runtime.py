@@ -15,6 +15,11 @@ spec = importlib.util.spec_from_file_location("check_server2012_runtime", SCRIPT
 runtime = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runtime)
 
+GENERIC_SCRIPT = Path(__file__).resolve().parents[1] / "scripts/windows/check_windows_runtime.py"
+generic_spec = importlib.util.spec_from_file_location("check_windows_runtime", GENERIC_SCRIPT)
+generic_runtime = importlib.util.module_from_spec(generic_spec)
+generic_spec.loader.exec_module(generic_runtime)
+
 
 def pe_image(imports=(), exports=(), subsystem=(6, 2)):
     """Build a PE32+ image with optional import and export tables."""
@@ -157,6 +162,52 @@ class Server2012RuntimeTests(unittest.TestCase):
         with patch("sys.argv", [str(SCRIPT), str(self.root / "absent")]), redirect_stderr(output):
             self.assertEqual(runtime.main(), 1)
         self.assertIn("Missing runtime file", output.getvalue())
+
+
+class TestWindowsGenericRuntimeGate(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp_dir.name)
+        (self.root / "platforms").mkdir(parents=True)
+        (self.root / "resources/hdc").mkdir(parents=True)
+
+        for name in (
+            "HarmonyCast.exe", "platforms/qwindows.dll",
+            "Qt6Core.dll", "Qt6Gui.dll", "Qt6Widgets.dll", "Qt6Network.dll",
+            "avcodec-60.dll", "avutil-58.dll", "swscale-7.dll",
+            "msvcp140.dll", "vcruntime140.dll",
+            "opengl32sw.dll", "D3Dcompiler_47.dll",
+            "resources/hdc/hdc.exe"
+        ):
+            target = self.root / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(pe_image())
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_accepts_complete_generic_package(self):
+        self.assertEqual(generic_runtime.check_directory(self.root), [])
+
+    def test_rejects_missing_vcruntime(self):
+        (self.root / "vcruntime140.dll").unlink()
+        errors = generic_runtime.check_directory(self.root)
+        self.assertTrue(any("vcruntime140.dll" in e for e in errors))
+
+    def test_rejects_missing_msvcp(self):
+        (self.root / "msvcp140.dll").unlink()
+        errors = generic_runtime.check_directory(self.root)
+        self.assertTrue(any("msvcp140.dll" in e for e in errors))
+
+    def test_rejects_missing_ffmpeg(self):
+        (self.root / "avcodec-60.dll").unlink()
+        errors = generic_runtime.check_directory(self.root)
+        self.assertTrue(any("avcodec" in e for e in errors))
+
+    def test_rejects_missing_rasterizer(self):
+        (self.root / "opengl32sw.dll").unlink()
+        errors = generic_runtime.check_directory(self.root)
+        self.assertTrue(any("opengl32sw.dll" in e for e in errors))
 
 
 if __name__ == "__main__":

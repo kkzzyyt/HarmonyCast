@@ -106,7 +106,7 @@ bool StreamSession::launchServerAsync(const std::shared_ptr<HdcClient>& hdc,
     }
 
     // Kill any previous capture instances
-    hdc->run({"shell", "killall", "-9", "harmonycast_capture", "harmonycast_capture_arm64", "2>/dev/null"}, serial, 1000);
+    hdc->run({"shell", "pkill -9 harmonycast_capture 2>/dev/null; killall -9 harmonycast_capture 2>/dev/null; pkill -9 harmonycast_capture_arm64 2>/dev/null; killall -9 harmonycast_capture_arm64 2>/dev/null"}, serial, 1500);
 
     // Launch remote capture server in background with output redirected to avoid blocking hdc shell
     std::string cmd = QString("nohup %1 -p %2 -f %3 -b %4%5 >/dev/null 2>&1 &")
@@ -123,6 +123,7 @@ bool StreamSession::launchServerAsync(const std::shared_ptr<HdcClient>& hdc,
 bool StreamSession::start() {
     stop();
     m_running = true;
+    m_socket_connected = false;
     uint64_t current_gen = ++m_session_gen;
     HC_LOG_INFO(QString("StreamSession starting for device %1 (fps=%2, bitrate=%3)").arg(QString::fromStdString(m_device.serial)).arg(m_fps).arg(m_bitrate));
     emit statusChanged("正在准备投屏服务…");
@@ -158,9 +159,19 @@ bool StreamSession::start() {
             return;
         }
 
+        // If cancelled after forwardPort, remove forward task immediately
+        if (cancelled->load()) {
+            if (local_port > 0) hdc->removeForward(serial, local_port, remote_port);
+            return;
+        }
+
         // 2. Launch capture server on device in worker thread
-        if (cancelled->load()) return;
         launchServerAsync(hdc, serial, remote_port, fps, bitrate, max_size);
+
+        if (cancelled->load()) {
+            if (local_port > 0) hdc->removeForward(serial, local_port, remote_port);
+            return;
+        }
 
         // 3. Inform main thread to begin non-blocking socket connection attempts
         auto* session = weak_this.data();
@@ -181,10 +192,11 @@ void StreamSession::tryConnectSocket(int attempt, uint64_t gen) {
     if (!m_running || m_session_gen != gen) return;
 
     if (m_socket->state() == QAbstractSocket::ConnectedState) {
+        m_socket_connected = true;
         return;
     }
 
-    if (attempt >= 16) {
+    if (attempt >= 24) {
         emit statusChanged("硬件采屏未响应，自动切换为兼容快照流 (snapshot_display)…");
         startSnapshotFallback();
         return;
@@ -198,7 +210,7 @@ void StreamSession::tryConnectSocket(int attempt, uint64_t gen) {
         m_socket->connectToHost(QHostAddress(QStringLiteral("127.0.0.1")), m_local_port);
     }
 
-    QTimer::singleShot(250, this, [this, attempt, gen]() {
+    QTimer::singleShot(300, this, [this, attempt, gen]() {
         if (!m_running || m_session_gen != gen) return;
         if (m_socket->state() != QAbstractSocket::ConnectedState) {
             tryConnectSocket(attempt + 1, gen);
@@ -212,6 +224,7 @@ void StreamSession::stop() {
         HC_LOG_INFO(QString("StreamSession stopped for %1").arg(QString::fromStdString(m_device.serial)));
     }
     m_running = false;
+    m_socket_connected = false;
     if (m_start_cancel) m_start_cancel->store(true);
     m_fallback_snapshot = false;
     m_session_gen++;
@@ -255,6 +268,7 @@ void StreamSession::cleanup() {
 }
 
 void StreamSession::onSocketConnected() {
+    m_socket_connected = true;
     m_socket->setSocketOption(QAbstractSocket::LowDelayOption, 1);
     m_socket->setSocketOption(QAbstractSocket::ReceiveBufferSizeSocketOption, 2 * 1024 * 1024);
     m_heartbeat_timer->start(2000);
@@ -337,7 +351,7 @@ void StreamSession::deliverLatestFrame(const std::shared_ptr<FrameMailbox>& mail
 }
 
 void StreamSession::onSocketDisconnected() {
-    if (m_running && !m_fallback_snapshot) {
+    if (m_running && !m_fallback_snapshot && m_socket_connected) {
         HC_LOG_WARN("StreamSession TCP socket disconnected, attempting snapshot fallback");
         emit statusChanged("设备端硬件投屏长连接中断，自动切换为兼容快照流…");
         startSnapshotFallback();
@@ -346,6 +360,16 @@ void StreamSession::onSocketDisconnected() {
 
 void StreamSession::onSocketError(QAbstractSocket::SocketError socketError) {
     if (!m_running || m_fallback_snapshot) return;
+
+    // During initial connection attempts before socket is connected, ConnectionRefused
+    // and host errors are expected while remote harmonycast_capture server initializes.
+    // tryConnectSocket will retry until connection succeeds or max attempts (16) is reached.
+    if (!m_socket_connected && (socketError == QAbstractSocket::ConnectionRefusedError ||
+                               socketError == QAbstractSocket::HostNotFoundError ||
+                               socketError == QAbstractSocket::RemoteHostClosedError)) {
+        return;
+    }
+
     QString errStr = m_socket ? m_socket->errorString() : "未知网络套接字错误";
     HC_LOG_WARN(QString("StreamSession socket error (%1): %2").arg(socketError).arg(errStr));
     emit statusChanged(QString("视频流连接异常 (%1)，尝试降级至兼容快照流…").arg(errStr));

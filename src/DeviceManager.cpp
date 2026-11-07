@@ -4,6 +4,10 @@
 #include <regex>
 #include <thread>
 #include <QPointer>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonArray>
+#include <QDateTime>
 
 namespace harmonycast {
 
@@ -62,41 +66,73 @@ void DeviceManager::refresh(bool forceEmit) {
 
                 auto current = currentOpt.value_or(std::vector<Device>{});
 
-                std::vector<Device> added;
-                std::vector<Device> removed;
+                std::vector<Device> connected_events;
+                std::vector<Device> disconnected_events;
 
                 {
                     std::lock_guard<std::mutex> lock(weak_this->m_mutex);
 
-                    // Find newly added devices
+                    // Check current devices against previous devices
                     for (const auto& dev : current) {
-                        auto it = std::find(weak_this->m_devices.begin(), weak_this->m_devices.end(), dev);
+                        weak_this->m_miss_counts[dev.serial] = 0;
+
+                        auto it = std::find_if(weak_this->m_devices.begin(), weak_this->m_devices.end(),
+                                               [&dev](const Device& old) { return isSameDevice(old.serial, dev.serial); });
                         if (it == weak_this->m_devices.end()) {
-                            added.push_back(dev);
+                            // Brand new device
+                            if (dev.state == DeviceState::Connected) {
+                                connected_events.push_back(dev);
+                            }
+                        } else {
+                            // Existing device whose state transitioned to Connected
+                            if (it->state != DeviceState::Connected && dev.state == DeviceState::Connected) {
+                                connected_events.push_back(dev);
+                            } else if (it->state == DeviceState::Connected && dev.state != DeviceState::Connected) {
+                                // Transitioned from Connected to Offline / Unauthorized
+                                disconnected_events.push_back(dev);
+                            }
                         }
                     }
 
-                    // Find removed devices
+                    // Check for devices missing from current target list with debounce
+                    std::vector<Device> preserved_missing;
                     for (const auto& old_dev : weak_this->m_devices) {
-                        auto it = std::find(current.begin(), current.end(), old_dev);
+                        auto it = std::find_if(current.begin(), current.end(),
+                                               [&old_dev](const Device& dev) { return isSameDevice(dev.serial, old_dev.serial); });
                         if (it == current.end()) {
-                            removed.push_back(old_dev);
+                            int& misses = weak_this->m_miss_counts[old_dev.serial];
+                            misses++;
+                            // Network devices tolerate up to 3 missed poll cycles (~7.5s) to survive Wi-Fi jitter; USB devices tolerate 2 (~5s)
+                            int threshold = old_dev.is_network ? 3 : 2;
+                            if (misses < threshold) {
+                                preserved_missing.push_back(old_dev);
+                            } else {
+                                if (old_dev.state == DeviceState::Connected) {
+                                    disconnected_events.push_back(old_dev);
+                                }
+                                weak_this->m_miss_counts.erase(old_dev.serial);
+                            }
                         }
                     }
 
+                    for (const auto& preserved : preserved_missing) {
+                        current.push_back(preserved);
+                    }
+
+                    bool has_changes = (weak_this->m_devices != current);
                     weak_this->m_devices = current;
-                }
 
-                for (const auto& d : added) {
-                    emit weak_this->deviceConnected(d);
-                }
-                for (const auto& d : removed) {
-                    emit weak_this->deviceDisconnected(d);
-                }
+                    for (const auto& d : connected_events) {
+                        emit weak_this->deviceConnected(d);
+                    }
+                    for (const auto& d : disconnected_events) {
+                        emit weak_this->deviceDisconnected(d);
+                    }
 
-                bool force = weak_this->m_needs_force_emit.exchange(false);
-                if (force || !added.empty() || !removed.empty()) {
-                    emit weak_this->devicesUpdated(current);
+                    bool force = weak_this->m_needs_force_emit.exchange(false);
+                    if (force || has_changes) {
+                        emit weak_this->devicesUpdated(current);
+                    }
                 }
 
                 weak_this->m_is_refreshing = false;
@@ -135,9 +171,19 @@ void DeviceManager::queryDeviceInfoAsync(const std::string& serial, std::functio
         "echo \"<<<IFACES>>>\"; for i in /sys/class/net/*; do [ -e \"$i\" ] && echo \"$(basename \"$i\"): $(cat \"$i/address\" 2>/dev/null)\"; done; "
         "echo \"<<<UNAME>>>\"; uname -a 2>/dev/null; "
         "echo \"<<<DISP>>>\"; hidumper -s DisplayManagerService -a \"-d -a\" 2>/dev/null; cat /sys/class/graphics/fb0/virtual_size 2>/dev/null; "
-        "echo \"<<<ICU>>>\"; for f in model mcu_version hardware_version power_delay StopWatchDog FeedWatchdog; do [ -f /sys/class/ICU/version/$f ] && echo \"$f: $(cat /sys/class/ICU/version/$f 2>/dev/null)\"; done; "
+        "echo \"<<<ICU>>>\"; "
+        "for dir in /sys/class/ICU/version /sys/class/icu/version /sys/class/ICU /sys/class/icu; do "
+        "  if [ -e \"$dir\" ]; then "
+        "    for f in \"$dir\"/*; do [ -f \"$f\" ] && echo \"$(basename \"$f\"): $(cat \"$f\" 2>/dev/null)\"; done; "
+        "    break; "
+        "  fi; "
+        "done; "
+        "for f in model Model Version version mcu_version MCU_Version HardwareVersion hardware_version StopWatchDog stopwatchdog StopDelay stopdelay power_delay FeedWatchdog feedwatchdog; do "
+        "  [ -f /sys/class/ICU/version/$f ] && echo \"$f: $(cat /sys/class/ICU/version/$f 2>/dev/null)\"; "
+        "done; "
         "echo \"<<<PKGS>>>\"; bm dump -a 2>/dev/null; "
-        "echo \"<<<PS>>>\"; ps -A -o PID,NAME 2>/dev/null || ps 2>/dev/null";
+        "echo \"<<<PS>>>\"; ps -A -o PID,NAME 2>/dev/null || ps 2>/dev/null; "
+        "echo \"<<<BM_DETAILS>>>\"; for p in $(bm dump -a 2>/dev/null | grep -i yarward); do echo \"===BUNDLE:$p===\"; bm dump -n \"$p\" 2>/dev/null; done";
 
     m_hdc->executeAsync({"shell", script}, serial, [callback, serial](const CommandResult& r) {
         DeviceInfo info;
@@ -220,6 +266,15 @@ void DeviceManager::queryDeviceInfoAsync(const std::string& serial, std::functio
                     if (info.udid.empty()) info.udid = v;
                 } else if (k == "ohos.boot.sn" || k == "const.product.sn" || k == "const.product.serial") {
                     if (info.sn.empty()) info.sn = v;
+                } else {
+                    std::string k_lower = k;
+                    std::transform(k_lower.begin(), k_lower.end(), k_lower.begin(), ::tolower);
+                    if (k_lower.find("mcu") != std::string::npos && (k_lower.find("version") != std::string::npos || k_lower.find("ver") != std::string::npos)) {
+                        if (info.icu_version.empty()) {
+                            info.icu_version = v;
+                            info.icu_available = true;
+                        }
+                    }
                 }
             }
         }
@@ -363,15 +418,50 @@ void DeviceManager::queryDeviceInfoAsync(const std::string& serial, std::functio
             }
         }
 
+        // Parse BM_DETAILS section: map bundle name -> raw dump output
+        std::map<std::string, std::string> bundle_dumps;
+        if (sections.count("BM_DETAILS")) {
+            std::istringstream bd_stream(sections["BM_DETAILS"]);
+            std::string bd_line;
+            std::string current_bundle;
+            std::string current_dump;
+            while (std::getline(bd_stream, bd_line)) {
+                if (!bd_line.empty() && bd_line.back() == '\r') {
+                    bd_line.pop_back();
+                }
+                if (bd_line.rfind("===BUNDLE:", 0) == 0 && bd_line.size() > 13 && bd_line.substr(bd_line.size() - 3) == "===") {
+                    if (!current_bundle.empty()) {
+                        bundle_dumps[current_bundle] = std::move(current_dump);
+                        current_dump.clear();
+                    }
+                    current_bundle = bd_line.substr(10, bd_line.size() - 13);
+                } else {
+                    current_dump += bd_line + "\n";
+                }
+            }
+            if (!current_bundle.empty()) {
+                bundle_dumps[current_bundle] = std::move(current_dump);
+            }
+        }
+
         // Yarward apps resolution
         for (const auto& pkg : info.all_packages) {
-            if (pkg.find("yarward") != std::string::npos) {
-                YarwardAppInfo app;
-                app.bundle = pkg;
-                app.version_name = "已安装";
-                app.version_code = 10000;
-                app.target_api = 10;
-                app.main_ability = "EntryAbility";
+            std::string pkg_lower = pkg;
+            for (auto& c : pkg_lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            if (pkg_lower.find("yarward") != std::string::npos) {
+                std::string raw_dump;
+                if (bundle_dumps.count(pkg)) {
+                    raw_dump = bundle_dumps[pkg];
+                } else {
+                    for (const auto& [b_name, b_dump] : bundle_dumps) {
+                        if (isSameDevice(b_name, pkg) || b_name == pkg || b_name.find(pkg) != std::string::npos || pkg.find(b_name) != std::string::npos) {
+                            raw_dump = b_dump;
+                            break;
+                        }
+                    }
+                }
+
+                YarwardAppInfo app = parseBundleDetail(pkg, raw_dump);
                 if (running_process_pids.count(pkg)) {
                     app.running = true;
                     app.pids = running_process_pids[pkg];
@@ -421,36 +511,16 @@ void DeviceManager::queryDeviceInfoAsync(const std::string& serial, std::functio
         }
 
         // ICU info
-        std::istringstream icustream(sections["ICU"]);
-        while (std::getline(icustream, line)) {
-            auto colon = line.find(':');
-            if (colon != std::string::npos) {
-                std::string k = line.substr(0, colon);
-                std::string v = line.substr(colon + 1);
-                k.erase(0, k.find_first_not_of(" \t\r\n"));
-                k.erase(k.find_last_not_of(" \t\r\n") + 1);
-                v.erase(0, v.find_first_not_of(" \t\r\n"));
-                v.erase(v.find_last_not_of(" \t\r\n") + 1);
-
-                if (k == "model") {
-                    info.icu_available = true;
-                    info.icu_model = v;
-                } else if (k == "mcu_version") {
-                    info.icu_version = v;
-                } else if (k == "power_delay") {
-                    info.power_delay = v;
-                } else if (k == "StopWatchDog") {
-                    info.watchdog_stopped = (v == "1");
-                    info.watchdog_desc = info.watchdog_stopped ? "已暂停 (调试防复位)" : "运行中 (超时复位)";
-                }
-            }
-        }
+        parseIcuInfo(info, sections["ICU"]);
 
         if (info.display.empty()) {
             info.display = "1280 × 800 (60 Hz)";
         }
         if (info.kernel.empty()) {
             info.kernel = "Linux 5.10 (OpenHarmony)";
+        }
+        if (!info.icu_model.empty() && (info.model.empty() || info.model == "OpenHarmony 智能终端")) {
+            info.model = (info.icu_model.rfind("YH-", 0) == 0) ? info.icu_model : ("YH-" + info.icu_model);
         }
         if (info.model.empty()) {
             info.model = "OpenHarmony 智能终端";
@@ -463,6 +533,175 @@ void DeviceManager::queryDeviceInfoAsync(const std::string& serial, std::functio
 
         callback(info);
     });
+}
+
+YarwardAppInfo DeviceManager::parseBundleDetail(const std::string& bundle, const std::string& raw_dump) {
+    YarwardAppInfo app;
+    app.bundle = bundle;
+    app.version_name = "未知";
+    app.version_code = 0;
+    app.target_api = 0;
+    app.main_ability = "EntryAbility";
+    app.install_time = "未知";
+    app.update_time = "未知";
+
+    if (raw_dump.empty()) return app;
+
+    size_t json_start = raw_dump.find('{');
+    size_t json_end = raw_dump.rfind('}');
+    if (json_start != std::string::npos && json_end != std::string::npos && json_end > json_start) {
+        std::string json_str = raw_dump.substr(json_start, json_end - json_start + 1);
+        QJsonParseError err;
+        QJsonDocument doc = QJsonDocument::fromJson(QByteArray::fromRawData(json_str.data(), static_cast<int>(json_str.size())), &err);
+        if (err.error == QJsonParseError::NoError && doc.isObject()) {
+            QJsonObject obj = doc.object();
+            QJsonObject appObj = obj.contains("appInfo") && obj["appInfo"].isObject() ? obj["appInfo"].toObject() : obj;
+
+            // 1. Version Name
+            QString vName;
+            if (obj.contains("versionName")) vName = obj["versionName"].toString();
+            else if (appObj.contains("versionName")) vName = appObj["versionName"].toString();
+            else if (obj.contains("version_name")) vName = obj["version_name"].toString();
+
+            if (!vName.isEmpty()) {
+                app.version_name = vName.trimmed().toStdString();
+            }
+
+            // 2. Version Code
+            int vCode = 0;
+            auto parseCode = [](const QJsonValue& val) -> int {
+                if (val.isDouble()) return val.toInt();
+                if (val.isString()) return val.toString().toInt();
+                return 0;
+            };
+            if (obj.contains("versionCode")) vCode = parseCode(obj["versionCode"]);
+            else if (appObj.contains("versionCode")) vCode = parseCode(appObj["versionCode"]);
+            else if (obj.contains("version_code")) vCode = parseCode(obj["version_code"]);
+            app.version_code = vCode;
+
+            // 3. Target API / Version
+            int targetApi = 0;
+            if (obj.contains("targetVersion")) targetApi = parseCode(obj["targetVersion"]);
+            else if (appObj.contains("targetVersion")) targetApi = parseCode(appObj["targetVersion"]);
+            else if (obj.contains("targetApi")) targetApi = parseCode(obj["targetApi"]);
+            else if (obj.contains("compatibleVersion")) targetApi = parseCode(obj["compatibleVersion"]);
+            app.target_api = targetApi;
+
+            // 4. Main Ability
+            std::string mainAbility;
+            if (obj.contains("hapModuleInfos") && obj["hapModuleInfos"].isArray()) {
+                for (const auto& item : obj["hapModuleInfos"].toArray()) {
+                    if (item.isObject()) {
+                        QJsonObject mObj = item.toObject();
+                        if (mObj.contains("mainAbility") && !mObj["mainAbility"].toString().isEmpty()) {
+                            mainAbility = mObj["mainAbility"].toString().toStdString();
+                            break;
+                        } else if (mObj.contains("mainElement") && !mObj["mainElement"].toString().isEmpty()) {
+                            mainAbility = mObj["mainElement"].toString().toStdString();
+                            break;
+                        }
+                    }
+                }
+            }
+            if (mainAbility.empty() && obj.contains("mainAbility") && !obj["mainAbility"].toString().isEmpty()) {
+                mainAbility = obj["mainAbility"].toString().toStdString();
+            }
+            if (!mainAbility.empty()) {
+                app.main_ability = mainAbility;
+            }
+
+            // 5. Install & Update Time (millisecond timestamp)
+            int64_t installMs = 0;
+            int64_t updateMs = 0;
+            if (obj.contains("userInfo") && obj["userInfo"].isArray()) {
+                auto uArr = obj["userInfo"].toArray();
+                if (!uArr.isEmpty() && uArr[0].isObject()) {
+                    auto uObj = uArr[0].toObject();
+                    installMs = uObj.value("installTime").toVariant().toLongLong();
+                    updateMs = uObj.value("updateTime").toVariant().toLongLong();
+                }
+            }
+            if (installMs == 0 && obj.contains("installTime")) {
+                installMs = obj.value("installTime").toVariant().toLongLong();
+            }
+            if (updateMs == 0 && obj.contains("updateTime")) {
+                updateMs = obj.value("updateTime").toVariant().toLongLong();
+            }
+
+            if (installMs > 0) {
+                app.install_time = QDateTime::fromMSecsSinceEpoch(installMs).toString("yyyy-MM-dd HH:mm:ss").toStdString();
+            }
+            if (updateMs > 0) {
+                app.update_time = QDateTime::fromMSecsSinceEpoch(updateMs).toString("yyyy-MM-dd HH:mm:ss").toStdString();
+            }
+        }
+    }
+
+    // Fallback: regex for text-based dump output or missed fields
+    std::smatch m;
+    if (app.version_name == "未知" && std::regex_search(raw_dump, m, std::regex(R"((?:versionName|version_name)["']?\s*[:=]\s*["']?([^"',\s\r\n}]+))", std::regex_constants::icase))) {
+        app.version_name = m[1].str();
+    }
+    if (app.version_code == 0 && std::regex_search(raw_dump, m, std::regex(R"((?:versionCode|version_code)["']?\s*[:=]\s*["']?(\d+))", std::regex_constants::icase))) {
+        try { app.version_code = std::stoi(m[1].str()); } catch (...) {}
+    }
+    if (app.target_api == 0 && std::regex_search(raw_dump, m, std::regex(R"((?:targetVersion|targetApi|compatibleVersion)["']?\s*[:=]\s*["']?(\d+))", std::regex_constants::icase))) {
+        try { app.target_api = std::stoi(m[1].str()); } catch (...) {}
+    }
+    if (app.main_ability == "EntryAbility" && std::regex_search(raw_dump, m, std::regex(R"((?:mainAbility|mainElement)["']?\s*[:=]\s*["']?([^"',\s\r\n}]+))", std::regex_constants::icase))) {
+        app.main_ability = m[1].str();
+    }
+
+    return app;
+}
+
+void DeviceManager::parseIcuInfo(DeviceInfo& info, const std::string& raw_icu) {
+    if (raw_icu.empty()) return;
+    std::istringstream icustream(raw_icu);
+    std::string line;
+    while (std::getline(icustream, line)) {
+        auto colon = line.find(':');
+        if (colon != std::string::npos) {
+            std::string k = line.substr(0, colon);
+            std::string v = line.substr(colon + 1);
+            k.erase(0, k.find_first_not_of(" \t\r\n"));
+            k.erase(k.find_last_not_of(" \t\r\n") + 1);
+            v.erase(0, v.find_first_not_of(" \t\r\n"));
+            v.erase(v.find_last_not_of(" \t\r\n") + 1);
+
+            if (v.empty() || v == "fail" || v == "not found") continue;
+            if (v.size() >= 2 && ((v.front() == '"' && v.back() == '"') || (v.front() == '\'' && v.back() == '\''))) {
+                v = v.substr(1, v.size() - 2);
+                v.erase(0, v.find_first_not_of(" \t\r\n"));
+                v.erase(v.find_last_not_of(" \t\r\n") + 1);
+            }
+
+            std::string k_lower = k;
+            std::transform(k_lower.begin(), k_lower.end(), k_lower.begin(), ::tolower);
+
+            if (k_lower == "model") {
+                info.icu_available = true;
+                info.icu_model = v;
+            } else if (k_lower == "version" || k_lower == "mcu_version" || k_lower == "mcuversion" || k_lower == "mcu" || k_lower == "icu_version") {
+                info.icu_available = true;
+                info.icu_version = v;
+            } else if (k_lower == "hardwareversion" || k_lower == "hardware_version" || k_lower == "hw_version") {
+                if (info.hardware_version.empty() || info.hardware_version == "未知") {
+                    info.hardware_version = v;
+                }
+            } else if (k_lower == "stopdelay" || k_lower == "power_delay" || k_lower == "stop_delay" || k_lower == "powerdelay") {
+                info.power_delay = v;
+            } else if (k_lower == "stopwatchdog" || k_lower == "stop_watchdog") {
+                info.icu_available = true;
+                info.watchdog_stopped = (v == "1");
+                info.watchdog_desc = info.watchdog_stopped ? "已暂停 (调试防复位)" : "运行中 (超时复位)";
+            }
+        }
+    }
+
+    if (!info.icu_model.empty() || !info.icu_version.empty() || !info.power_delay.empty() || info.watchdog_stopped) {
+        info.icu_available = true;
+    }
 }
 
 } // namespace harmonycast
