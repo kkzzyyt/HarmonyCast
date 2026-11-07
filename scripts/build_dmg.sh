@@ -30,7 +30,6 @@ if [ -x "$MACDEPLOYQT_BIN" ]; then
     "$MACDEPLOYQT_BIN" "$APP_IN_STAGING" \
         -always-overwrite \
         -verbose=1 \
-        -libpath=/opt/homebrew/lib \
         -libpath=/opt/homebrew/opt/ffmpeg/lib
 else
     echo "ERROR: macdeployqt not found!"

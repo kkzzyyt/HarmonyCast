@@ -56,6 +56,8 @@ def check_directory(root: Path) -> list:
         for binary in sorted(root.rglob("*")):
             if not binary.is_file() or binary.suffix.lower() not in {".dll", ".exe"}:
                 continue
+            if binary.name.lower().startswith("vc_redist"):
+                continue  # Microsoft VC redistributable installer is a 32-bit bootstrapper wrapper
             label = str(binary.relative_to(root))
             try:
                 with pefile.PE(str(binary), fast_load=True) as image:
