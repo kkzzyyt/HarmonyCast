@@ -36,15 +36,19 @@
 namespace harmonycast {
 
 static const char* DEFAULT_PACKAGE_FILTER = "com.yarward.*";
+static const QString DEBUG_AUTHORIZATION_MESSAGE = QStringLiteral(
+    "设备未授权：请在设备屏幕上允许调试，选择“信任”或“始终信任”\n"
+    "未出现弹窗时，请重新开启设备的 USB / 无线调试开关后重试");
 
-MainWindow::MainWindow(QWidget* parent, bool startBackgroundServices)
+MainWindow::MainWindow(QWidget* parent, bool startBackgroundServices, std::string hdcPath)
     : QMainWindow(parent),
-      m_hdc(std::make_shared<HdcClient>(std::string{}, this)),
+      m_hdc(std::make_shared<HdcClient>(std::move(hdcPath), this)),
       m_dev_mgr(std::make_shared<DeviceManager>(m_hdc, this)),
       m_webview(std::make_unique<WebViewDebugger>(m_hdc, this)),
       m_updater(std::make_unique<UpdateChecker>(this)),
       m_settings(std::make_unique<QSettings>("HarmonyCast", "HarmonyCast")) {
 
+    m_background_services_enabled = startBackgroundServices;
     m_auto_start_mirror = m_settings->value("auto_start_mirror", true).toBool();
     m_idle_timeout_secs = m_settings->value("idle_timeout_seconds", 0).toInt();
     m_last_user_activity = QDateTime::currentMSecsSinceEpoch();
@@ -148,6 +152,7 @@ MainWindow::MainWindow(QWidget* parent, bool startBackgroundServices)
 }
 
 MainWindow::~MainWindow() {
+    if (m_connection_cancel) m_connection_cancel->store(true);
     if (qApp) {
         qApp->removeEventFilter(this);
     }
@@ -198,7 +203,8 @@ void MainWindow::setupUi() {
     side->addLayout(brand_box);
     side->addSpacing(16);
 
-    // Nav Items: 3 primary modules
+    side->addWidget(IconManager::label("设备调试", "Section"));
+    // Debugging tools retain their existing page indices.
     m_info_nav = IconManager::button("设备信息", "Navigation", "device");
     m_mirror_nav = IconManager::button("投屏工作台", "Navigation", "mirror");
     m_hdc_nav = IconManager::button("常用命令", "Navigation", "command");
@@ -206,7 +212,7 @@ void MainWindow::setupUi() {
     for (auto* item : {m_info_nav, m_mirror_nav, m_hdc_nav}) {
         item->setCheckable(true);
         item->setAutoExclusive(true);
-        item->setFixedHeight(38);
+        item->setFixedHeight(36);
         item->setIconSize(QSize(16, 16));
         side->addWidget(item);
     }
@@ -215,6 +221,19 @@ void MainWindow::setupUi() {
     connect(m_mirror_nav, &QPushButton::toggled, this, [this](bool sel){ if (sel) switchModule(1); });
     connect(m_hdc_nav, &QPushButton::toggled, this, [this](bool sel){ if (sel) switchModule(2); });
 
+    side->addSpacing(16);
+    side->addWidget(IconManager::label("批量巡检", "Section"));
+    m_inspection_nav = IconManager::button("设备巡检", "Navigation");
+    m_inspection_nav->setIcon(IconManager::makeSvgIcon(
+        "<rect x=\"5\" y=\"4\" width=\"14\" height=\"18\" rx=\"2\"/><rect x=\"9\" y=\"2\" width=\"6\" height=\"4\" rx=\"1\"/><path d=\"m9 13 2 2 4-4\"/>",
+        "#8295a9", "none", 2, 16));
+    m_inspection_nav->setCheckable(true);
+    m_inspection_nav->setAutoExclusive(true);
+    m_inspection_nav->setFixedHeight(36);
+    m_inspection_nav->setIconSize(QSize(16, 16));
+    side->addWidget(m_inspection_nav);
+    connect(m_inspection_nav, &QPushButton::toggled, this, [this](bool selected) { if (selected) switchModule(3); });
+
     side->addStretch();
 
     // Sidebar Bottom
@@ -222,7 +241,7 @@ void MainWindow::setupUi() {
     bottom_box->setContentsMargins(0, 0, 0, 0);
     bottom_box->setSpacing(6);
 
-    auto* version_label = IconManager::label("HarmonyCast\nv2.2.5", "Muted");
+    auto* version_label = IconManager::label("HarmonyCast\nv2.3.0", "Muted");
     bottom_box->addWidget(version_label, 1);
 
     m_settings_btn = IconManager::iconButton("settings", "系统设置", "IconBtnSettings", 30, 30);
@@ -349,6 +368,25 @@ void MainWindow::setupUi() {
     m_pages->addWidget(buildInfoPanel());      // 0: 设备信息
     m_pages->addWidget(buildWorkspacePage());  // 1: 投屏工作台
     m_pages->addWidget(buildHdcPanel());        // 2: 常用命令
+    m_inspection_page = new InspectionPage(m_hdc);
+    m_pages->addWidget(m_inspection_page);      // 3: 独立批量巡检
+    connect(m_inspection_page, &InspectionPage::runningChanged, this, [this](bool running) {
+        for (auto* navigation : {m_info_nav, m_mirror_nav, m_hdc_nav}) navigation->setEnabled(!running);
+        if (running) {
+            // Inspection owns its temporary connections; discovery must not
+            // auto-select them, save them as debug targets, or start mirroring.
+            m_dev_mgr->stopPolling();
+            if (m_connection_cancel) m_connection_cancel->store(true);
+            m_device_combo->setEnabled(true);
+            m_pending_auto_start_serial.clear();
+            m_user_stopped_mirror = true;
+            stopMirror(false);
+            if (m_hilog) m_hilog->stop();
+            m_webview->disconnectPage();
+        } else if (m_background_services_enabled) {
+            m_dev_mgr->startPolling(2500);
+        }
+    });
     content->addWidget(m_pages, 1);
 
     horizontal->addWidget(main_area, 1);
@@ -393,6 +431,9 @@ void MainWindow::setupShortcuts() {
 void MainWindow::switchModule(int index) {
     if (!m_pages) return;
     m_pages->setCurrentIndex(index);
+    for (auto* control : std::initializer_list<QWidget*>{m_device_combo, m_refresh_btn, m_disconnect_btn, m_device_hub_btn}) {
+        control->setVisible(index != 3);
+    }
     if (index == 0) {
         if (m_page_title) m_page_title->setText("设备信息");
         if (m_layout_switcher) m_layout_switcher->hide();
@@ -421,6 +462,14 @@ void MainWindow::switchModule(int index) {
         std::string s = currentSerial();
         if (m_hdc_target_badge) m_hdc_target_badge->setText(s.empty() ? "目标: 未选择设备" : QString("目标: %1").arg(QString::fromStdString(s)));
         if (m_hdc_target_prefix) m_hdc_target_prefix->setText(s.empty() ? "-t <未选>" : QString("-t %1").arg(QString::fromStdString(s)));
+    } else if (index == 3) {
+        m_page_title->setText("设备巡检");
+        m_layout_switcher->hide();
+        statusBar()->showMessage("导入 IP TXT，逐台巡检后导出表格");
+        if (!m_inspection_nav->isChecked()) {
+            QSignalBlocker blocker(m_inspection_nav);
+            m_inspection_nav->setChecked(true);
+        }
     }
 }
 
@@ -712,6 +761,7 @@ void MainWindow::renderEmptyInfo(const QString& hint) {
 }
 
 void MainWindow::refreshDeviceInfo() {
+    if (m_inspection_page && m_inspection_page->isRunning()) return;
     std::string serial = currentSerial();
     if (serial.empty()) {
         renderEmptyInfo();
@@ -2418,6 +2468,7 @@ void MainWindow::onDeviceDisconnected(const Device& device) {
 }
 
 void MainWindow::onDevicesUpdated(const std::vector<Device>& devices) {
+    if (m_inspection_page && m_inspection_page->isRunning()) return;
     bool had_devices = !m_cached_devices.empty() || !m_active_device_serial.empty();
     m_cached_devices = devices;
     QString currentSel = m_device_combo->currentData().toString();
@@ -2427,6 +2478,7 @@ void MainWindow::onDevicesUpdated(const std::vector<Device>& devices) {
 
     std::unordered_set<std::string> connected_serials;
     int foundIdx = -1;
+    int firstConnectedIdx = -1;
     for (size_t i = 0; i < devices.size(); ++i) {
         std::string s = devices[i].serial;
         connected_serials.insert(s);
@@ -2434,21 +2486,26 @@ void MainWindow::onDevicesUpdated(const std::vector<Device>& devices) {
         QString icon = "🟢 ";
         QString statusText;
         QString stateDesc = "已连接";
+        if (firstConnectedIdx < 0 && devices[i].state == DeviceState::Connected) {
+            firstConnectedIdx = static_cast<int>(i);
+        }
 
         if (devices[i].state == DeviceState::Unauthorized) {
             icon = "🔴 ";
             statusText = " [未授权]";
-            stateDesc = "未授权 (请在设备上允许USB调试)";
+            stateDesc = "未授权 (请在设备上允许调试)";
         } else if (devices[i].state == DeviceState::Offline) {
             icon = "🟡 ";
             statusText = " [离线]";
-            stateDesc = "离线 (请检查局域网连接)";
+            stateDesc = "离线 (请检查 USB 或网络连接)";
         }
 
-        if (s.find(':') != std::string::npos) {
-            std::string host = s.substr(0, s.find(':'));
+        if (devices[i].is_network) {
+            std::string host = devices[i].ip;
             connected_serials.insert(host);
-            NetworkDeviceDialog::saveDevice(host, "", 8710);
+            if (devices[i].state == DeviceState::Connected) {
+                NetworkDeviceDialog::saveDevice(s);
+            }
             text = QString("%1%2%3").arg(icon).arg(QString::fromStdString(s)).arg(statusText);
         } else {
             std::string id_part = s.length() > 8 ? s.substr(s.length() - 6) : s;
@@ -2514,6 +2571,8 @@ void MainWindow::onDevicesUpdated(const std::vector<Device>& devices) {
 
     if (foundIdx >= 0) {
         m_device_combo->setCurrentIndex(foundIdx);
+    } else if (firstConnectedIdx >= 0) {
+        m_device_combo->setCurrentIndex(firstConnectedIdx);
     } else if (m_device_combo->count() > 0) {
         m_device_combo->setCurrentIndex(0);
     }
@@ -2525,11 +2584,12 @@ void MainWindow::onDevicesUpdated(const std::vector<Device>& devices) {
         m_active_device_serial.clear();
         m_previous_device_states.clear();
         renderEmptyInfo();
-        m_state_badge->setText("待连接");
+        m_state_badge->setText(m_connection_error.isEmpty() ? "待连接" : "连接失败");
         m_hdc_target_badge->setText("目标: 无");
         m_hdc_target_prefix->setText("");
         m_screen->clear();
-        m_screen->setStatusMessage("未连接设备，请点击右上角设备维护中心连接设备");
+        m_screen->setStatusMessage(m_connection_error.isEmpty()
+            ? QStringLiteral("未连接设备，请点击右上角设备维护中心连接设备") : m_connection_error);
         if (m_projecting) {
             stopMirror(false);
         }
@@ -2559,16 +2619,31 @@ void MainWindow::onDevicesUpdated(const std::vector<Device>& devices) {
         }
     }
 
-    if (m_pages->currentIndex() == 0 && !m_info_loading) {
+    const Device* selected = findMatchingDevice(m_cached_devices, currentSerial());
+    const bool selectedConnected = selected && selected->state == DeviceState::Connected;
+    if (selectedConnected) m_connection_error.clear();
+    if (!m_projecting && !m_connection_error.isEmpty()) {
+        m_screen->setStatusMessage(m_connection_error);
+    } else if (!m_projecting && selected && selected->state == DeviceState::Unauthorized) {
+        m_state_badge->setText("未授权");
+        m_screen->setStatusMessage(DEBUG_AUTHORIZATION_MESSAGE);
+    } else if (!m_projecting && selected && selected->state == DeviceState::Offline) {
+        m_state_badge->setText("离线");
+        m_screen->setStatusMessage(QString("设备离线：%1\n请检查 USB 或网络连接，并确认设备已开启调试")
+            .arg(QString::fromStdString(selected->serial)));
+    }
+
+    if (selectedConnected && m_pages->currentIndex() == 0 && !m_info_loading) {
         refreshDeviceInfo();
     }
 
     bool pending = !m_pending_auto_start_serial.empty();
     m_pending_auto_start_serial.clear();
 
-    if ((pending || (m_auto_start_mirror && !m_user_stopped_mirror)) && !m_projecting) {
+    if (selectedConnected && (pending || (m_auto_start_mirror && !m_user_stopped_mirror)) && !m_projecting) {
         QTimer::singleShot(150, this, [this]() {
-            if (!m_projecting && !currentSerial().empty() && !m_user_stopped_mirror) {
+            const Device* device = findMatchingDevice(m_cached_devices, currentSerial());
+            if (device && device->state == DeviceState::Connected && !m_projecting && !m_user_stopped_mirror) {
                 startMirror();
             }
         });
@@ -2590,12 +2665,13 @@ void MainWindow::onDeviceSelected(int index) {
     }
 
     if (m_updating_device_combo) return;
+    m_connection_error.clear();
 
     m_hdc_target_badge->setText(QString("目标: %1").arg(QString::fromStdString(s)));
     m_hdc_target_prefix->setText(QString("-t %1").arg(QString::fromStdString(s)));
 
-    bool is_net = (s.find(':') != std::string::npos || s.find('.') != std::string::npos);
     const Device* matched = findMatchingDevice(m_cached_devices, s);
+    bool is_net = matched ? matched->is_network : (s.find(':') != std::string::npos || s.find('.') != std::string::npos);
     bool is_connected = (matched && matched->state == DeviceState::Connected);
 
     m_device_combo->setToolTip(
@@ -2645,15 +2721,18 @@ void MainWindow::onDeviceComboActivated(int index) {
 }
 
 void MainWindow::switchToSingleDevice(const std::string& endpoint) {
+    if (m_inspection_page && m_inspection_page->isRunning()) {
+        showToast("请在巡检结束后连接调试设备");
+        return;
+    }
     if (!m_hdc) return;
     std::string target = normalizeEndpoint(endpoint);
     if (target.empty()) return;
 
-    std::string clean_target = target;
-    if (size_t col = target.find(':'); col != std::string::npos) {
-        clean_target = target.substr(0, col);
-    }
-
+    if (m_connection_cancel) m_connection_cancel->store(true);
+    m_connection_cancel = std::make_shared<std::atomic<bool>>(false);
+    auto cancelled = m_connection_cancel;
+    m_connection_error.clear();
     m_switch_generation++;
     uint64_t gen = m_switch_generation;
     m_active_device_serial = target;
@@ -2685,36 +2764,41 @@ void MainWindow::switchToSingleDevice(const std::string& endpoint) {
     m_hdc_target_badge->setText(QString("目标: %1 (连接中…)").arg(QString::fromStdString(target)));
 
     // Execute in background worker thread
-    std::thread([this, target, clean_target, gen]() {
-        if (gen != m_switch_generation) return;
+    auto hdc = m_hdc;
+    QPointer<MainWindow> weak_window(this);
+    std::thread([weak_window, hdc, cancelled, target, gen]() {
+        if (cancelled->load()) return;
 
         // Disconnect other network devices (single device exclusive policy)
-        auto current_devs = m_hdc->listDevices();
+        auto current_devs = hdc->listDevices();
         for (const auto& d : current_devs) {
-            if (d.serial.find(':') != std::string::npos) {
+            if (cancelled->load()) return;
+            if (d.is_network && d.state == DeviceState::Connected) {
                 if (!isSameDevice(d.serial, target)) {
-                    m_hdc->run({"tconn", d.serial, "-remove"}, "", 2000);
+                    hdc->run({"tconn", d.serial, "-remove"}, "", 2000);
                 }
             }
         }
 
-        if (gen != m_switch_generation) return;
+        if (cancelled->load()) return;
 
         // Connect to target if network device
+        CommandResult connection_result;
         if (target.find(':') != std::string::npos || target.find('.') != std::string::npos) {
             // If target was already offline or stuck in HDC, remove first to reset socket state
             for (const auto& d : current_devs) {
                 if (isSameDevice(d.serial, target) && d.state == DeviceState::Offline) {
-                    m_hdc->run({"tconn", target, "-remove"}, "", 2000);
+                    hdc->run({"tconn", target, "-remove"}, "", 2000);
                     std::this_thread::sleep_for(std::chrono::milliseconds(200));
                     break;
                 }
             }
-            m_hdc->run({"tconn", target}, "", 5000);
-            NetworkDeviceDialog::saveDevice(clean_target, "", 8710);
+            if (cancelled->load()) return;
+            connection_result = hdc->run({"tconn", target}, "", 5000);
+            NetworkDeviceDialog::saveDevice(target);
         }
 
-        if (gen != m_switch_generation) return;
+        if (cancelled->load()) return;
 
         // Poll device list until target connects or unauthorized/offline is confirmed (up to 4s)
         std::vector<Device> fresh_devs;
@@ -2723,8 +2807,8 @@ void MainWindow::switchToSingleDevice(const std::string& endpoint) {
         int max_attempts = (target.find(':') != std::string::npos || target.find('.') != std::string::npos) ? 16 : 4;
 
         for (int attempt = 0; attempt < max_attempts; ++attempt) {
-            if (gen != m_switch_generation) return;
-            fresh_devs = m_hdc->listDevices();
+            if (cancelled->load()) return;
+            fresh_devs = hdc->listDevices();
             for (const auto& d : fresh_devs) {
                 if (isSameDevice(d.serial, target)) {
                     dev_state = d.state;
@@ -2739,40 +2823,58 @@ void MainWindow::switchToSingleDevice(const std::string& endpoint) {
             }
             // Retry tconn once after ~1.5s if not yet seen in HDC target list
             if (attempt == 6 && !is_online && (target.find(':') != std::string::npos || target.find('.') != std::string::npos)) {
-                m_hdc->run({"tconn", target}, "", 3000);
+                auto retry = hdc->run({"tconn", target}, "", 3000);
+                if (!retry.out.empty() || !retry.err.empty()) connection_result = std::move(retry);
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(250));
         }
 
-        QMetaObject::invokeMethod(this, [this, target, fresh_devs, gen, is_online, dev_state]() {
-            if (gen != m_switch_generation) return;
+        if (cancelled->load()) return;
+        QString detail = QString::fromStdString(connection_result.out + "\n" + connection_result.err).trimmed();
+        if (!is_online) {
+            HC_LOG_WARN(QString("HDC connection failed for %1 (state=%2, exit=%3): %4")
+                .arg(QString::fromStdString(target)).arg(static_cast<int>(dev_state))
+                .arg(connection_result.exit_code).arg(detail));
+        }
+        auto* receiver = weak_window.data();
+        if (!receiver) return;
+        QMetaObject::invokeMethod(receiver, [weak_window, cancelled, target, fresh_devs, gen, is_online, dev_state, detail]() {
+            if (!weak_window || cancelled->load() || gen != weak_window->m_switch_generation) return;
+            auto* self = weak_window.data();
 
-            m_device_combo->setEnabled(true);
-            m_state_badge->setStyleSheet("");
-            m_user_stopped_mirror = false;
+            self->m_device_combo->setEnabled(true);
+            self->m_state_badge->setStyleSheet("");
+            self->m_user_stopped_mirror = false;
+            self->m_pending_auto_start_serial = is_online ? target : std::string{};
+            // Refresh first so an empty target list cannot overwrite the failure reason.
+            self->onDevicesUpdated(fresh_devs);
 
             if (dev_state == DeviceState::Unauthorized) {
-                m_screen->setStatusMessage("设备未授权：请在设备屏幕上点击【允许USB调试】或【始终允许】");
-                statusBar()->showMessage("设备未授权：请在设备屏幕上点击允许调试", 5000);
-                showToast("设备未授权：请在设备屏幕上允许调试");
-                m_pending_auto_start_serial.clear();
+                self->m_connection_error = DEBUG_AUTHORIZATION_MESSAGE;
+                self->m_state_badge->setText("未授权");
+                self->statusBar()->showMessage("设备未授权：请在设备屏幕上允许调试", 5000);
+                self->showToast("设备未授权：请在设备屏幕上允许调试");
             } else if (!is_online) {
-                m_screen->setStatusMessage(QString("连接失败：无法连接至 %1。若使用无线调试，请确保手机与电脑在同一局域网，且曾通过USB开启无线调试 (hdc tmode port 8710)").arg(QString::fromStdString(target)));
-                statusBar()->showMessage(QString("连接设备 %1 失败，请检查 IP 及无线调试端口").arg(QString::fromStdString(target)), 5000);
-                showToast(QString("连接失败: 无法连接至 %1").arg(QString::fromStdString(target)));
-                m_pending_auto_start_serial.clear();
+                self->m_connection_error = QString("连接失败：无法连接至 %1\n请检查设备 IP、HDC 端口和网络连接，并确认设备已开启调试")
+                    .arg(QString::fromStdString(target));
+                self->m_state_badge->setText("连接失败");
+                self->statusBar()->showMessage(QString("连接设备 %1 失败，请检查 IP 及无线调试端口").arg(QString::fromStdString(target)), 5000);
+                self->showToast(QString("连接失败: 无法连接至 %1").arg(QString::fromStdString(target)));
             } else {
-                m_pending_auto_start_serial = target;
-                m_screen->setStatusMessage(QString("已连接 %1，正在同步画面…").arg(QString::fromStdString(target)));
-                statusBar()->showMessage(QString("已稳定连接设备 %1，正在投屏…").arg(QString::fromStdString(target)), 3500);
+                self->m_screen->setStatusMessage(QString("已连接 %1，正在同步画面…").arg(QString::fromStdString(target)));
+                self->statusBar()->showMessage(QString("已连接设备 %1，正在投屏…").arg(QString::fromStdString(target)), 3500);
             }
 
-            onDevicesUpdated(fresh_devs);
+            if (!is_online) {
+                if (!detail.isEmpty()) self->m_connection_error += "\n\nHDC 返回：\n" + detail.left(1200);
+                self->m_screen->setStatusMessage(self->m_connection_error);
+            }
         });
     }).detach();
 }
 
 void MainWindow::refreshDevices() {
+    if (m_inspection_page && m_inspection_page->isRunning()) return;
     m_dev_mgr->refresh(true);
     showToast("正在扫描在线设备…");
 }
@@ -2780,6 +2882,7 @@ void MainWindow::refreshDevices() {
 void MainWindow::disconnectCurrentDevice() {
     std::string s = currentSerial();
     if (s.empty()) return;
+    if (m_connection_cancel) m_connection_cancel->store(true);
     m_user_stopped_mirror = true;
     m_pending_auto_start_serial.clear();
     m_active_device_serial.clear();
@@ -2793,7 +2896,7 @@ void MainWindow::disconnectCurrentDevice() {
 void MainWindow::openDeviceCenter() {
     std::vector<std::string> connected_serials;
     for (const auto& d : m_cached_devices) {
-        connected_serials.push_back(d.serial);
+        if (d.state == DeviceState::Connected && d.is_network) connected_serials.push_back(d.serial);
     }
     std::string cur = currentSerial();
 
@@ -2824,6 +2927,7 @@ void MainWindow::openDeviceCenter() {
 // Mirroring Session Control
 // ==========================================
 void MainWindow::startMirror() {
+    if (m_pages->currentIndex() == 3 || (m_inspection_page && m_inspection_page->isRunning())) return;
     noteUserActivity();
     std::string s = currentSerial();
     if (s.empty()) {
@@ -2831,15 +2935,15 @@ void MainWindow::startMirror() {
         return;
     }
 
-    bool is_net = (s.find(':') != std::string::npos || s.find('.') != std::string::npos);
     const Device* matched = findMatchingDevice(m_cached_devices, s);
+    bool is_net = matched ? matched->is_network : (s.find(':') != std::string::npos || s.find('.') != std::string::npos);
     bool is_connected = (matched && matched->state == DeviceState::Connected);
     DeviceState cur_state = matched ? matched->state : DeviceState::Disconnected;
 
     if (!is_connected) {
         if (cur_state == DeviceState::Unauthorized) {
-            showToast("所选设备未授权，请在设备屏幕上点击【允许USB调试】");
-            m_screen->setStatusMessage("设备未授权：请在设备屏幕上点击【允许USB调试】或【始终允许】");
+            showToast("所选设备未授权，请在设备屏幕上允许调试");
+            m_screen->setStatusMessage(DEBUG_AUTHORIZATION_MESSAGE);
         } else if (is_net) {
             // Auto-reconnect to the network target
             showToast(QString("正在重新连接设备 %1…").arg(QString::fromStdString(s)));
@@ -4670,7 +4774,7 @@ void MainWindow::openSettingsDialog() {
     uLayout->setSpacing(8);
 
     auto* verRow = new QHBoxLayout();
-    QString curVer = m_updater ? m_updater->currentVersion() : "2.2.5";
+    QString curVer = m_updater ? m_updater->currentVersion() : "2.3.0";
     auto* lblCurVer = new QLabel(QString("当前版本: v%1 (正式版)").arg(curVer));
     lblCurVer->setStyleSheet("color: #dbe5ee; font-size: 12px; font-weight: 500;");
     verRow->addWidget(lblCurVer, 1);
@@ -4768,7 +4872,7 @@ void MainWindow::onUpdateAvailable(const UpdateInfo& info, bool silent) {
 
 void MainWindow::onNoUpdateAvailable(bool silent) {
     if (!silent) {
-        QString curVer = m_updater ? m_updater->currentVersion() : "2.2.5";
+        QString curVer = m_updater ? m_updater->currentVersion() : "2.3.0";
         showToast(QString("当前已是最新版本 (v%1)").arg(curVer));
         statusBar()->showMessage(QString("当前已是最新版本 (v%1)").arg(curVer), 4000);
         QWidget* parentDlg = QApplication::activeModalWidget() ? QApplication::activeModalWidget() : this;

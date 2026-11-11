@@ -34,9 +34,9 @@ jobs:
         run: |
           cmake --build build --config Release -j$(sysctl -n hw.ncpu)
 
-      - name: Run C++ Core Verification Tests
+      - name: Run C++ Regression Tests
         run: |
-          QT_QPA_PLATFORM=offscreen ./build/test_harmonycast_core
+          QT_QPA_PLATFORM=offscreen ctest --test-dir build --output-on-failure
 
       - name: Package Standalone macOS DMG
         run: |
@@ -109,6 +109,14 @@ jobs:
         shell: pwsh
         run: |
           Copy-Item -Recurse -Force resources build/Release/resources
+
+      - name: Run C++ Regression Tests
+        shell: pwsh
+        run: |
+          $env:QT_QPA_PLATFORM = "offscreen"
+          $env:QT_QPA_PLATFORM_PLUGIN_PATH = "$env:QT_ROOT_DIR\plugins\platforms"
+          $env:QT_PLUGIN_PATH = "$env:QT_ROOT_DIR\plugins"
+          ctest --test-dir build -C Release --output-on-failure
 
       - name: Stage Windows App Directory
         shell: pwsh
@@ -242,7 +250,7 @@ jobs:
           Copy-Item "$env:FFMPEG_DIR\bin\*.dll" build-server2012\Release\
           ./scripts/windows/deploy_server2012_runtime.ps1 -Destination build-server2012/Release
 
-      - name: Run compatibility core, decoder and update tests
+      - name: Run compatibility regression tests
         shell: pwsh
         run: |
           $env:QT_QPA_PLATFORM_PLUGIN_PATH = "$env:QT_ROOT_DIR\plugins\platforms"

@@ -30,6 +30,7 @@ public:
     [[nodiscard]] bool isActive() const { return m_active; }
 
     void setStatusMessage(const QString& msg) { m_status_msg = msg; update(); }
+    [[nodiscard]] const QString& statusMessage() const { return m_status_msg; }
     [[nodiscard]] const QImage& image() const { return m_image; }
     [[nodiscard]] int deviceWidth() const { return m_dev_width; }
     [[nodiscard]] int deviceHeight() const { return m_dev_height; }

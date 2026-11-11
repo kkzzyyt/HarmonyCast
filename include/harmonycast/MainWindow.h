@@ -8,6 +8,7 @@
 #include "ScreenView.h"
 #include "WebViewDebugger.h"
 #include "IconManager.h"
+#include "InspectionPage.h"
 
 #include "harmonycast/UpdateChecker.h"
 #include <QMainWindow>
@@ -29,6 +30,7 @@
 #include <QSettings>
 #include <QTimer>
 #include <QTemporaryFile>
+#include <atomic>
 #include <memory>
 #include <vector>
 #include <map>
@@ -42,7 +44,8 @@ class MainWindow : public QMainWindow {
     Q_DISABLE_COPY(MainWindow)
 
 public:
-    explicit MainWindow(QWidget* parent = nullptr, bool startBackgroundServices = true);
+    explicit MainWindow(QWidget* parent = nullptr, bool startBackgroundServices = true,
+                        std::string hdcPath = {});
     ~MainWindow() override;
 
     [[nodiscard]] int idleTimeoutSeconds() const { return m_idle_timeout_secs; }
@@ -202,6 +205,7 @@ private:
     QPushButton* m_info_nav{nullptr};
     QPushButton* m_mirror_nav{nullptr};
     QPushButton* m_hdc_nav{nullptr};
+    QPushButton* m_inspection_nav{nullptr};
     QPushButton* m_settings_btn{nullptr};
 
     // UI: Header
@@ -219,6 +223,7 @@ private:
 
     // UI: Main Stack
     QStackedWidget* m_pages{nullptr};
+    InspectionPage* m_inspection_page{nullptr};
 
     // Page 0: Info Panel
     QLabel* m_info_badge{nullptr};
@@ -335,11 +340,14 @@ private:
     bool m_hdc_running{false};
     bool m_auto_start_mirror{true};
     bool m_user_stopped_mirror{false};
+    bool m_background_services_enabled{true};
     int m_idle_timeout_secs{0};
     qint64 m_last_user_activity{0};
     QTimer* m_idle_timer{nullptr};
     QTimer* m_keep_awake_timer{nullptr};
     std::string m_pending_auto_start_serial;
+    QString m_connection_error;
+    std::shared_ptr<std::atomic<bool>> m_connection_cancel;
     std::string m_active_device_serial;
     bool m_updating_device_combo{false};
     std::unordered_map<std::string, DeviceState> m_previous_device_states;

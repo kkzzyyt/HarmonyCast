@@ -6,6 +6,7 @@
 #include <QDir>
 #include <QRegularExpression>
 #include <QCoreApplication>
+#include <charconv>
 #include <sstream>
 #include <iostream>
 #include <QThreadPool>
@@ -158,40 +159,39 @@ std::vector<Device> HdcClient::parseDeviceList(const std::string& output) {
         if (start == std::string::npos) continue;
         line = line.substr(start);
 
-        if (line.empty() || line.find("[Empty]") != std::string::npos) continue;
+        if (line.empty() || line.front() == '[') continue;
 
         Device dev;
-        size_t tab = line.find('\t');
-        if (tab != std::string::npos) {
-            dev.serial = line.substr(0, tab);
-            std::string state_str = line.substr(tab + 1);
-            if (state_str.find("Connected") != std::string::npos) dev.state = DeviceState::Connected;
-            else if (state_str.find("Offline") != std::string::npos) dev.state = DeviceState::Offline;
-            else if (state_str.find("Unauthorized") != std::string::npos) dev.state = DeviceState::Unauthorized;
-        } else {
-            size_t space = line.find(' ');
-            if (space != std::string::npos) {
-                dev.serial = line.substr(0, space);
-                std::string state_str = line.substr(space + 1);
-                if (state_str.find("Connected") != std::string::npos) dev.state = DeviceState::Connected;
-                else if (state_str.find("Offline") != std::string::npos) dev.state = DeviceState::Offline;
-                else if (state_str.find("Unauthorized") != std::string::npos) dev.state = DeviceState::Unauthorized;
-                else dev.state = DeviceState::Connected;
-            } else {
-                dev.serial = line;
-                dev.state = DeviceState::Connected;
+        std::istringstream fields(line);
+        fields >> dev.serial;
+        std::string state;
+        bool has_transport = false;
+        if (fields >> state) {
+            if (state == "USB" || state == "TCP") {
+                has_transport = true;
+                dev.is_network = state == "TCP";
+                if (!(fields >> state)) continue;
             }
+
+            // Read the state column exactly: a device name may contain status words.
+            if (state == "Connected") dev.state = DeviceState::Connected;
+            else if (state == "Unauthorized") dev.state = DeviceState::Unauthorized;
+            else if (state == "Offline" || state == "Ready" || state == "Unknown") dev.state = DeviceState::Offline;
+            else continue;
         }
 
-        // Check if network IP:port device
+        // Verbose USB serials can themselves contain colons; honor the transport column.
         size_t colon = dev.serial.rfind(':');
-        if (colon != std::string::npos && colon > 0 && colon < dev.serial.size() - 1) {
+        if ((!has_transport || dev.is_network) &&
+            colon != std::string::npos && colon > 0 && colon < dev.serial.size() - 1) {
             std::string port_part = dev.serial.substr(colon + 1);
-            try {
-                dev.port = std::stoi(port_part);
+            int port = 0;
+            auto [end, error] = std::from_chars(port_part.data(), port_part.data() + port_part.size(), port);
+            if (error == std::errc{} && end == port_part.data() + port_part.size() && port > 0 && port <= 65535) {
+                dev.port = port;
                 dev.ip = dev.serial.substr(0, colon);
                 dev.is_network = true;
-            } catch (...) {}
+            }
         }
 
         devices.push_back(std::move(dev));
@@ -200,11 +200,18 @@ std::vector<Device> HdcClient::parseDeviceList(const std::string& output) {
 }
 
 std::optional<std::vector<Device>> HdcClient::listDevicesChecked() const {
-    auto res = run({"list", "targets"});
+    // The terse list omits offline targets and cannot describe connection readiness.
+    auto res = run({"list", "targets", "-v"});
     if (!res.success()) {
         return std::nullopt;
     }
-    return parseDeviceList(res.out);
+    auto devices = parseDeviceList(res.out);
+    if (devices.empty() && res.out.find("[Empty]") == std::string::npos &&
+        res.out.find_first_not_of(" \t\r\n") != std::string::npos) {
+        // Some HDC versions report command failures in stdout with exit code zero.
+        return std::nullopt;
+    }
+    return devices;
 }
 
 std::vector<Device> HdcClient::listDevices() const {

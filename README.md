@@ -1,4 +1,4 @@
-# HarmonyCast 2.0 · 鸿蒙投屏工作台
+# HarmonyCast 2.3.0 · 鸿蒙投屏工作台
 
 <p align="center">
   <img src="resources/app-icon.svg" width="96" height="96" alt="HarmonyCast Logo"/>
@@ -85,6 +85,12 @@ HarmonyCast 是专为 OpenHarmony / 鸿蒙设备（平板、手机、智慧屏�
   集成一键挂载系统分区读写、安全重启、亮屏/息屏、HAP 应用安装与文件收发。
 - **Interactive Terminal / 交互式终端**: Asynchronous execution with process termination, console clearing, and full log export.
   命令实时异步执行，支持中断、清空控制台与终端日志导出。
+
+### 7. Batch Device Inspection / 批量设备巡检
+- 独立的「设备巡检」功能区，导入 IP TXT 或粘贴列表，支持 `IP:端口`、地址校验和去重，默认 HDC 端口为 `8710`。
+- 按列表逐台执行 **HDC 连接 → 读取信息 → 断开当前设备 → 下一台**，显示进度并支持停止；失败、超时或停止后也会尝试断开当前设备。
+- 采集运行时间、各网卡 IP/MAC、内存容量和使用率、`/data` 存储、型号、序列号、系统/API 版本、CPU 架构/负载和内核版本。
+- 导出带 UTF-8 BOM 的 CSV 表格，可直接用 Excel/WPS 打开。失败设备保留记录，缺失字段留空并注明原因。详见[巡检使用说明](docs/inspection.md)。
 
 ---
 

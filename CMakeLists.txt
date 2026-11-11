@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(HarmonyCast VERSION 2.2.5 LANGUAGES CXX)
+project(HarmonyCast VERSION 2.3.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -79,6 +79,8 @@ set(CORE_HEADERS
     include/harmonycast/Types.h
     include/harmonycast/HdcClient.h
     include/harmonycast/DeviceManager.h
+    include/harmonycast/DeviceInspection.h
+    include/harmonycast/InspectionPage.h
     include/harmonycast/PacketDemuxer.h
     include/harmonycast/VideoDecoder.h
     include/harmonycast/VideoPipeline.h
@@ -104,6 +106,8 @@ set(CORE_HEADERS
 set(CORE_SOURCES
     src/HdcClient.cpp
     src/DeviceManager.cpp
+    src/DeviceInspection.cpp
+    src/InspectionPage.cpp
     src/PacketDemuxer.cpp
     src/VideoDecoder.cpp
     src/VideoPipeline.cpp
@@ -260,7 +264,15 @@ target_link_libraries(test_harmonycast_performance PRIVATE harmonycast_core)
 target_compile_definitions(test_harmonycast_performance PRIVATE HARMONYCAST_TEST_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
 add_test(NAME PerformanceRegressionTests COMMAND test_harmonycast_performance)
 
-set_tests_properties(CoreTests UpdateAssetTests PerformanceRegressionTests PROPERTIES TIMEOUT 60)
+add_executable(test_harmonycast_connections tests/test_connections.cpp)
+target_link_libraries(test_harmonycast_connections PRIVATE harmonycast_core)
+add_test(NAME ConnectionRegressionTests COMMAND test_harmonycast_connections)
+
+add_executable(test_harmonycast_inspection tests/test_inspection.cpp)
+target_link_libraries(test_harmonycast_inspection PRIVATE harmonycast_core)
+add_test(NAME InspectionTests COMMAND test_harmonycast_inspection)
+
+set_tests_properties(CoreTests UpdateAssetTests PerformanceRegressionTests ConnectionRegressionTests InspectionTests PROPERTIES TIMEOUT 60)
 
 add_executable(benchmark_harmonycast tests/benchmark_core.cpp)
 target_link_libraries(benchmark_harmonycast PRIVATE harmonycast_core)

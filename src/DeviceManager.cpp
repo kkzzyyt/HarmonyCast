@@ -73,11 +73,22 @@ void DeviceManager::refresh(bool forceEmit) {
                     std::lock_guard<std::mutex> lock(weak_this->m_mutex);
 
                     // Check current devices against previous devices
-                    for (const auto& dev : current) {
-                        weak_this->m_miss_counts[dev.serial] = 0;
-
+                    for (auto& dev : current) {
                         auto it = std::find_if(weak_this->m_devices.begin(), weak_this->m_devices.end(),
                                                [&dev](const Device& old) { return isSameDevice(old.serial, dev.serial); });
+                        // Verbose HDC lists Offline explicitly instead of omitting the target.
+                        // Apply the same debounce as missing targets, but report lost authorization immediately.
+                        if (it != weak_this->m_devices.end() && it->state == DeviceState::Connected &&
+                            dev.state == DeviceState::Offline) {
+                            int& misses = weak_this->m_miss_counts[it->serial];
+                            const int threshold = it->is_network ? 3 : 2;
+                            if (++misses < threshold) {
+                                dev = *it;
+                                continue;
+                            }
+                        } else {
+                            weak_this->m_miss_counts[dev.serial] = 0;
+                        }
                         if (it == weak_this->m_devices.end()) {
                             // Brand new device
                             if (dev.state == DeviceState::Connected) {

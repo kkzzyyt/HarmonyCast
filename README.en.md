@@ -35,6 +35,12 @@ namespace. The current UI is primarily Chinese.
 HDC is bundled directly within the macOS and Windows release packages for zero-dependency plug-and-play execution. It can also be discovered in common DevEco Studio locations or PATH, or manually selected in Settings; see
 [resources/hdc/README.md](resources/hdc/README.md).
 
+The native C++ application also has an independent **设备巡检** (batch inspection)
+area. Import an IP TXT list, then connect, collect information and disconnect each
+target in sequence. Export uptime, IP/MAC, memory, storage and system details as
+an Excel/WPS-compatible CSV, including failed and cancelled targets. See the
+[inspection guide](docs/inspection.md) for input examples and behavior.
+
 ## Compatibility
 
 - RISC-V capture uses OpenHarmony C APIs and device-side H.264 encoding, with an

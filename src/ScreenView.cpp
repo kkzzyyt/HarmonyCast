@@ -207,6 +207,15 @@ void ScreenView::paintEvent(QPaintEvent*) {
         painter.setRenderHint(QPainter::Antialiasing);
         int cx = width() / 2;
         int cy = height() / 2 - 40;
+        painter.setFont(QFont("PingFang SC", 15, QFont::Medium));
+        QRect statusRect;
+        if (!m_status_msg.isEmpty()) {
+            const int textHeight = painter.fontMetrics().boundingRect(
+                QRect(0, 0, width() - 32, 0), Qt::TextWordWrap, m_status_msg).height();
+            // Center the entire message with the device icon; a fixed 70px box hid HDC errors.
+            cy = std::max(58, (height() - (84 + 16 + textHeight)) / 2 + 42);
+            statusRect = QRect(16, cy + 58, width() - 32, std::max(0, height() - cy - 74));
+        }
 
         // Device Silhouette
         painter.setPen(QPen(QColor("#355a68"), 2));
@@ -215,9 +224,8 @@ void ScreenView::paintEvent(QPaintEvent*) {
 
         // Text labels
         painter.setPen(QColor("#cfdfeb"));
-        painter.setFont(QFont("PingFang SC", 15, QFont::Medium));
         if (!m_status_msg.isEmpty()) {
-            painter.drawText(QRect(16, cy + 50, width() - 32, 70), Qt::AlignCenter | Qt::TextWordWrap, m_status_msg);
+            painter.drawText(statusRect, Qt::AlignHCenter | Qt::AlignTop | Qt::TextWordWrap, m_status_msg);
         } else if (m_active) {
             painter.drawText(0, cy + 65, width(), 30, Qt::AlignCenter, "正在连接设备画面…");
         } else {
