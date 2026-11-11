@@ -374,7 +374,16 @@ int main(int argc, char** argv) {
 #ifdef Q_OS_WIN
     SetUnhandledExceptionFilter(reportWindowsCrash);
 #endif
+#if defined(Q_OS_WIN) && QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
+    // Qt 5's QMessageBox::showEvent() unconditionally obtains the Windows
+    // system menu through QGuiApplication::platformNativeInterface(). The
+    // offscreen backend has no native interface, so opening this real modal
+    // confirmation would dereference null before the test can select Yes.
+    // Use the Windows backend for this test, retaining the full dialog flow.
+    qputenv("QT_QPA_PLATFORM", "windows");
+#else
     if (!qEnvironmentVariableIsSet("HC_DEVICE_PICKER_NATIVE")) qputenv("QT_QPA_PLATFORM", "offscreen");
+#endif
     QApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
     QApplication app(argc, argv);
     // This test opens/closes independent top-level fixtures without app.exec().
