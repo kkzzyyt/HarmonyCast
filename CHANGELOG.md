@@ -12,7 +12,7 @@ Format adheres to [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and 
 
 ---
 
-## [2.3.3] - 2026-11-11
+## [2.3.3] - 2026-11-12
 
 ### Changed / 变更
 - [界面] 调整为中性雾灰与低饱和灰蓝，投屏空白画布及视频边缘跟随主题。

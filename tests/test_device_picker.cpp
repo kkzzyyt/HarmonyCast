@@ -24,7 +24,13 @@
 #include <QTimer>
 #include <algorithm>
 #include <iostream>
+#include <cstdio>
+#include <cstdint>
+#include <cwchar>
 #include <stdexcept>
+#ifdef Q_OS_WIN
+#include <windows.h>
+#endif
 
 using namespace harmonycast;
 
@@ -47,6 +53,44 @@ static int visibleRows(QTableWidget* table) {
     for (int row = 0; row < table->rowCount(); ++row) if (!table->isRowHidden(row)) ++visible;
     return visible;
 }
+
+static QTableWidgetItem* checkedItem(QTableWidget* table, int row, int column) {
+    auto* item = table->item(row, column);
+    if (!item) throw std::runtime_error("hub table item missing at row " + std::to_string(row) +
+                                      ", column " + std::to_string(column));
+    return item;
+}
+
+#ifdef Q_OS_WIN
+static void printCrashAddress(const char* label, const void* address) {
+    HMODULE module = nullptr;
+    wchar_t path[MAX_PATH]{};
+    if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                          reinterpret_cast<LPCWSTR>(address), &module) &&
+        GetModuleFileNameW(module, path, MAX_PATH)) {
+        const auto* slash = std::wcsrchr(path, L'\\');
+        std::fprintf(stderr, "%s %p %ls+0x%llx\n", label, address, slash ? slash + 1 : path,
+                     static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(address) - reinterpret_cast<uintptr_t>(module)));
+    } else std::fprintf(stderr, "%s %p (module unavailable)\n", label, address);
+}
+
+static LONG WINAPI reportWindowsCrash(EXCEPTION_POINTERS* exception) {
+    const auto* record = exception ? exception->ExceptionRecord : nullptr;
+    if (record) {
+        std::fprintf(stderr, "[CRASH] Windows exception 0x%08lx\n", record->ExceptionCode);
+        printCrashAddress("[CRASH] instruction", record->ExceptionAddress);
+        for (DWORD i = 0; i < record->NumberParameters; ++i)
+            std::fprintf(stderr, "[CRASH] parameter[%lu]=0x%llx\n", i,
+                         static_cast<unsigned long long>(record->ExceptionInformation[i]));
+    }
+    void* stack[32]{};
+    const auto count = CaptureStackBackTrace(0, 32, stack, nullptr);
+    for (USHORT i = 0; i < count; ++i) printCrashAddress("[CRASH] stack", stack[i]);
+    std::fflush(stderr);
+    std::fflush(stdout);
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+#endif
 
 static const std::vector<Device> liveDevices = HdcClient::parseDeviceList(
     "192.0.2.55:9000 TCP Connected HR36\n"
@@ -182,22 +226,37 @@ static void testSelectorLifetime() {
 }
 
 static void testHubAndMainConsistency() {
+    std::cout << "[RUN] Hub construct" << std::endl;
     NetworkDeviceDialog hub;
+    std::cout << "[PASS] Hub construct" << std::endl;
+    std::cout << "[RUN] Hub style" << std::endl;
     hub.setStyleSheet(IconManager::getAppStyleSheet());
+    std::cout << "[PASS] Hub style" << std::endl;
+    std::cout << "[RUN] Hub setDevices" << std::endl;
     hub.setDevices(liveDevices, "192.0.2.55:9000");
+    std::cout << "[PASS] Hub setDevices" << std::endl;
+    std::cout << "[RUN] Hub show" << std::endl;
     hub.show();
+    std::cout << "[PASS] Hub show" << std::endl;
     auto* table = hub.findChild<QTableWidget*>("DeviceHubTable");
     auto* search = hub.findChild<QLineEdit*>("DeviceHubSearch");
     check(table && search && table->rowCount() == 5, "hub does not use the shared catalog");
     for (auto* button : hub.findChildren<QPushButton*>()) {
         check(!button->text().contains("重启 HDC") && !button->text().contains("开启 USB"), "removed service buttons remain visible");
     }
+    std::cout << "[RUN] Hub filter by IP" << std::endl;
     search->setText("192.0.2.55");
     check(visibleRows(table) == 2, "hub merged distinct ports");
+    std::cout << "[PASS] Hub filter by IP" << std::endl;
+    std::cout << "[RUN] Hub filter by port, name and state" << std::endl;
     search->setText("9000 诊室 已连接");
     check(visibleRows(table) == 1, "hub alias, port or status filtering differs");
+    std::cout << "[PASS] Hub filter by port, name and state" << std::endl;
+    std::cout << "[RUN] Hub filter USB" << std::endl;
     search->setText("USB");
-    check(visibleRows(table) == 1 && table->item(3, 1)->text().isEmpty(), "hub USB identity is incorrect");
+    check(visibleRows(table) == 1 && checkedItem(table, 3, 1)->text().isEmpty(), "hub USB identity is incorrect");
+    std::cout << "[PASS] Hub filter USB" << std::endl;
+    std::cout << "[RUN] Hub empty filter and live refresh" << std::endl;
     search->setText("不存在");
     check(visibleRows(table) == 0, "hub shows unmatched rows");
     hub.setDevices(liveDevices, "192.0.2.55:9000");
@@ -210,16 +269,21 @@ static void testHubAndMainConsistency() {
     hub.setDevices(liveDevices, "192.0.2.55:9000");
     check(visibleRows(table) == 1, "live state recovery does not update a filtered hub");
     search->clear();
+    std::cout << "[PASS] Hub empty filter and live refresh" << std::endl;
 
+    std::cout << "[RUN] MainWindow construct" << std::endl;
     MainWindow main(nullptr, false, QCoreApplication::applicationFilePath().toStdString());
+    std::cout << "[PASS] MainWindow construct" << std::endl;
+    std::cout << "[RUN] MainWindow device update and list consistency" << std::endl;
     auto devices = liveDevices;
     check(QMetaObject::invokeMethod(&main, "onDevicesUpdated", Qt::DirectConnection,
                                    Q_ARG(std::vector<Device>, devices)), "main device update unavailable");
     auto* selector = main.findChild<DeviceSelector*>();
     check(selector && selector->count() == table->rowCount(), "main selector is not integrated with the shared catalog");
     for (int row = 0; row < table->rowCount(); ++row) {
-        check(selector->findData(table->item(row, 0)->data(Qt::UserRole)) >= 0, "hub and main list different endpoints");
+        check(selector->findData(checkedItem(table, row, 0)->data(Qt::UserRole)) >= 0, "hub and main list different endpoints");
     }
+    std::cout << "[PASS] MainWindow device update and list consistency" << std::endl;
     const QString artifacts = QString::fromUtf8(qgetenv("HC_DEVICE_PICKER_ARTIFACTS"));
     if (!artifacts.isEmpty()) {
         QCoreApplication::processEvents();
@@ -238,16 +302,19 @@ static void testHubAndMainConsistency() {
     check(input && port, "hub connection inputs missing");
     QString selectedTarget;
     hub.setOnConnect([&](const std::string& endpoint) { selectedTarget = QString::fromStdString(endpoint); });
+    std::cout << "[RUN] Hub save and synchronize target" << std::endl;
     input->setText("203.0.113.9:9020");
     check(QMetaObject::invokeMethod(&hub, "onConnectAndSave", Qt::DirectConnection), "hub connection slot unavailable");
     check(changes == 1 && selectedTarget == "203.0.113.9:9020" && selector->findData(selectedTarget) >= 0,
           "adding a saved target does not synchronize the main selector");
+    std::cout << "[PASS] Hub save and synchronize target" << std::endl;
+    std::cout << "[RUN] Hub rebuild action widgets" << std::endl;
     hub.refreshData();
     hub.show();
     QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
     QPushButton* remove = nullptr;
     for (int row = 0; row < table->rowCount(); ++row) {
-        if (table->item(row, 0)->data(Qt::UserRole).toString() != selectedTarget) continue;
+        if (checkedItem(table, row, 0)->data(Qt::UserRole).toString() != selectedTarget) continue;
         auto* actions = table->cellWidget(row, 3);
         if (!actions) continue;
         for (auto* button : actions->findChildren<QPushButton*>()) {
@@ -256,6 +323,8 @@ static void testHubAndMainConsistency() {
     }
     check(remove, "saved endpoint delete action missing");
     check(remove->isEnabled(), "saved endpoint delete action is disabled");
+    std::cout << "[PASS] Hub rebuild action widgets" << std::endl;
+    std::cout << "[RUN] Hub delete confirmation and synchronization" << std::endl;
     bool clicked = false;
     QObject::connect(remove, &QPushButton::clicked, &hub, [&clicked] { clicked = true; });
     bool confirmed = false;
@@ -296,10 +365,15 @@ static void testHubAndMainConsistency() {
         return device.ip == "203.0.113.9" && device.port == 9020;
     }), "saved target deletion left the endpoint in storage");
     check(selector->findData(selectedTarget) < 0, "saved target deletion did not update the main selector");
+    std::cout << "[PASS] Hub delete confirmation and synchronization" << std::endl;
+    std::cout << "[RUN] Hub and MainWindow teardown" << std::endl;
 }
 
 int main(int argc, char** argv) {
     if (argc > 1) { std::cout << "[Empty]\n"; return 0; }
+#ifdef Q_OS_WIN
+    SetUnhandledExceptionFilter(reportWindowsCrash);
+#endif
     if (!qEnvironmentVariableIsSet("HC_DEVICE_PICKER_NATIVE")) qputenv("QT_QPA_PLATFORM", "offscreen");
     QApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
     QApplication app(argc, argv);
