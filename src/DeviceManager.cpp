@@ -68,6 +68,7 @@ void DeviceManager::refresh(bool forceEmit) {
 
                 std::vector<Device> connected_events;
                 std::vector<Device> disconnected_events;
+                bool has_changes = false;
 
                 {
                     std::lock_guard<std::mutex> lock(weak_this->m_mutex);
@@ -130,22 +131,25 @@ void DeviceManager::refresh(bool forceEmit) {
                         current.push_back(preserved);
                     }
 
-                    bool has_changes = (weak_this->m_devices != current);
+                    has_changes = (weak_this->m_devices != current);
                     weak_this->m_devices = current;
-
-                    for (const auto& d : connected_events) {
-                        emit weak_this->deviceConnected(d);
-                    }
-                    for (const auto& d : disconnected_events) {
-                        emit weak_this->deviceDisconnected(d);
-                    }
-
-                    bool force = weak_this->m_needs_force_emit.exchange(false);
-                    if (force || has_changes) {
-                        emit weak_this->devicesUpdated(current);
-                    }
                 }
 
+                // Direct Qt slots may read devices() or findDevice(). Never call
+                // them while holding the non-recursive device-list mutex.
+                const bool force = weak_this->m_needs_force_emit.exchange(false);
+                for (const auto& d : connected_events) {
+                    if (!weak_this) return;
+                    emit weak_this->deviceConnected(d);
+                }
+                for (const auto& d : disconnected_events) {
+                    if (!weak_this) return;
+                    emit weak_this->deviceDisconnected(d);
+                }
+                if (!weak_this) return;
+                if (force || has_changes) emit weak_this->devicesUpdated(current);
+
+                if (!weak_this) return;
                 weak_this->m_is_refreshing = false;
                 if (weak_this->m_needs_refresh.exchange(false)) {
                     weak_this->refresh(false);

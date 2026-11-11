@@ -38,6 +38,10 @@ jobs:
         run: |
           QT_QPA_PLATFORM=offscreen ctest --test-dir build --output-on-failure
 
+      - name: Verify Native macOS Startup and Scrollbars
+        run: |
+          HC_SCROLL_TEST_NATIVE=1 QT_QPA_PLATFORM=cocoa ./build/test_harmonycast_scrolling
+
       - name: Package Standalone macOS DMG
         run: |
           chmod +x ./scripts/build_dmg.sh

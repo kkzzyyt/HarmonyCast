@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(HarmonyCast VERSION 2.3.0 LANGUAGES CXX)
+project(HarmonyCast VERSION 2.3.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -92,6 +92,7 @@ set(CORE_HEADERS
     include/harmonycast/StreamSession.h
     include/harmonycast/FlowLayout.h
     include/harmonycast/IconManager.h
+    include/harmonycast/ScrollBar.h
     include/harmonycast/ScreenView.h
     include/harmonycast/WebViewDebugger.h
     include/harmonycast/NetworkDeviceDialog.h
@@ -117,6 +118,7 @@ set(CORE_SOURCES
     src/StreamSession.cpp
     src/FlowLayout.cpp
     src/IconManager.cpp
+    src/ScrollBar.cpp
     src/ScreenView.cpp
     src/WebViewDebugger.cpp
     src/NetworkDeviceDialog.cpp
@@ -272,7 +274,11 @@ add_executable(test_harmonycast_inspection tests/test_inspection.cpp)
 target_link_libraries(test_harmonycast_inspection PRIVATE harmonycast_core)
 add_test(NAME InspectionTests COMMAND test_harmonycast_inspection)
 
-set_tests_properties(CoreTests UpdateAssetTests PerformanceRegressionTests ConnectionRegressionTests InspectionTests PROPERTIES TIMEOUT 60)
+add_executable(test_harmonycast_scrolling tests/test_scrolling.cpp)
+target_link_libraries(test_harmonycast_scrolling PRIVATE harmonycast_core)
+add_test(NAME ScrollingRegressionTests COMMAND test_harmonycast_scrolling)
+
+set_tests_properties(CoreTests UpdateAssetTests PerformanceRegressionTests ConnectionRegressionTests InspectionTests ScrollingRegressionTests PROPERTIES TIMEOUT 60)
 
 add_executable(benchmark_harmonycast tests/benchmark_core.cpp)
 target_link_libraries(benchmark_harmonycast PRIVATE harmonycast_core)

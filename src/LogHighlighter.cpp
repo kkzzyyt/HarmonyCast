@@ -32,50 +32,50 @@ void LogHighlighter::initFormats() {
     );
 
     // Formats: Header fields
-    m_fmt_timestamp.setForeground(QColor("#627588"));
+    m_fmt_timestamp.setForeground(QColor("#687b91"));
 
-    m_fmt_pid.setForeground(QColor("#4d6073"));
+    m_fmt_pid.setForeground(QColor("#667991"));
 
-    m_fmt_tag.setForeground(QColor("#79c0ff"));
+    m_fmt_tag.setForeground(QColor("#2369bb"));
 
     // Levels
-    m_fmt_debug.setForeground(QColor("#7f93a7"));
+    m_fmt_debug.setForeground(QColor("#61758b"));
 
-    m_fmt_info.setForeground(QColor("#5ce0c1"));
+    m_fmt_info.setForeground(QColor("#0e7f65"));
 
-    m_fmt_warn.setForeground(QColor("#f3c969"));
+    m_fmt_warn.setForeground(QColor("#8e6713"));
     m_fmt_warn.setFontWeight(QFont::DemiBold);
 
-    m_fmt_error.setForeground(QColor("#ff7b72"));
+    m_fmt_error.setForeground(QColor("#bf3b4b"));
     m_fmt_error.setFontWeight(QFont::Bold);
 
-    m_fmt_fatal.setForeground(QColor("#d2a8ff"));
+    m_fmt_fatal.setForeground(QColor("#8752af"));
     m_fmt_fatal.setFontWeight(QFont::Bold);
 
     // Message body — foreground only; row background handled by m_row_* applied first
-    m_msg_debug.setForeground(QColor("#8a9cb0"));
-    m_msg_info.setForeground(QColor("#dbe5ee"));
-    m_msg_warn.setForeground(QColor("#ffe08a"));
-    m_msg_error.setForeground(QColor("#ffa198"));
-    m_msg_fatal.setForeground(QColor("#f0b3ff"));
+    m_msg_debug.setForeground(QColor("#647891"));
+    m_msg_info.setForeground(QColor("#30485f"));
+    m_msg_warn.setForeground(QColor("#8b6616"));
+    m_msg_error.setForeground(QColor("#ad3748"));
+    m_msg_fatal.setForeground(QColor("#78429c"));
 
     // Tokens
-    m_fmt_hex.setForeground(QColor("#f0883e"));
+    m_fmt_hex.setForeground(QColor("#a7631e"));
 
-    m_fmt_string.setForeground(QColor("#a5d6ff"));
+    m_fmt_string.setForeground(QColor("#216ca2"));
 
-    m_fmt_url.setForeground(QColor("#58a6ff"));
+    m_fmt_url.setForeground(QColor("#1e63bd"));
     m_fmt_url.setFontUnderline(true);
 
-    m_fmt_success.setForeground(QColor("#7ee787"));
+    m_fmt_success.setForeground(QColor("#187e4d"));
 
-    m_fmt_fail.setForeground(QColor("#ff7b72"));
+    m_fmt_fail.setForeground(QColor("#bf3b4b"));
     m_fmt_fail.setFontWeight(QFont::Bold);
 
     // Full-row background tints — subtle, semi-transparent
-    m_row_warn.setBackground(QColor(55, 44, 8, 100));    // dark amber
-    m_row_error.setBackground(QColor(70, 16, 14, 115));  // dark crimson
-    m_row_fatal.setBackground(QColor(55, 10, 65, 120));  // dark purple
+    m_row_warn.setBackground(QColor(255, 244, 210, 150)); // amber
+    m_row_error.setBackground(QColor(255, 230, 234, 155)); // rose
+    m_row_fatal.setBackground(QColor(240, 230, 250, 160)); // violet
 }
 
 void LogHighlighter::highlightBlock(const QString& text) {

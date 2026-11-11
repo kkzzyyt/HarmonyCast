@@ -176,6 +176,7 @@ void NetworkDeviceDialog::initUi() {
     layout->addLayout(hdr_layout);
 
     m_table = new QTableWidget(this);
+    IconManager::setupScrollArea(m_table);
     m_table->setColumnCount(4);
     m_table->setHorizontalHeaderLabels({"设备 IP", "端口", "状态", "操作"});
     auto* header = m_table->horizontalHeader();
@@ -247,7 +248,7 @@ void NetworkDeviceDialog::initUi() {
     card_layout->addLayout(tools_row);
 
     m_error_label = IconManager::label("", "Muted");
-    m_error_label->setStyleSheet("color: #ff9f9f; font-size: 12px;");
+    m_error_label->setStyleSheet("color: #be4251; font-size: 12px;");
     card_layout->addWidget(m_error_label);
 
     layout->addWidget(card);
@@ -320,7 +321,7 @@ void NetworkDeviceDialog::refreshData() {
         m_table->clearSpans();
         m_table->setRowCount(1);
         auto* item = new QTableWidgetItem("（暂无设备，请在下方输入 IP 连接）");
-        item->setForeground(QColor("#8295a9"));
+        item->setForeground(QColor("#637a94"));
         item->setTextAlignment(Qt::AlignCenter);
         item->setFlags(Qt::NoItemFlags);
         m_table->setItem(0, 0, item);
@@ -343,7 +344,7 @@ void NetworkDeviceDialog::refreshData() {
         }
 
         auto* item_ip = new QTableWidgetItem(QString::fromStdString(dev.ip));
-        item_ip->setForeground(QColor("#e7edf4"));
+        item_ip->setForeground(QColor("#263c56"));
         item_ip->setTextAlignment(Qt::AlignCenter);
         QFont font = item_ip->font();
         font.setBold(true);
@@ -353,13 +354,13 @@ void NetworkDeviceDialog::refreshData() {
 
         auto* item_port = new QTableWidgetItem(QString::number(dev.port));
         item_port->setTextAlignment(Qt::AlignCenter);
-        item_port->setForeground(QColor("#8295a9"));
+        item_port->setForeground(QColor("#637a94"));
         item_port->setFlags(Qt::ItemIsSelectable | Qt::ItemIsEnabled);
         m_table->setItem(static_cast<int>(row), 1, item_port);
 
         auto* item_status = new QTableWidgetItem(is_conn ? "● 已连接" : "○ 未连接");
         item_status->setTextAlignment(Qt::AlignCenter);
-        item_status->setForeground(QColor(is_conn ? "#5ce0c1" : "#8295a9"));
+        item_status->setForeground(QColor(is_conn ? "#138367" : "#637a94"));
         item_status->setFlags(Qt::ItemIsSelectable | Qt::ItemIsEnabled);
         m_table->setItem(static_cast<int>(row), 2, item_status);
 
@@ -450,7 +451,7 @@ void NetworkDeviceDialog::onConnectAndSave() {
         std::string ep = clean_ip + ":" + std::to_string(port);
         connectTarget(ep);
     } catch (const std::exception& e) {
-        m_error_label->setStyleSheet("color: #ff9f9f; font-size: 12px;");
+        m_error_label->setStyleSheet("color: #be4251; font-size: 12px;");
         m_error_label->setText(QString::fromUtf8(e.what()));
     }
 }
@@ -461,7 +462,7 @@ void NetworkDeviceDialog::onDisconnectInput() {
         std::string ep = clean_ip + ":" + std::to_string(port);
         disconnectTarget(ep);
     } catch (const std::exception& e) {
-        m_error_label->setStyleSheet("color: #ff9f9f; font-size: 12px;");
+        m_error_label->setStyleSheet("color: #be4251; font-size: 12px;");
         m_error_label->setText(QString::fromUtf8(e.what()));
     }
 }
@@ -478,7 +479,7 @@ void NetworkDeviceDialog::deleteTarget(const std::string& ip) {
         return;
     }
     deleteSavedDevice(ip);
-    m_error_label->setStyleSheet("color: #79e6c9; font-size: 12px;");
+    m_error_label->setStyleSheet("color: #18815c; font-size: 12px;");
     m_error_label->setText(QString("已删除设备 %1").arg(QString::fromStdString(ip)));
     refreshData();
 }
@@ -502,7 +503,7 @@ void NetworkDeviceDialog::disconnectTarget(const std::string& endpoint) {
         m_connected_targets.end()
     );
 
-    m_error_label->setStyleSheet("color: #79e6c9; font-size: 12px;");
+    m_error_label->setStyleSheet("color: #18815c; font-size: 12px;");
     m_error_label->setText(QString("已执行 hdc tconn %1 -remove").arg(QString::fromStdString(endpoint)));
     refreshData();
 }
@@ -510,7 +511,7 @@ void NetworkDeviceDialog::disconnectTarget(const std::string& endpoint) {
 void NetworkDeviceDialog::onEnableUsbTcpMode() {
     if (!m_hdc) return;
 
-    m_error_label->setStyleSheet("color: #f3c969; font-size: 12px;");
+    m_error_label->setStyleSheet("color: #8b6717; font-size: 12px;");
     m_error_label->setText("正在检测 USB 设备并开启无线调试模式 (8710端口)…");
 
     auto devs = m_hdc->listDevices();
@@ -525,25 +526,25 @@ void NetworkDeviceDialog::onEnableUsbTcpMode() {
     if (usb_serial.empty()) {
         for (const auto& d : devs) {
             if (d.serial.find(':') == std::string::npos && d.state == DeviceState::Unauthorized) {
-                m_error_label->setStyleSheet("color: #ff9f9f; font-size: 12px;");
+                m_error_label->setStyleSheet("color: #be4251; font-size: 12px;");
                 m_error_label->setText("USB 设备未授权：请先在设备屏幕上点击【允许USB调试】或【始终允许】！");
                 return;
             }
         }
-        m_error_label->setStyleSheet("color: #ff9f9f; font-size: 12px;");
+        m_error_label->setStyleSheet("color: #be4251; font-size: 12px;");
         m_error_label->setText("未检测到已连接的 USB 设备。请先用 USB 数据线将设备与电脑连接！");
         return;
     }
 
     bool ok = m_hdc->enableTcpMode(usb_serial, 8710);
     if (ok) {
-        m_error_label->setStyleSheet("color: #79e6c9; font-size: 12px;");
+        m_error_label->setStyleSheet("color: #18815c; font-size: 12px;");
         m_error_label->setText(QString("成功为设备开启 8710 无线调试端口！拔出 USB 线后输入 IP 即可无线投屏。"));
         QMessageBox::information(this, "无线调试开启成功",
             QString("已成功为设备开启 8710 无线调试端口！\n\n设备标识: %1\n\n使用指南：\n1. 现在您可以安全拔下 USB 数据线；\n2. 确保手机与电脑在同一 Wi-Fi 局域网；\n3. 查看手机【设置 -> WLAN / 关于手机】中的 IP 地址并在上方输入连接即可。")
             .arg(QString::fromStdString(usb_serial)));
     } else {
-        m_error_label->setStyleSheet("color: #ff9f9f; font-size: 12px;");
+        m_error_label->setStyleSheet("color: #be4251; font-size: 12px;");
         m_error_label->setText("开启无线调试模式失败，请确认设备已授权或尝试点击【重启 HDC 服务】。");
     }
 }
@@ -551,15 +552,15 @@ void NetworkDeviceDialog::onEnableUsbTcpMode() {
 void NetworkDeviceDialog::onRestartHdcService() {
     if (!m_hdc) return;
 
-    m_error_label->setStyleSheet("color: #f3c969; font-size: 12px;");
+    m_error_label->setStyleSheet("color: #8b6717; font-size: 12px;");
     m_error_label->setText("正在重启底层 HDC 服务…");
 
     bool ok = m_hdc->restartServer();
     if (ok) {
-        m_error_label->setStyleSheet("color: #79e6c9; font-size: 12px;");
+        m_error_label->setStyleSheet("color: #18815c; font-size: 12px;");
         m_error_label->setText("HDC 服务已成功重启并重载设备连接。");
     } else {
-        m_error_label->setStyleSheet("color: #ff9f9f; font-size: 12px;");
+        m_error_label->setStyleSheet("color: #be4251; font-size: 12px;");
         m_error_label->setText("重启 HDC 服务失败，请检查 HDC 权限或进程。");
     }
     refreshData();

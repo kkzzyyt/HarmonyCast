@@ -31,6 +31,7 @@
 #include <QShortcut>
 #include <QInputDialog>
 #include <QScreen>
+#include <QAbstractScrollArea>
 #include <iostream>
 
 namespace harmonycast {
@@ -56,9 +57,6 @@ MainWindow::MainWindow(QWidget* parent, bool startBackgroundServices, std::strin
     m_idle_timer = new QTimer(this);
     m_idle_timer->setInterval(5000);
     connect(m_idle_timer, &QTimer::timeout, this, &MainWindow::checkIdleTimeout);
-    if (startBackgroundServices) {
-        m_idle_timer->start();
-    }
 
     m_keep_awake_timer = new QTimer(this);
     m_keep_awake_timer->setInterval(25000);
@@ -73,9 +71,9 @@ MainWindow::MainWindow(QWidget* parent, bool startBackgroundServices, std::strin
     }
 
     setWindowTitle("鸿蒙投屏 · HarmonyCast");
-    resize(1120, 800);
-    setMinimumSize(880, 600);
-    setPalette(IconManager::getDarkPalette());
+    resize(1240, 800);
+    setMinimumSize(960, 640);
+    setPalette(IconManager::getAppPalette());
 
     m_log_flush_timer = new QTimer(this);
     m_log_flush_timer->setSingleShot(true);
@@ -140,15 +138,7 @@ MainWindow::MainWindow(QWidget* parent, bool startBackgroundServices, std::strin
         }
     });
 
-    if (startBackgroundServices) m_dev_mgr->startPolling(2500);
     switchModule(0);
-
-    if (startBackgroundServices) QTimer::singleShot(800, this, &MainWindow::checkPreviousCrash);
-
-    // Silent background update check after window displays
-    if (startBackgroundServices && m_settings->value("auto_check_update", true).toBool()) {
-        QTimer::singleShot(2500, this, [this]{ checkForUpdates(true); });
-    }
 }
 
 MainWindow::~MainWindow() {
@@ -165,8 +155,9 @@ MainWindow::~MainWindow() {
 }
 
 void MainWindow::applyTheme() {
-    qApp->setPalette(IconManager::getDarkPalette());
+    qApp->setPalette(IconManager::getAppPalette());
     setStyleSheet(IconManager::getAppStyleSheet());
+    for (auto* area : findChildren<QAbstractScrollArea*>()) IconManager::setupScrollArea(area);
 }
 
 void MainWindow::setupUi() {
@@ -182,10 +173,10 @@ void MainWindow::setupUi() {
     // ==========================================
     m_sidebar = new QFrame(this);
     m_sidebar->setObjectName("Sidebar");
-    m_sidebar->setFixedWidth(156);
+    m_sidebar->setFixedWidth(200);
 
     auto* side = new QVBoxLayout(m_sidebar);
-    side->setContentsMargins(12, 20, 12, 16);
+    side->setContentsMargins(16, 24, 16, 16);
     side->setSpacing(8);
 
     // Brand
@@ -194,7 +185,7 @@ void MainWindow::setupUi() {
     brand_box->setSpacing(8);
 
     auto* brand_icon = new QLabel();
-    brand_icon->setPixmap(IconManager::getIcon("workspace").pixmap(18, 18));
+    brand_icon->setPixmap(IconManager::getIcon("workspace").pixmap(16, 16));
     brand_box->addWidget(brand_icon);
 
     auto* brand_title = IconManager::label("HarmonyCast", "Brand");
@@ -226,7 +217,7 @@ void MainWindow::setupUi() {
     m_inspection_nav = IconManager::button("设备巡检", "Navigation");
     m_inspection_nav->setIcon(IconManager::makeSvgIcon(
         "<rect x=\"5\" y=\"4\" width=\"14\" height=\"18\" rx=\"2\"/><rect x=\"9\" y=\"2\" width=\"6\" height=\"4\" rx=\"1\"/><path d=\"m9 13 2 2 4-4\"/>",
-        "#8295a9", "none", 2, 16));
+        "#637a94", "none", 2, 16));
     m_inspection_nav->setCheckable(true);
     m_inspection_nav->setAutoExclusive(true);
     m_inspection_nav->setFixedHeight(36);
@@ -241,7 +232,7 @@ void MainWindow::setupUi() {
     bottom_box->setContentsMargins(0, 0, 0, 0);
     bottom_box->setSpacing(6);
 
-    auto* version_label = IconManager::label("HarmonyCast\nv2.3.0", "Muted");
+    auto* version_label = IconManager::label("HarmonyCast\nv2.3.1", "Muted");
     bottom_box->addWidget(version_label, 1);
 
     m_settings_btn = IconManager::iconButton("settings", "系统设置", "IconBtnSettings", 30, 30);
@@ -263,7 +254,7 @@ void MainWindow::setupUi() {
     m_header = new QFrame(this);
     m_header->setObjectName("Header");
     auto* heading = new QHBoxLayout(m_header);
-    heading->setContentsMargins(18, 12, 18, 12);
+    heading->setContentsMargins(24, 16, 24, 16);
     heading->setSpacing(8);
 
     m_page_title = IconManager::label("设备信息", "Title");
@@ -275,10 +266,10 @@ void MainWindow::setupUi() {
     m_layout_switcher->setObjectName("LayoutSwitcher");
     m_layout_switcher->setFixedHeight(28);
     m_layout_switcher->setStyleSheet(
-        "QWidget#LayoutSwitcher { background: #0c1219; border: 1px solid #1c2b3d; border-radius: 6px; padding: 2px; } "
-        "QPushButton { background: transparent; border: none; border-radius: 4px; padding: 2px 7px; color: #7d8f9f; font-size: 12px; } "
-        "QPushButton:hover { background: #162436; color: #c9d1d9; } "
-        "QPushButton:checked { background: #1f3b60; color: #58a6ff; font-weight: bold; }"
+        "QWidget#LayoutSwitcher { background: #f8fafd; border: 1px solid #dfe8f2; border-radius: 6px; padding: 2px; } "
+        "QPushButton { background: transparent; border: none; border-radius: 4px; padding: 2px 7px; color: #667b94; font-size: 12px; } "
+        "QPushButton:hover { background: #f0f5fb; color: #2e455f; } "
+        "QPushButton:checked { background: #dceaff; color: #2569d7; font-weight: bold; }"
     );
     auto* layout_box = new QHBoxLayout(m_layout_switcher);
     layout_box->setContentsMargins(2, 2, 2, 2);
@@ -383,7 +374,7 @@ void MainWindow::setupUi() {
             stopMirror(false);
             if (m_hilog) m_hilog->stop();
             m_webview->disconnectPage();
-        } else if (m_background_services_enabled) {
+        } else if (m_background_services_enabled && m_background_services_started) {
             m_dev_mgr->startPolling(2500);
         }
     });
@@ -536,6 +527,19 @@ void MainWindow::keyPressEvent(QKeyEvent* event) {
 }
 
 bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
+    if (watched == this && event->type() == QEvent::Show && m_background_services_enabled && !m_background_services_started) {
+        m_background_services_started = true;
+        // Let Cocoa finish showing the first window before starting discovery,
+        // crash dialogs and network update checks.
+        QTimer::singleShot(0, this, [this] {
+            m_idle_timer->start();
+            if (!m_inspection_page->isRunning()) m_dev_mgr->startPolling(2500);
+            QTimer::singleShot(800, this, &MainWindow::checkPreviousCrash);
+            if (m_settings->value("auto_check_update", true).toBool()) {
+                QTimer::singleShot(2500, this, [this] { checkForUpdates(true); });
+            }
+        });
+    }
     switch (event->type()) {
     case QEvent::MouseMove:
     case QEvent::MouseButtonPress:
@@ -554,18 +558,20 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
     }
 
     if ((watched == m_log_view || watched == m_wv_console_view || watched == m_wv_network_table) && event->type() == QEvent::Show) scheduleLogFlush();
-    if ((watched == m_log_view || watched == m_wv_console_view) && event->type() == QEvent::Wheel) {
+    const bool logViewport = m_log_view && (watched == m_log_view || watched == m_log_view->viewport());
+    const bool webViewport = m_wv_console_view && (watched == m_wv_console_view || watched == m_wv_console_view->viewport());
+    if ((logViewport || webViewport) && event->type() == QEvent::Wheel) {
         auto* wheelEvent = static_cast<QWheelEvent*>(event);
         if (wheelEvent->modifiers() & (Qt::ControlModifier | Qt::MetaModifier)) {
-            int delta = wheelEvent->angleDelta().y();
-            if (delta > 0) {
-                setLogFontSize(m_log_font_size_val + 1);
-            } else if (delta < 0) {
-                setLogFontSize(m_log_font_size_val - 1);
-            }
+            m_wheel_zoom_delta += wheelEvent->pixelDelta().isNull() ? wheelEvent->angleDelta().y() : wheelEvent->pixelDelta().y() * 8;
+            const int steps = m_wheel_zoom_delta / 120;
+            m_wheel_zoom_delta %= 120;
+            if (steps != 0) setLogFontSize(m_log_font_size_val + steps);
+            wheelEvent->accept();
             return true;
         }
     }
+    if (event->type() == QEvent::KeyRelease) m_wheel_zoom_delta = 0;
     return QMainWindow::eventFilter(watched, event);
 }
 
@@ -675,7 +681,7 @@ static void clearLayout(QLayout* layout) {
 
 void MainWindow::renderEmptyInfo(const QString& hint) {
     m_info_badge->setText("未连接设备");
-    m_info_badge->setStyleSheet("color: #ff9f9f; background: #2b1419; border: 1px solid #572932; padding: 4px 10px; border-radius: 9px; font-size: 12px;");
+    m_info_badge->setStyleSheet("color: #be4251; background: #fff2f4; border: 1px solid #572932; padding: 4px 10px; border-radius: 9px; font-size: 12px;");
     m_info_device_label->setText(hint);
     m_btn_refresh_info->setEnabled(false);
     m_btn_copy_all_info->setEnabled(false);
@@ -698,9 +704,9 @@ void MainWindow::renderEmptyInfo(const QString& hint) {
     auto* hdr = new QVBoxLayout();
     hdr->setSpacing(6);
     auto* title = IconManager::label("未检测到已连接的设备", "CardTitleWarn");
-    title->setStyleSheet("font-size: 17px; font-weight: 600; color: #f3c969;");
+    title->setStyleSheet("font-size: 17px; font-weight: 600; color: #8b6717;");
     auto* sub = IconManager::label("当前没有处于在线调试状态的 OpenHarmony / 鸿蒙设备。请先连接设备以查看硬件详情与应用信息。", "Muted");
-    sub->setStyleSheet("font-size: 13px; color: #8ba2b9;");
+    sub->setStyleSheet("font-size: 13px; color: #637993;");
     hdr->addWidget(title);
     hdr->addWidget(sub);
     m_empty_layout->addLayout(hdr);
@@ -715,14 +721,14 @@ void MainWindow::renderEmptyInfo(const QString& hint) {
     u_layout->setContentsMargins(16, 14, 16, 14);
     u_layout->setSpacing(8);
     auto* u_title = IconManager::label("🔌 USB 有线连接指引", "Brand");
-    u_title->setStyleSheet("font-size: 14px; font-weight: bold; color: #79e6c9;");
+    u_title->setStyleSheet("font-size: 14px; font-weight: bold; color: #18815c;");
     u_layout->addWidget(u_title);
     QString u_steps = "1. 使用 USB 数据线连接开发板或真机至电脑\n"
                       "2. 在设备上开启「开发者选项」与「USB 调试」\n"
                       "3. 屏幕弹窗勾选「始终允许此电脑调试」并确认\n"
                       "4. 点击下方「刷新设备列表」按钮或按 F5";
     auto* u_desc = IconManager::label(u_steps, "Muted");
-    u_desc->setStyleSheet("line-height: 160%; color: #9bb0c3; font-size: 12px;");
+    u_desc->setStyleSheet("line-height: 160%; color: #5c748e; font-size: 12px;");
     u_layout->addWidget(u_desc);
     guide_box->addWidget(usb_card, 1);
 
@@ -733,14 +739,14 @@ void MainWindow::renderEmptyInfo(const QString& hint) {
     n_layout->setContentsMargins(16, 14, 16, 14);
     n_layout->setSpacing(8);
     auto* n_title = IconManager::label("🌐 网络调试连接指引", "Brand");
-    n_title->setStyleSheet("font-size: 14px; font-weight: bold; color: #58a6ff;");
+    n_title->setStyleSheet("font-size: 14px; font-weight: bold; color: #2569d7;");
     n_layout->addWidget(n_title);
     QString n_steps = "1. 确保设备与电脑接入同一局域网或直连网口\n"
                       "2. 确认设备的固定 IP 地址（默认调试端口 8710）\n"
                       "3. 点击右上角或下方「设备中心」\n"
                       "4. 输入目标 IP 点击连接即可自动同步";
     auto* n_desc = IconManager::label(n_steps, "Muted");
-    n_desc->setStyleSheet("line-height: 160%; color: #9bb0c3; font-size: 12px;");
+    n_desc->setStyleSheet("line-height: 160%; color: #5c748e; font-size: 12px;");
     n_layout->addWidget(n_desc);
     guide_box->addWidget(net_card, 1);
 
@@ -771,7 +777,7 @@ void MainWindow::refreshDeviceInfo() {
     if (m_info_loading) return;
     m_info_loading = true;
     m_info_badge->setText("正在查询…");
-    m_info_badge->setStyleSheet("color: #f3c969; background: #3d2f10; border: 1px solid #735515; padding: 4px 10px; border-radius: 9px; font-size: 12px;");
+    m_info_badge->setStyleSheet("color: #8b6717; background: #fff6dc; border: 1px solid #ebd495; padding: 4px 10px; border-radius: 9px; font-size: 12px;");
     m_btn_refresh_info->setEnabled(false);
     showToast("正在获取设备基本信息及应用版本…");
 
@@ -1133,7 +1139,7 @@ void MainWindow::renderDeviceInfo(const DeviceInfo& data) {
 
         auto* item_name = new QTableWidgetItem(pkg);
         if (pkg.contains("yarward", Qt::CaseInsensitive)) {
-            item_name->setForeground(QColor("#5ce0c1"));
+            item_name->setForeground(QColor("#138367"));
             QFont f = item_name->font();
             f.setBold(true);
             item_name->setFont(f);
@@ -1539,8 +1545,8 @@ QWidget* MainWindow::buildHiLogWidget() {
     toolbar_frame->setObjectName("LogToolbarFrame");
     toolbar_frame->setStyleSheet(
         "QFrame#LogToolbarFrame {"
-        "  background: #0f1722;"
-        "  border: 1px solid #1c2b3d;"
+        "  background: #f4f8fd;"
+        "  border: 1px solid #dfe8f2;"
         "  border-radius: 6px;"
         "}"
     );
@@ -1652,13 +1658,13 @@ QWidget* MainWindow::buildHiLogWidget() {
     m_log_view->setMaximumBlockCount(10000);
     m_log_view->setStyleSheet(
         "QPlainTextEdit#LogView {"
-        "  background-color: #070c13;"
-        "  color: #dbe5ee;"
-        "  border: 1px solid #1a2737;"
+        "  background-color: #f8fbff;"
+        "  color: #2b405a;"
+        "  border: 1px solid #eff4fa;"
         "  border-radius: 6px;"
         "  padding: 6px 8px;"
-        "  selection-background-color: #17382f;"
-        "  selection-color: #79e6c9;"
+        "  selection-background-color: #eaf7f0;"
+        "  selection-color: #18815c;"
         "  font-family: 'Menlo', 'JetBrains Mono', 'SF Mono', 'Consolas', monospace;"
         "}"
     );
@@ -1673,8 +1679,8 @@ QWidget* MainWindow::buildHiLogWidget() {
     footer_frame->setObjectName("LogFooterFrame");
     footer_frame->setStyleSheet(
         "QFrame#LogFooterFrame {"
-        "  background: #090e15;"
-        "  border: 1px solid #192534;"
+        "  background: #ffffff;"
+        "  border: 1px solid #eff4fa;"
         "  border-radius: 5px;"
         "  padding: 2px 6px;"
         "}"
@@ -1742,8 +1748,8 @@ QWidget* MainWindow::buildWebViewPanel() {
     wv_toolbar_container->setObjectName("LogToolbarFrame");
     wv_toolbar_container->setStyleSheet(
         "QFrame#LogToolbarFrame {"
-        "  background: #0f1722;"
-        "  border: 1px solid #1c2b3d;"
+        "  background: #f4f8fd;"
+        "  border: 1px solid #dfe8f2;"
         "  border-radius: 6px;"
         "}"
     );
@@ -1859,7 +1865,7 @@ QWidget* MainWindow::buildWebViewPanel() {
     m_wv_console_view->setReadOnly(true);
     m_wv_console_view->setFont(QFont("Menlo", 11));
     m_wv_console_view->setStyleSheet(
-        "background: #070c13; color: #dbe5ee; border: 1px solid #1a2737; border-radius: 6px; padding: 6px 8px; font-family: 'Menlo', monospace;"
+        "background: #f8fbff; color: #2b405a; border: 1px solid #eff4fa; border-radius: 6px; padding: 6px 8px; font-family: 'Menlo', monospace;"
     );
     m_wv_console_view->installEventFilter(this);
     m_wv_console_view->setContextMenuPolicy(Qt::CustomContextMenu);
@@ -1871,7 +1877,7 @@ QWidget* MainWindow::buildWebViewPanel() {
     js_bar->setContentsMargins(0, 0, 0, 0);
     js_bar->setSpacing(6);
     auto* js_prompt = IconManager::label("JS >", "TagSuccess");
-    js_prompt->setStyleSheet("color: #53d6b5; font-weight: 700; font-family: 'Menlo'; padding: 2px 4px;");
+    js_prompt->setStyleSheet("color: #2467d6; font-weight: 700; font-family: 'Menlo'; padding: 2px 4px;");
     js_bar->addWidget(js_prompt);
 
     m_wv_js_input = new QLineEdit();
@@ -1899,7 +1905,7 @@ QWidget* MainWindow::buildWebViewPanel() {
     type_filter_bar->setSpacing(5);
 
     auto* filter_label = IconManager::label("资源类型:", "Muted");
-    filter_label->setStyleSheet("color: #798d9f; font-size: 11px; font-weight: 600;");
+    filter_label->setStyleSheet("color: #667b94; font-size: 11px; font-weight: 600;");
     type_filter_bar->addWidget(filter_label);
 
     const std::vector<std::pair<QString, QString>> type_filters = {
@@ -1923,13 +1929,13 @@ QWidget* MainWindow::buildWebViewPanel() {
         btn->setProperty("filterKey", key);
         btn->setStyleSheet(
             "QPushButton {"
-            "  background: #0d1622; color: #8ba2b9; border: 1px solid #1a2737; border-radius: 4px; padding: 2px 8px; font-size: 11px;"
+            "  background: #f5f8fc; color: #637993; border: 1px solid #eff4fa; border-radius: 4px; padding: 2px 8px; font-size: 11px;"
             "}"
             "QPushButton:hover {"
-            "  background: #152438; color: #c2d1df; border-color: #263c54;"
+            "  background: #eef4fc; color: #334a65; border-color: #bfd2e8;"
             "}"
             "QPushButton:checked {"
-            "  background: #17384e; color: #5ce0c1; border-color: #2d6b91; font-weight: bold;"
+            "  background: #edf5fc; color: #138367; border-color: #397bbb; font-weight: bold;"
             "}"
         );
         if (key == "ALL") btn->setChecked(true);
@@ -1964,8 +1970,8 @@ QWidget* MainWindow::buildWebViewPanel() {
     connect(m_wv_network_table, &QTableWidget::customContextMenuRequested, this, &MainWindow::onNetworkTableContextMenu);
     connect(m_wv_network_table, &QTableWidget::itemSelectionChanged, this, &MainWindow::onNetworkRowSelected);
     m_wv_network_table->setStyleSheet(
-        "QTableWidget { background: #090e15; alternate-background-color: #0d141e; color: #c2d1df; border: 1px solid #1e2c3d; border-radius: 7px; font-family: 'Menlo', monospace; font-size: 11px; } "
-        "QHeaderView::section { background: #121c29; color: #8ba2b9; padding: 4px; border: none; font-weight: bold; font-size: 11px; }"
+        "QTableWidget { background: #ffffff; alternate-background-color: #f5f8fc; color: #334a65; border: 1px solid #dce6f1; border-radius: 7px; font-family: 'Menlo', monospace; font-size: 11px; } "
+        "QHeaderView::section { background: #f8fafd; color: #637993; padding: 4px; border: none; font-weight: bold; font-size: 11px; }"
     );
 
     // Splitter: Table (Top) & Detail Panel (Bottom)
@@ -2289,7 +2295,7 @@ QWidget* MainWindow::buildHdcPanel() {
     m_hdc_terminal->setReadOnly(true);
     m_hdc_terminal->setFont(QFont("Menlo", 11));
     m_hdc_terminal->setLineWrapMode(QTextEdit::NoWrap);
-    m_hdc_terminal->setStyleSheet("background: #080e15; color: #e7edf4; border: 1px solid #1f2d3d; border-radius: 6px; padding: 10px; font-family: 'Menlo', 'Courier New', monospace;");
+    m_hdc_terminal->setStyleSheet("background: #ffffff; color: #263c56; border: 1px solid #dce6f1; border-radius: 6px; padding: 10px; font-family: 'Menlo', 'Courier New', monospace;");
     term_layout->addWidget(m_hdc_terminal, 1);
 
     splitter->addWidget(term_widget);
@@ -2745,7 +2751,7 @@ void MainWindow::switchToSingleDevice(const std::string& endpoint) {
 
     // 2. Status badge and status bar
     m_state_badge->setText("正在切换…");
-    m_state_badge->setStyleSheet("color: #f3c969; background: #3d2f10; border: 1px solid #735515; padding: 4px 10px; border-radius: 9px; font-size: 12px;");
+    m_state_badge->setStyleSheet("color: #8b6717; background: #fff6dc; border: 1px solid #ebd495; padding: 4px 10px; border-radius: 9px; font-size: 12px;");
     statusBar()->showMessage(QString("正在断开旧设备并连接至 %1，请稍候…").arg(QString::fromStdString(target)));
     m_device_combo->setEnabled(false);
 
@@ -3192,7 +3198,7 @@ void MainWindow::updateStreamStatusBadge(int w, int h) {
     const QString status = QString("%1 · %2x%3 (%4)").arg(streamType).arg(w).arg(h).arg(qualityLabel);
     if (m_state_badge->text() == status) return;
     m_state_badge->setText(status);
-    m_state_badge->setStyleSheet("color: #53d6b5; background: #0c2724; border: 1px solid #1a4d46; padding: 4px 10px; border-radius: 9px; font-size: 12px;");
+    m_state_badge->setStyleSheet("color: #2467d6; background: #ebf7f2; border: 1px solid #e5f5ed; padding: 4px 10px; border-radius: 9px; font-size: 12px;");
 }
 
 void MainWindow::saveScreenshot() {
@@ -3221,13 +3227,13 @@ void MainWindow::saveScreenshot() {
         auto* dlg = new QDialog(this);
         dlg->setWindowTitle("截图保存成功 · HarmonyCast");
         dlg->setFixedWidth(520);
-        dlg->setStyleSheet("QDialog { background: #0c1219; color: #dbe5ee; }");
+        dlg->setStyleSheet("QDialog { background: #f8fafd; color: #2b405a; }");
         auto* l = new QVBoxLayout(dlg);
         l->setContentsMargins(20, 20, 20, 16);
         l->setSpacing(12);
 
         auto* title = IconManager::label("设备屏幕截图已保存", "CardTitle");
-        title->setStyleSheet("font-size: 15px; font-weight: bold; color: #5ce0c1;");
+        title->setStyleSheet("font-size: 15px; font-weight: bold; color: #138367;");
         l->addWidget(title);
 
         auto* desc = IconManager::label("截图文件已成功保存到本地目录，并已在访达 (Finder) 中自动定位该文件：", "Muted");
@@ -3236,7 +3242,7 @@ void MainWindow::saveScreenshot() {
 
         auto* path_edit = new QLineEdit(dest, dlg);
         path_edit->setReadOnly(true);
-        path_edit->setStyleSheet("QLineEdit { background: #070c13; color: #8ee2ff; border: 1px solid #233446; border-radius: 4px; padding: 6px 8px; font-family: 'Menlo', monospace; font-size: 12px; }");
+        path_edit->setStyleSheet("QLineEdit { background: #f8fbff; color: #087f9d; border: 1px solid #d7e3f0; border-radius: 4px; padding: 6px 8px; font-family: 'Menlo', monospace; font-size: 12px; }");
         l->addWidget(path_edit);
 
         auto* btn_bar = new QHBoxLayout();
@@ -3518,10 +3524,12 @@ void MainWindow::flushLogViews() {
         if (pending.isEmpty()) return;
         auto* scroll = view->verticalScrollBar();
         int oldPosition = scroll->value();
-        bool atBottom = oldPosition >= scroll->maximum() - 25;
+        const int oldHorizontal = view->horizontalScrollBar()->value();
+        bool atBottom = oldPosition >= scroll->maximum() - 1 && !scroll->isSliderDown();
         view->appendPlainText(pending.chopped(1));
         pending.clear();
         scroll->setValue(follow && atBottom ? scroll->maximum() : oldPosition);
+        view->horizontalScrollBar()->setValue(oldHorizontal);
     };
     if (m_log_view->isVisible() && !m_pause_cb->isChecked() && !m_log_search_timer->isActive()) {
         if (m_log_rebuild_needed) renderHiLog();
@@ -3589,10 +3597,12 @@ void MainWindow::renderHiLog() {
 
     m_visible_log_count = visibleCount;
     m_log_rebuild_needed = false;
+    auto* scroll = m_log_view->verticalScrollBar();
+    const int oldPosition = scroll->value(), oldHorizontal = m_log_view->horizontalScrollBar()->value();
+    const bool follow = m_autoscroll_cb->isChecked() && !scroll->isSliderDown() && oldPosition >= scroll->maximum() - 1;
     m_log_view->setPlainText(buffer);
-    if (m_autoscroll_cb && m_autoscroll_cb->isChecked()) {
-        m_log_view->verticalScrollBar()->setValue(m_log_view->verticalScrollBar()->maximum());
-    }
+    scroll->setValue(follow ? scroll->maximum() : oldPosition);
+    m_log_view->horizontalScrollBar()->setValue(oldHorizontal);
     if (m_log_count) {
         m_log_count->setText(QString("显示 %1 条 · 缓存 %2 条")
             .arg(visibleCount)
@@ -3649,10 +3659,10 @@ void MainWindow::onHiLogContextMenu(const QPoint& pos) {
 
     QMenu menu(this);
     menu.setStyleSheet(
-        "QMenu { background-color: #0c131c; border: 1px solid #1c2b3d; border-radius: 6px; padding: 4px; color: #cfdfeb; font-size: 13px; } "
+        "QMenu { background-color: #ffffff; border: 1px solid #dfe8f2; border-radius: 6px; padding: 4px; color: #2e455f; font-size: 13px; } "
         "QMenu::item { padding: 6px 22px 6px 12px; border-radius: 4px; } "
-        "QMenu::item:selected { background-color: #1a2f47; color: #5ce0c1; } "
-        "QMenu::separator { height: 1px; background: #1c2b3d; margin: 4px 6px; }"
+        "QMenu::item:selected { background-color: #e6effc; color: #138367; } "
+        "QMenu::separator { height: 1px; background: #dfe8f2; margin: 4px 6px; }"
     );
 
     auto* clearAction = menu.addAction(IconManager::getIcon("clear"), "清空日志 (Clear)");
@@ -3680,10 +3690,10 @@ void MainWindow::onWebViewConsoleContextMenu(const QPoint& pos) {
 
     QMenu menu(this);
     menu.setStyleSheet(
-        "QMenu { background-color: #0c131c; border: 1px solid #1c2b3d; border-radius: 6px; padding: 4px; color: #cfdfeb; font-size: 13px; } "
+        "QMenu { background-color: #ffffff; border: 1px solid #dfe8f2; border-radius: 6px; padding: 4px; color: #2e455f; font-size: 13px; } "
         "QMenu::item { padding: 6px 22px 6px 12px; border-radius: 4px; } "
-        "QMenu::item:selected { background-color: #1a2f47; color: #5ce0c1; } "
-        "QMenu::separator { height: 1px; background: #1c2b3d; margin: 4px 6px; }"
+        "QMenu::item:selected { background-color: #e6effc; color: #138367; } "
+        "QMenu::separator { height: 1px; background: #dfe8f2; margin: 4px 6px; }"
     );
 
     auto* clearAction = menu.addAction(IconManager::getIcon("clear"), "清空控制台 (Clear)");
@@ -3775,9 +3785,13 @@ void MainWindow::renderWebViewConsole() {
     for (const auto& msg : m_cached_wv_logs) {
         if (webLogMatches(msg)) lines << formatWebLog(msg);
     }
+    auto* scroll = m_wv_console_view->verticalScrollBar();
+    const int oldPosition = scroll->value(), oldHorizontal = m_wv_console_view->horizontalScrollBar()->value();
+    const bool follow = m_wv_autoscroll->isChecked() && !scroll->isSliderDown() && oldPosition >= scroll->maximum() - 1;
     m_wv_console_view->setPlainText(lines.join('\n'));
     m_web_log_rebuild_needed = false;
-    if (m_wv_autoscroll->isChecked()) m_wv_console_view->verticalScrollBar()->setValue(m_wv_console_view->verticalScrollBar()->maximum());
+    scroll->setValue(follow ? scroll->maximum() : oldPosition);
+    m_wv_console_view->horizontalScrollBar()->setValue(oldHorizontal);
 }
 
 QString MainWindow::normalizeResourceType(const std::string& type, const std::string& mime, const std::string& url) {
@@ -3807,8 +3821,8 @@ QWidget* MainWindow::buildNetworkDetailPanel() {
     panel->setObjectName("NetDetailPanel");
     panel->setStyleSheet(
         "QFrame#NetDetailPanel {"
-        "  background: #090e15;"
-        "  border-top: 1px solid #1e2c3d;"
+        "  background: #ffffff;"
+        "  border-top: 1px solid #dce6f1;"
         "}"
     );
 
@@ -3823,18 +3837,18 @@ QWidget* MainWindow::buildNetworkDetailPanel() {
 
     m_detail_method_badge = new QLabel("GET");
     m_detail_method_badge->setStyleSheet(
-        "background: #17384e; color: #5ce0c1; font-weight: bold; font-size: 11px; padding: 2px 7px; border-radius: 4px;"
+        "background: #edf5fc; color: #138367; font-weight: bold; font-size: 11px; padding: 2px 7px; border-radius: 4px;"
     );
     top_bar->addWidget(m_detail_method_badge);
 
     m_detail_url_label = new QLabel();
     m_detail_url_label->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    m_detail_url_label->setStyleSheet("color: #dbe5ee; font-weight: 500; font-size: 11px; font-family: 'Menlo', monospace;");
+    m_detail_url_label->setStyleSheet("color: #2b405a; font-weight: 500; font-size: 11px; font-family: 'Menlo', monospace;");
     top_bar->addWidget(m_detail_url_label, 1);
 
     m_detail_status_badge = new QLabel("200 OK");
     m_detail_status_badge->setStyleSheet(
-        "background: #112e23; color: #5ce0c1; font-weight: bold; font-size: 11px; padding: 2px 7px; border-radius: 4px;"
+        "background: #e9f6ee; color: #138367; font-weight: bold; font-size: 11px; padding: 2px 7px; border-radius: 4px;"
     );
     top_bar->addWidget(m_detail_status_badge);
 
@@ -3849,8 +3863,8 @@ QWidget* MainWindow::buildNetworkDetailPanel() {
     btn_close->setFixedSize(24, 24);
     btn_close->setCursor(Qt::PointingHandCursor);
     btn_close->setStyleSheet(
-        "QPushButton { background: transparent; color: #798d9f; border: none; font-size: 13px; font-weight: bold; }"
-        "QPushButton:hover { background: #3d1a1f; color: #ff7b72; border-radius: 3px; }"
+        "QPushButton { background: transparent; color: #667b94; border: none; font-size: 13px; font-weight: bold; }"
+        "QPushButton:hover { background: #fff0f2; color: #bf4051; border-radius: 3px; }"
     );
     connect(btn_close, &QPushButton::clicked, this, [this]{
         m_wv_net_detail_panel->setVisible(false);
@@ -3869,17 +3883,17 @@ QWidget* MainWindow::buildNetworkDetailPanel() {
     // Tab Widget
     m_net_detail_tabs = new QTabWidget();
     m_net_detail_tabs->setStyleSheet(
-        "QTabWidget::pane { border: 1px solid #1a2737; background: #070c13; border-radius: 4px; } "
-        "QTabBar::tab { background: #0f1722; color: #8ba2b9; padding: 5px 12px; border: 1px solid #1a2737; border-bottom: none; border-top-left-radius: 4px; border-top-right-radius: 4px; font-size: 11px; } "
-        "QTabBar::tab:selected { background: #070c13; color: #5ce0c1; font-weight: bold; border-color: #2d6b91; } "
-        "QTabBar::tab:hover:!selected { background: #162232; color: #dbe5ee; }"
+        "QTabWidget::pane { border: 1px solid #eff4fa; background: #f8fbff; border-radius: 4px; } "
+        "QTabBar::tab { background: #f4f8fd; color: #637993; padding: 5px 12px; border: 1px solid #eff4fa; border-bottom: none; border-top-left-radius: 4px; border-top-right-radius: 4px; font-size: 11px; } "
+        "QTabBar::tab:selected { background: #f8fbff; color: #138367; font-weight: bold; border-color: #397bbb; } "
+        "QTabBar::tab:hover:!selected { background: #f0f5fb; color: #2b405a; }"
     );
 
     // Tab 1: 标头 (Headers)
     m_net_headers_view = new QTextEdit();
     m_net_headers_view->setReadOnly(true);
     m_net_headers_view->setFont(QFont("Menlo", 11));
-    m_net_headers_view->setStyleSheet("background: #070c13; color: #dbe5ee; border: none; font-family: 'Menlo', monospace; padding: 6px;");
+    m_net_headers_view->setStyleSheet("background: #f8fbff; color: #2b405a; border: none; font-family: 'Menlo', monospace; padding: 6px;");
     m_net_detail_tabs->addTab(m_net_headers_view, "标头 (Headers)");
 
     // Tab 2: 载荷 (Payload)
@@ -3903,7 +3917,7 @@ QWidget* MainWindow::buildNetworkDetailPanel() {
     m_net_payload_view = new QPlainTextEdit();
     m_net_payload_view->setReadOnly(true);
     m_net_payload_view->setFont(QFont("Menlo", 11));
-    m_net_payload_view->setStyleSheet("background: #070c13; color: #dbe5ee; border: 1px solid #1a2737; border-radius: 4px; padding: 4px;");
+    m_net_payload_view->setStyleSheet("background: #f8fbff; color: #2b405a; border: 1px solid #eff4fa; border-radius: 4px; padding: 4px;");
     p_layout->addWidget(m_net_payload_view, 1);
     m_net_detail_tabs->addTab(payload_page, "载荷 (Payload)");
 
@@ -3935,7 +3949,7 @@ QWidget* MainWindow::buildNetworkDetailPanel() {
     m_net_response_view = new QPlainTextEdit();
     m_net_response_view->setReadOnly(true);
     m_net_response_view->setFont(QFont("Menlo", 11));
-    m_net_response_view->setStyleSheet("background: #070c13; color: #dbe5ee; border: 1px solid #1a2737; border-radius: 4px; padding: 4px;");
+    m_net_response_view->setStyleSheet("background: #f8fbff; color: #2b405a; border: 1px solid #eff4fa; border-radius: 4px; padding: 4px;");
     r_layout->addWidget(m_net_response_view, 1);
     m_net_detail_tabs->addTab(resp_page, "响应 (Response)");
 
@@ -3960,7 +3974,7 @@ QWidget* MainWindow::buildNetworkDetailPanel() {
     m_net_curl_view = new QPlainTextEdit();
     m_net_curl_view->setReadOnly(true);
     m_net_curl_view->setFont(QFont("Menlo", 11));
-    m_net_curl_view->setStyleSheet("background: #070c13; color: #dbe5ee; border: 1px solid #1a2737; border-radius: 4px; padding: 4px;");
+    m_net_curl_view->setStyleSheet("background: #f8fbff; color: #2b405a; border: 1px solid #eff4fa; border-radius: 4px; padding: 4px;");
     c_layout->addWidget(m_net_curl_view, 1);
     m_net_detail_tabs->addTab(curl_page, "cURL 命令");
 
@@ -3989,15 +4003,15 @@ void MainWindow::populateNetworkDetail(const WebNetworkRequest& req) {
     QString method = QString::fromStdString(req.method).toUpper();
     m_detail_method_badge->setText(method);
     if (method == "GET") {
-        m_detail_method_badge->setStyleSheet("background: #112e23; color: #5ce0c1; font-weight: bold; font-size: 11px; padding: 2px 7px; border-radius: 4px;");
+        m_detail_method_badge->setStyleSheet("background: #e9f6ee; color: #138367; font-weight: bold; font-size: 11px; padding: 2px 7px; border-radius: 4px;");
     } else if (method == "POST") {
-        m_detail_method_badge->setStyleSheet("background: #172d4a; color: #79c0ff; font-weight: bold; font-size: 11px; padding: 2px 7px; border-radius: 4px;");
+        m_detail_method_badge->setStyleSheet("background: #edf4ff; color: #286ac6; font-weight: bold; font-size: 11px; padding: 2px 7px; border-radius: 4px;");
     } else if (method == "PUT") {
-        m_detail_method_badge->setStyleSheet("background: #362f12; color: #f3c969; font-weight: bold; font-size: 11px; padding: 2px 7px; border-radius: 4px;");
+        m_detail_method_badge->setStyleSheet("background: #fff6dd; color: #8b6717; font-weight: bold; font-size: 11px; padding: 2px 7px; border-radius: 4px;");
     } else if (method == "DELETE") {
-        m_detail_method_badge->setStyleSheet("background: #3d1a1f; color: #ff7b72; font-weight: bold; font-size: 11px; padding: 2px 7px; border-radius: 4px;");
+        m_detail_method_badge->setStyleSheet("background: #fff0f2; color: #bf4051; font-weight: bold; font-size: 11px; padding: 2px 7px; border-radius: 4px;");
     } else {
-        m_detail_method_badge->setStyleSheet("background: #192433; color: #c2d1df; font-weight: bold; font-size: 11px; padding: 2px 7px; border-radius: 4px;");
+        m_detail_method_badge->setStyleSheet("background: #f0f5fb; color: #334a65; font-weight: bold; font-size: 11px; padding: 2px 7px; border-radius: 4px;");
     }
 
     // 2. URL label
@@ -4009,43 +4023,43 @@ void MainWindow::populateNetworkDetail(const WebNetworkRequest& req) {
         QString sText = req.status_text.empty() ? "" : QString(" %1").arg(QString::fromStdString(req.status_text));
         m_detail_status_badge->setText(QString("%1%2").arg(req.status_code).arg(sText));
         if (req.status_code >= 500) {
-            m_detail_status_badge->setStyleSheet("background: #35143d; color: #d2a8ff; font-weight: bold; font-size: 11px; padding: 2px 7px; border-radius: 4px;");
+            m_detail_status_badge->setStyleSheet("background: #f7eefb; color: #8452b2; font-weight: bold; font-size: 11px; padding: 2px 7px; border-radius: 4px;");
         } else if (req.status_code >= 400) {
-            m_detail_status_badge->setStyleSheet("background: #3d1a1f; color: #ff7b72; font-weight: bold; font-size: 11px; padding: 2px 7px; border-radius: 4px;");
+            m_detail_status_badge->setStyleSheet("background: #fff0f2; color: #bf4051; font-weight: bold; font-size: 11px; padding: 2px 7px; border-radius: 4px;");
         } else if (req.status_code >= 300) {
-            m_detail_status_badge->setStyleSheet("background: #362f12; color: #f3c969; font-weight: bold; font-size: 11px; padding: 2px 7px; border-radius: 4px;");
+            m_detail_status_badge->setStyleSheet("background: #fff6dd; color: #8b6717; font-weight: bold; font-size: 11px; padding: 2px 7px; border-radius: 4px;");
         } else {
-            m_detail_status_badge->setStyleSheet("background: #112e23; color: #5ce0c1; font-weight: bold; font-size: 11px; padding: 2px 7px; border-radius: 4px;");
+            m_detail_status_badge->setStyleSheet("background: #e9f6ee; color: #138367; font-weight: bold; font-size: 11px; padding: 2px 7px; border-radius: 4px;");
         }
     } else {
         m_detail_status_badge->setText("请求中…");
-        m_detail_status_badge->setStyleSheet("background: #172433; color: #8ba2b9; font-weight: bold; font-size: 11px; padding: 2px 7px; border-radius: 4px;");
+        m_detail_status_badge->setStyleSheet("background: #edf3fb; color: #637993; font-weight: bold; font-size: 11px; padding: 2px 7px; border-radius: 4px;");
     }
 
     // 4. Headers Tab
     QString timingStr = (req.elapsed_ms >= 0) ? QString("%1 ms").arg(req.elapsed_ms) : "进行中…";
     QString resType = QString::fromStdString(req.resource_type.empty() ? normalizeResourceType("", req.mime_type, req.url).toStdString() : req.resource_type);
-    QString html = "<div style=\"font-family:'Menlo',monospace; font-size:11px; color:#dbe5ee; line-height:1.6;\">";
+    QString html = "<div style=\"font-family:'Menlo',monospace; font-size:11px; color:#2b405a; line-height:1.6;\">";
 
     // General section
-    html += "<div style=\"color:#5ce0c1; font-weight:bold; font-size:12px; margin-bottom:4px;\">常规 (General)</div>";
+    html += "<div style=\"color:#138367; font-weight:bold; font-size:12px; margin-bottom:4px;\">常规 (General)</div>";
     html += "<table cellpadding=\"2\" cellspacing=\"0\" style=\"margin-bottom:12px; width:100%;\">";
-    html += QString("<tr><td style=\"color:#798d9f; width:120px;\">请求 URL:</td><td style=\"color:#dbe5ee; word-break:break-all;\">%1</td></tr>").arg(QString::fromStdString(req.url).toHtmlEscaped());
-    html += QString("<tr><td style=\"color:#798d9f;\">请求方法:</td><td style=\"color:#79c0ff; font-weight:bold;\">%1</td></tr>").arg(method);
-    html += QString("<tr><td style=\"color:#798d9f;\">状态代码:</td><td style=\"color:%1;\">%2</td></tr>")
-        .arg(req.status_code >= 400 ? "#ff7b72" : "#5ce0c1", QString::number(req.status_code));
-    html += QString("<tr><td style=\"color:#798d9f;\">资源类型:</td><td style=\"color:#f3c969;\">%1</td></tr>").arg(resType);
-    html += QString("<tr><td style=\"color:#798d9f;\">MIME 类型:</td><td style=\"color:#8ba2b9;\">%1</td></tr>").arg(QString::fromStdString(req.mime_type).toHtmlEscaped());
-    html += QString("<tr><td style=\"color:#798d9f;\">发起时间:</td><td style=\"color:#8ba2b9;\">%1</td></tr>").arg(QString::fromStdString(req.timestamp));
-    html += QString("<tr><td style=\"color:#798d9f;\">请求耗时:</td><td style=\"color:#8ba2b9;\">%1</td></tr>").arg(timingStr);
+    html += QString("<tr><td style=\"color:#667b94; width:120px;\">请求 URL:</td><td style=\"color:#2b405a; word-break:break-all;\">%1</td></tr>").arg(QString::fromStdString(req.url).toHtmlEscaped());
+    html += QString("<tr><td style=\"color:#667b94;\">请求方法:</td><td style=\"color:#286ac6; font-weight:bold;\">%1</td></tr>").arg(method);
+    html += QString("<tr><td style=\"color:#667b94;\">状态代码:</td><td style=\"color:%1;\">%2</td></tr>")
+        .arg(req.status_code >= 400 ? "#bf4051" : "#138367", QString::number(req.status_code));
+    html += QString("<tr><td style=\"color:#667b94;\">资源类型:</td><td style=\"color:#8b6717;\">%1</td></tr>").arg(resType);
+    html += QString("<tr><td style=\"color:#667b94;\">MIME 类型:</td><td style=\"color:#637993;\">%1</td></tr>").arg(QString::fromStdString(req.mime_type).toHtmlEscaped());
+    html += QString("<tr><td style=\"color:#667b94;\">发起时间:</td><td style=\"color:#637993;\">%1</td></tr>").arg(QString::fromStdString(req.timestamp));
+    html += QString("<tr><td style=\"color:#667b94;\">请求耗时:</td><td style=\"color:#637993;\">%1</td></tr>").arg(timingStr);
     html += "</table>";
 
     // Response Headers section
     if (!req.response_headers.empty()) {
-        html += QString("<div style=\"color:#5ce0c1; font-weight:bold; font-size:12px; margin-bottom:4px;\">响应标头 (Response Headers, %1)</div>").arg(req.response_headers.size());
+        html += QString("<div style=\"color:#138367; font-weight:bold; font-size:12px; margin-bottom:4px;\">响应标头 (Response Headers, %1)</div>").arg(req.response_headers.size());
         html += "<table cellpadding=\"2\" cellspacing=\"0\" style=\"margin-bottom:12px; width:100%;\">";
         for (const auto& [k, v] : req.response_headers) {
-            html += QString("<tr><td style=\"color:#798d9f; width:180px; vertical-align:top;\">%1:</td><td style=\"color:#dbe5ee; word-break:break-all;\">%2</td></tr>")
+            html += QString("<tr><td style=\"color:#667b94; width:180px; vertical-align:top;\">%1:</td><td style=\"color:#2b405a; word-break:break-all;\">%2</td></tr>")
                 .arg(QString::fromStdString(k).toHtmlEscaped(), QString::fromStdString(v).toHtmlEscaped());
         }
         html += "</table>";
@@ -4053,10 +4067,10 @@ void MainWindow::populateNetworkDetail(const WebNetworkRequest& req) {
 
     // Request Headers section
     if (!req.headers.empty()) {
-        html += QString("<div style=\"color:#5ce0c1; font-weight:bold; font-size:12px; margin-bottom:4px;\">请求标头 (Request Headers, %1)</div>").arg(req.headers.size());
+        html += QString("<div style=\"color:#138367; font-weight:bold; font-size:12px; margin-bottom:4px;\">请求标头 (Request Headers, %1)</div>").arg(req.headers.size());
         html += "<table cellpadding=\"2\" cellspacing=\"0\" style=\"width:100%;\">";
         for (const auto& [k, v] : req.headers) {
-            html += QString("<tr><td style=\"color:#798d9f; width:180px; vertical-align:top;\">%1:</td><td style=\"color:#dbe5ee; word-break:break-all;\">%2</td></tr>")
+            html += QString("<tr><td style=\"color:#667b94; width:180px; vertical-align:top;\">%1:</td><td style=\"color:#2b405a; word-break:break-all;\">%2</td></tr>")
                 .arg(QString::fromStdString(k).toHtmlEscaped(), QString::fromStdString(v).toHtmlEscaped());
         }
         html += "</table>";
@@ -4189,6 +4203,8 @@ void MainWindow::filterNetworkTable() {
 
 void MainWindow::flushNetworkUpdates() {
     if (m_wv_network_table->isVisible()) {
+        auto* scroll = m_wv_network_table->verticalScrollBar();
+        const bool follow = m_wv_autoscroll->isChecked() && !scroll->isSliderDown() && scroll->value() >= m_last_network_scroll_max - 2;
         m_wv_network_table->setUpdatesEnabled(false);
         auto apply = [this](const std::string& id, QTableWidgetItem* item) {
             auto request = m_wv_requests.find(id);
@@ -4212,7 +4228,8 @@ void MainWindow::flushNetworkUpdates() {
         const bool changed = m_network_filter_changed || !m_dirty_network_requests.empty();
         m_network_filter_changed = false;
         m_dirty_network_requests.clear();
-        if (changed && m_wv_autoscroll->isChecked()) m_wv_network_table->scrollToBottom();
+        if (changed && follow) m_wv_network_table->scrollToBottom();
+        m_last_network_scroll_max = scroll->maximum();
         m_wv_network_table->setUpdatesEnabled(true);
     }
     m_wv_net_status_label->setText(QString("%1 条日志 · 显示 %2 / %3 个请求%4")
@@ -4253,17 +4270,17 @@ void MainWindow::onWebNetworkRequest(const WebNetworkRequest& req) {
 
     // Col 0: status — pending
     auto* statusItem = new QTableWidgetItem("…");
-    statusItem->setForeground(QColor("#627588"));
+    statusItem->setForeground(QColor("#647991"));
     m_wv_network_table->setItem(row, 0, statusItem);
 
     // Col 1: method — colored by verb
     auto* methodItem = new QTableWidgetItem(QString::fromStdString(req.method));
     QString method = QString::fromStdString(req.method).toUpper();
-    if (method == "GET")         methodItem->setForeground(QColor("#5ce0c1"));
-    else if (method == "POST")   methodItem->setForeground(QColor("#79c0ff"));
-    else if (method == "PUT")    methodItem->setForeground(QColor("#f3c969"));
-    else if (method == "DELETE") methodItem->setForeground(QColor("#ff7b72"));
-    else                         methodItem->setForeground(QColor("#c2d1df"));
+    if (method == "GET")         methodItem->setForeground(QColor("#138367"));
+    else if (method == "POST")   methodItem->setForeground(QColor("#286ac6"));
+    else if (method == "PUT")    methodItem->setForeground(QColor("#8b6717"));
+    else if (method == "DELETE") methodItem->setForeground(QColor("#bf4051"));
+    else                         methodItem->setForeground(QColor("#334a65"));
     m_wv_network_table->setItem(row, 1, methodItem);
 
     // Col 2: URL — store request_id in UserRole
@@ -4275,17 +4292,17 @@ void MainWindow::onWebNetworkRequest(const WebNetworkRequest& req) {
     // Col 3: resource type badge
     auto* typeItem = new QTableWidgetItem(resType);
     if (resType == "Fetch/XHR") {
-        typeItem->setForeground(QColor("#f3c969"));
+        typeItem->setForeground(QColor("#8b6717"));
     } else if (resType == "Doc") {
-        typeItem->setForeground(QColor("#79c0ff"));
+        typeItem->setForeground(QColor("#286ac6"));
     } else if (resType == "JS") {
-        typeItem->setForeground(QColor("#a8d878"));
+        typeItem->setForeground(QColor("#377d4b"));
     } else if (resType == "CSS") {
-        typeItem->setForeground(QColor("#d2a8ff"));
+        typeItem->setForeground(QColor("#8452b2"));
     } else if (resType == "Img") {
-        typeItem->setForeground(QColor("#5ce0c1"));
+        typeItem->setForeground(QColor("#138367"));
     } else {
-        typeItem->setForeground(QColor("#8ba2b9"));
+        typeItem->setForeground(QColor("#637993"));
     }
     m_wv_network_table->setItem(row, 3, typeItem);
 
@@ -4333,33 +4350,33 @@ void MainWindow::onWebNetworkResponse(const QString& reqId, int status, const QS
         {
             // Col 0: status code
             auto* statusItem = new QTableWidgetItem(QString::number(status));
-            if (status >= 500)      statusItem->setForeground(QColor("#d2a8ff"));
-            else if (status >= 400) statusItem->setForeground(QColor("#ff7b72"));
-            else if (status >= 300) statusItem->setForeground(QColor("#f3c969"));
-            else                    statusItem->setForeground(QColor("#5ce0c1"));
+            if (status >= 500)      statusItem->setForeground(QColor("#8452b2"));
+            else if (status >= 400) statusItem->setForeground(QColor("#bf4051"));
+            else if (status >= 300) statusItem->setForeground(QColor("#8b6717"));
+            else                    statusItem->setForeground(QColor("#138367"));
             m_wv_network_table->setItem(r, 0, statusItem);
 
             // Col 3: resource type
             auto* typeItem = new QTableWidgetItem(resType);
             if (resType == "Fetch/XHR") {
-                typeItem->setForeground(QColor("#f3c969"));
+                typeItem->setForeground(QColor("#8b6717"));
             } else if (resType == "Doc") {
-                typeItem->setForeground(QColor("#79c0ff"));
+                typeItem->setForeground(QColor("#286ac6"));
             } else if (resType == "JS") {
-                typeItem->setForeground(QColor("#a8d878"));
+                typeItem->setForeground(QColor("#377d4b"));
             } else if (resType == "CSS") {
-                typeItem->setForeground(QColor("#d2a8ff"));
+                typeItem->setForeground(QColor("#8452b2"));
             } else if (resType == "Img") {
-                typeItem->setForeground(QColor("#5ce0c1"));
+                typeItem->setForeground(QColor("#138367"));
             } else {
-                typeItem->setForeground(QColor("#8ba2b9"));
+                typeItem->setForeground(QColor("#637993"));
             }
             m_wv_network_table->setItem(r, 3, typeItem);
 
             // Col 4: elapsed
             QString timing = elapsed >= 0 ? QString("%1 ms").arg(elapsed) : "完成";
             auto* timeItem = new QTableWidgetItem(timing);
-            timeItem->setForeground(elapsed > 2000 ? QColor("#f3c969") : QColor("#8ba2b9"));
+            timeItem->setForeground(elapsed > 2000 ? QColor("#8b6717") : QColor("#637993"));
             m_wv_network_table->setItem(r, 4, timeItem);
         }
     }
@@ -4383,6 +4400,7 @@ void MainWindow::clearWebViewConsole() {
     m_network_items.clear();
     m_dirty_network_requests.clear();
     m_visible_network_count = 0;
+    m_last_network_scroll_max = 0;
     m_network_filter_changed = false;
     m_webview->clearRequests();
     m_raw_response_body.clear();
@@ -4646,11 +4664,11 @@ void MainWindow::openSettingsDialog() {
     dlg->setWindowTitle("系统偏好设置 · HarmonyCast");
     dlg->resize(560, 530);
     dlg->setStyleSheet(
-        "QDialog { background: #0c1219; color: #dbe5ee; } "
-        "QGroupBox { font-weight: bold; font-size: 13px; color: #5ce0c1; border: 1px solid #1c2b3d; border-radius: 6px; margin-top: 12px; padding-top: 12px; background: #090e15; } "
+        "QDialog { background: #f8fafd; color: #2b405a; } "
+        "QGroupBox { font-weight: bold; font-size: 13px; color: #138367; border: 1px solid #dfe8f2; border-radius: 6px; margin-top: 12px; padding-top: 12px; background: #ffffff; } "
         "QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 4px; } "
-        "QCheckBox { color: #dbe5ee; font-size: 13px; } "
-        "QLabel { color: #8ba2b9; font-size: 12px; }"
+        "QCheckBox { color: #2b405a; font-size: 13px; } "
+        "QLabel { color: #637993; font-size: 12px; }"
     );
 
     auto* l = new QVBoxLayout(dlg);
@@ -4678,7 +4696,7 @@ void MainWindow::openSettingsDialog() {
 
     auto* timeoutRow = new QHBoxLayout();
     auto* lblTimeout = new QLabel("无操作超时自动断开:");
-    lblTimeout->setStyleSheet("color: #dbe5ee; font-size: 13px;");
+    lblTimeout->setStyleSheet("color: #2b405a; font-size: 13px;");
     timeoutRow->addWidget(lblTimeout);
 
     auto* comboTimeout = new QComboBox(grpGeneral);
@@ -4695,7 +4713,7 @@ void MainWindow::openSettingsDialog() {
         comboTimeout->addItem(QString("%1 秒").arg(m_idle_timeout_secs), m_idle_timeout_secs);
         comboTimeout->setCurrentIndex(comboTimeout->count() - 1);
     }
-    comboTimeout->setStyleSheet("QComboBox { background: #070c13; color: #dbe5ee; border: 1px solid #1c2b3d; border-radius: 4px; padding: 2px 8px; font-size: 12px; min-width: 140px; }");
+    comboTimeout->setStyleSheet("QComboBox { background: #f8fbff; color: #2b405a; border: 1px solid #dfe8f2; border-radius: 4px; padding: 2px 8px; font-size: 12px; min-width: 140px; }");
     timeoutRow->addWidget(comboTimeout);
     timeoutRow->addStretch();
     gLayout->addLayout(timeoutRow);
@@ -4716,7 +4734,7 @@ void MainWindow::openSettingsDialog() {
     auto* pathRow = new QHBoxLayout();
     QString logDir = Logger::logDirectory();
     auto* lblPath = new QLabel(QString("日志目录: %1").arg(logDir));
-    lblPath->setStyleSheet("color: #7d8f9f; font-family: 'Menlo', monospace; font-size: 11px;");
+    lblPath->setStyleSheet("color: #667b94; font-family: 'Menlo', monospace; font-size: 11px;");
     pathRow->addWidget(lblPath, 1);
 
     auto* btnOpenDir = IconManager::button("打开目录", "", "hub");
@@ -4734,7 +4752,7 @@ void MainWindow::openSettingsDialog() {
 
     if (!latestCrash.isEmpty()) {
         lblCrashStatus = new QLabel(QString("⚠️ 检测到异常退出报告: %1").arg(QFileInfo(latestCrash).fileName()));
-        lblCrashStatus->setStyleSheet("color: #ff9f9f; font-weight: 500; font-size: 12px;");
+        lblCrashStatus->setStyleSheet("color: #be4251; font-weight: 500; font-size: 12px;");
         btnViewCrash = IconManager::button("查看崩溃堆栈", "Danger", "clear");
         btnViewCrash->setFixedHeight(26);
         connect(btnViewCrash, &QPushButton::clicked, this, [this]{
@@ -4742,7 +4760,7 @@ void MainWindow::openSettingsDialog() {
         });
     } else {
         lblCrashStatus = new QLabel("✓ 运行状态良好，暂无异常退出记录");
-        lblCrashStatus->setStyleSheet("color: #5ce0c1; font-size: 12px;");
+        lblCrashStatus->setStyleSheet("color: #138367; font-size: 12px;");
     }
     crashRow->addWidget(lblCrashStatus, 1);
     if (btnViewCrash) {
@@ -4753,7 +4771,7 @@ void MainWindow::openSettingsDialog() {
     // 导出诊断包行
     auto* exportRow = new QHBoxLayout();
     auto* lblExportHint = new QLabel("可将运行日志、崩溃报告及设备环境一键打包为 zip 反馈给开发人员排查。");
-    lblExportHint->setStyleSheet("color: #63778a; font-size: 11px;");
+    lblExportHint->setStyleSheet("color: #657991; font-size: 11px;");
     lblExportHint->setWordWrap(true);
     exportRow->addWidget(lblExportHint, 1);
 
@@ -4774,9 +4792,9 @@ void MainWindow::openSettingsDialog() {
     uLayout->setSpacing(8);
 
     auto* verRow = new QHBoxLayout();
-    QString curVer = m_updater ? m_updater->currentVersion() : "2.3.0";
+    QString curVer = m_updater ? m_updater->currentVersion() : "2.3.1";
     auto* lblCurVer = new QLabel(QString("当前版本: v%1 (正式版)").arg(curVer));
-    lblCurVer->setStyleSheet("color: #dbe5ee; font-size: 12px; font-weight: 500;");
+    lblCurVer->setStyleSheet("color: #2b405a; font-size: 12px; font-weight: 500;");
     verRow->addWidget(lblCurVer, 1);
 
     auto* btnCheckUpdate = IconManager::button("检查最新版本", "Primary", "refresh");
@@ -4787,7 +4805,7 @@ void MainWindow::openSettingsDialog() {
     // 更新源配置
     auto* urlRow = new QHBoxLayout();
     auto* lblUrl = new QLabel("更新服务源:");
-    lblUrl->setStyleSheet("color: #8ba2b9; font-size: 11px;");
+    lblUrl->setStyleSheet("color: #637993; font-size: 11px;");
     urlRow->addWidget(lblUrl);
 
     auto* editUrl = new QLineEdit();
@@ -4796,7 +4814,7 @@ void MainWindow::openSettingsDialog() {
     editUrl->setText(configuredUrl);
     editUrl->setFixedHeight(26);
     editUrl->setPlaceholderText("https://.../releases/latest 或 version.json");
-    editUrl->setStyleSheet("background: #070c13; color: #dbe5ee; border: 1px solid #1c2b3d; border-radius: 4px; padding: 2px 6px; font-size: 11px;");
+    editUrl->setStyleSheet("background: #f8fbff; color: #2b405a; border: 1px solid #dfe8f2; border-radius: 4px; padding: 2px 6px; font-size: 11px;");
     urlRow->addWidget(editUrl, 1);
     uLayout->addLayout(urlRow);
 
@@ -4809,7 +4827,7 @@ void MainWindow::openSettingsDialog() {
     });
 
     auto* lblUpdateTip = new QLabel("自动连接指定版本源检查新特性、安全更新与性能改进补丁。");
-    lblUpdateTip->setStyleSheet("color: #63778a; font-size: 11px;");
+    lblUpdateTip->setStyleSheet("color: #657991; font-size: 11px;");
     uLayout->addWidget(lblUpdateTip);
 
     l->addWidget(grpUpdate);
@@ -4872,7 +4890,7 @@ void MainWindow::onUpdateAvailable(const UpdateInfo& info, bool silent) {
 
 void MainWindow::onNoUpdateAvailable(bool silent) {
     if (!silent) {
-        QString curVer = m_updater ? m_updater->currentVersion() : "2.3.0";
+        QString curVer = m_updater ? m_updater->currentVersion() : "2.3.1";
         showToast(QString("当前已是最新版本 (v%1)").arg(curVer));
         statusBar()->showMessage(QString("当前已是最新版本 (v%1)").arg(curVer), 4000);
         QWidget* parentDlg = QApplication::activeModalWidget() ? QApplication::activeModalWidget() : this;
@@ -4914,8 +4932,8 @@ void MainWindow::showCrashReportDialog(const QString& report) {
     dlg->setWindowTitle("崩溃堆栈排查报告 · HarmonyCast");
     dlg->resize(720, 520);
     dlg->setStyleSheet(
-        "QDialog { background: #0c1219; color: #dbe5ee; } "
-        "QTextEdit { background: #070c13; color: #ff9f9f; border: 1px solid #233446; border-radius: 4px; font-family: 'Menlo', monospace; font-size: 12px; padding: 8px; }"
+        "QDialog { background: #f8fafd; color: #2b405a; } "
+        "QTextEdit { background: #f8fbff; color: #be4251; border: 1px solid #d7e3f0; border-radius: 4px; font-family: 'Menlo', monospace; font-size: 12px; padding: 8px; }"
     );
 
     auto* layout = new QVBoxLayout(dlg);
@@ -4923,7 +4941,7 @@ void MainWindow::showCrashReportDialog(const QString& report) {
     layout->setSpacing(12);
 
     auto* hdr = new QLabel("崩溃堆栈快照 (请反馈给研发进行定位排查):");
-    hdr->setStyleSheet("font-size: 13px; font-weight: bold; color: #dbe5ee;");
+    hdr->setStyleSheet("font-size: 13px; font-weight: bold; color: #2b405a;");
     layout->addWidget(hdr);
 
     auto* view = new QTextEdit();

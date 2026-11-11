@@ -237,7 +237,7 @@ static void testPage(const QString& directory) {
     if (!artifactDirectory.isEmpty()) {
         page.resize(1120, 720);
         page.setStyleSheet(IconManager::getAppStyleSheet());
-        page.setPalette(IconManager::getDarkPalette());
+        page.setPalette(IconManager::getAppPalette());
         page.show();
         QCoreApplication::processEvents();
         check(page.grab().save(artifactDirectory + "/inspection-results.png"), "UI screenshot unavailable");

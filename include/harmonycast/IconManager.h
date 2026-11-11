@@ -7,6 +7,8 @@
 #include <QLabel>
 #include <QPalette>
 
+class QAbstractScrollArea;
+
 namespace harmonycast {
 
 class IconManager {
@@ -17,7 +19,8 @@ public:
     static QPushButton* iconButton(const QString& iconName, const QString& tooltip = "", const QString& name = "IconBtn", int width = 30, int height = 24);
     static QLabel* label(const QString& text, const QString& name = "", bool wrap = false);
     static void setupComboBoxPopup(QComboBox* combo, int minWidth = 0);
-    static QPalette getDarkPalette();
+    static void setupScrollArea(QAbstractScrollArea* area);
+    static QPalette getAppPalette();
     static QString getAppStyleSheet(const QString& resourceDir = "");
 };
 

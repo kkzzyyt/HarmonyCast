@@ -341,6 +341,8 @@ private:
     bool m_auto_start_mirror{true};
     bool m_user_stopped_mirror{false};
     bool m_background_services_enabled{true};
+    bool m_background_services_started{false};
+    int m_wheel_zoom_delta{0};
     int m_idle_timeout_secs{0};
     qint64 m_last_user_activity{0};
     QTimer* m_idle_timer{nullptr};
@@ -361,6 +363,7 @@ private:
     std::set<std::string> m_dirty_network_requests;
     bool m_network_filter_changed{false};
     int m_visible_network_count{0};
+    int m_last_network_scroll_max{0};
 };
 
 } // namespace harmonycast

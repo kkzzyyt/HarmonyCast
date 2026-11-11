@@ -23,7 +23,7 @@ InspectionPage::InspectionPage(std::shared_ptr<HdcClient> hdc, QWidget* parent)
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(24, 24, 24, 24);
     layout->setSpacing(16);
-    layout->addWidget(IconManager::label("逐台连接 HDC，读取设备信息后断开，再巡检下一台", "Muted", true));
+    layout->addWidget(IconManager::label("导入设备列表，逐台采集状态并导出巡检表格", "Muted", true));
 
     auto* splitter = new QSplitter(Qt::Horizontal, this);
     splitter->setChildrenCollapsible(false);
@@ -36,7 +36,7 @@ InspectionPage::InspectionPage(std::shared_ptr<HdcClient> hdc, QWidget* parent)
     inputLayout->setSpacing(12);
     auto* inputHeading = new QHBoxLayout;
     inputHeading->setSpacing(8);
-    inputHeading->addWidget(IconManager::label("巡检列表", "CardTitle"));
+    inputHeading->addWidget(IconManager::label("巡检目标", "CardTitle"));
     inputHeading->addStretch();
     m_import_button = IconManager::button("导入 TXT");
     m_import_button->setFixedHeight(32);
@@ -60,7 +60,7 @@ InspectionPage::InspectionPage(std::shared_ptr<HdcClient> hdc, QWidget* parent)
     m_input_errors = IconManager::label("", "Muted", true);
     m_input_errors->setTextFormat(Qt::PlainText);
     m_input_errors->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    m_input_errors->setStyleSheet("color: #dfc38a;");
+    m_input_errors->setStyleSheet("color: #9c6c12;");
     inputLayout->addWidget(m_input_errors);
 
     auto* actions = new QHBoxLayout;
@@ -68,11 +68,6 @@ InspectionPage::InspectionPage(std::shared_ptr<HdcClient> hdc, QWidget* parent)
     m_start_button = IconManager::button("开始巡检", "Primary", "play");
     m_start_button->setObjectName("InspectionStart");
     m_start_button->setFixedHeight(36);
-    m_start_button->setStyleSheet(
-        "QPushButton { background: #53d6b5; border: 1px solid #53d6b5; color: #09231e; font-weight: 600; }"
-        "QPushButton:hover { background: #78ebcb; }"
-        "QPushButton:disabled { background: #24463f; border-color: #24463f; color: #66847c; }"
-        "QPushButton:focus { border: 2px solid #b5f5df; }");
     m_stop_button = IconManager::button("停止");
     m_stop_button->setFixedHeight(36);
     m_stop_button->setEnabled(false);
@@ -106,25 +101,31 @@ InspectionPage::InspectionPage(std::shared_ptr<HdcClient> hdc, QWidget* parent)
     m_progress->setRange(0, 1);
     m_progress->setValue(0);
     m_progress->setFormat("未开始");
-    m_progress->setFixedHeight(20);
+    m_progress->setFixedHeight(4);
+    m_progress->setTextVisible(false);
+    m_progress->hide();
     m_progress->setAlignment(Qt::AlignCenter);
     m_progress->setStyleSheet(
-        "QProgressBar { background: #0a1119; border: 1px solid #25354a; border-radius: 4px; color: #e7edf4; }"
-        "QProgressBar::chunk { background: #245546; border-radius: 3px; }");
+        "QProgressBar { background: #e3ebf7; border: none; border-radius: 2px; }"
+        "QProgressBar::chunk { background: #2467d6; border-radius: 2px; }");
     results->addWidget(m_progress);
     m_table = new QTableWidget;
     m_table->setObjectName("InspectionResults");
     m_table->setColumnCount(12);
-    m_table->setHorizontalHeaderLabels({"目标 IP:端口", "结果", "运行时间", "MAC 地址", "内存 已用 / 总量（MiB）",
+    m_table->setHorizontalHeaderLabels({"IP / 端口", "状态", "运行时间", "MAC 地址", "内存（MiB）",
                                        "内存使用率", "/data 使用率", "型号", "系统版本", "设备 IP", "巡检时间", "备注"});
     m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_table->setWordWrap(false);
+    m_table->setShowGrid(false);
+    m_table->setAlternatingRowColors(true);
+    m_table->setStyleSheet("QTableWidget { border: none; border-radius: 0; } QTableWidget::item { border-bottom: 1px solid #eaf0f7; }");
+    m_table->horizontalHeaderItem(4)->setToolTip("已用内存 / 总内存（MiB）");
     m_table->verticalHeader()->setVisible(false);
     m_table->verticalHeader()->setDefaultSectionSize(36);
     m_table->horizontalHeader()->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     m_table->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
-    const int widths[] = {144, 64, 120, 152, 144, 112, 112, 120, 192, 208, 176, 320};
+    const int widths[] = {148, 72, 128, 164, 144, 112, 112, 120, 192, 208, 176, 320};
     for (int i = 0; i < 12; ++i) m_table->setColumnWidth(i, widths[i]);
     results->addWidget(m_table, 1);
     m_summary = IconManager::label("采集运行时长、网络、内存、存储、系统和 CPU 信息", "Muted", true);
@@ -132,7 +133,7 @@ InspectionPage::InspectionPage(std::shared_ptr<HdcClient> hdc, QWidget* parent)
     splitter->addWidget(resultCard);
     splitter->setStretchFactor(0, 0);
     splitter->setStretchFactor(1, 1);
-    splitter->setSizes({232, 744});
+    splitter->setSizes({248, 760});
     layout->addWidget(splitter, 1);
 
     connect(m_input, &QPlainTextEdit::textChanged, this, &InspectionPage::updateInput);
@@ -157,6 +158,7 @@ InspectionPage::InspectionPage(std::shared_ptr<HdcClient> hdc, QWidget* parent)
         else m_activity->setText("已导出：" + path);
     });
     connect(m_runner, &InspectionRunner::runningChanged, this, [this](bool running) {
+        m_progress->setVisible(running || !m_runner->results().empty());
         m_input->setReadOnly(running);
         m_import_button->setEnabled(!running);
         m_stop_button->setEnabled(running);
@@ -268,9 +270,9 @@ void InspectionPage::updateRow(int index) {
         if (column == 3) item->setToolTip(cells[6]);
         if (column == 4 || column == 5 || column == 6) item->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
         if (column == 1) {
-            const char* color = row.status == InspectionStatus::Succeeded ? "#79e6c9" :
-                row.status == InspectionStatus::Failed ? "#ff9f9f" :
-                row.status == InspectionStatus::Partial ? "#dfc38a" : "#9caec0";
+            const char* color = row.status == InspectionStatus::Succeeded ? "#18815c" :
+                row.status == InspectionStatus::Failed ? "#c63d48" :
+                row.status == InspectionStatus::Partial ? "#9c6c12" : "#60738a";
             item->setForeground(QColor(color));
         }
     }
