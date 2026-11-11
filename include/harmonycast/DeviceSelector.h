@@ -18,6 +18,7 @@ public:
     static constexpr int PopupHeight = 352;
 
     explicit DeviceSelector(QWidget* parent = nullptr);
+    ~DeviceSelector() override;
     void setEntries(const std::vector<DeviceListEntry>& entries, const QString& preferredSerial = {});
     void showPopup() override;
     void hidePopup() override;

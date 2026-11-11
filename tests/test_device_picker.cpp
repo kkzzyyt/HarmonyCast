@@ -17,6 +17,7 @@
 #include <QListView>
 #include <QMessageBox>
 #include <QSettings>
+#include <QStandardItemModel>
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QThread>
@@ -144,6 +145,39 @@ static void testSelector() {
         QCoreApplication::processEvents();
         check(popup->grab().save(artifacts + "/device-picker.png"), "selector preview unavailable");
         selector.hidePopup();
+    }
+}
+
+static void testSelectorLifetime() {
+    const auto entries = DeviceCatalog::merge(liveDevices, {});
+    for (int iteration = 0; iteration < 40; ++iteration) {
+        auto selector = std::make_unique<DeviceSelector>();
+        selector->setEntries(entries);
+        selector->setEntries({});
+        selector->setEntries(entries, "192.0.2.55:9000");
+        auto* search = selector->findChild<QLineEdit*>("DeviceSelectorSearch");
+        auto* results = selector->findChild<QListView*>("DeviceSelectorResults");
+        check(search && results, "lifetime fixture is missing popup children");
+        search->setText("USB");
+        check(results->model()->rowCount() == 1, "repeated catalog refresh corrupts the filter");
+
+        // QComboBox owns its default model and can replace it while the search
+        // proxy still references it. Both that reset and final teardown must
+        // avoid callbacks into an invalid model or destroyed popup children.
+        auto* replacement = new QStandardItemModel(selector.get());
+        replacement->appendRow(new QStandardItem("replacement-device"));
+        selector->setModel(replacement);
+        selector->setEntries(entries);
+        if (iteration % 10 == 0) {
+            selector->show();
+            selector->showPopup();
+            QCoreApplication::processEvents();
+            search->setText("9000");
+            check(results->model()->rowCount() == 1, "replacement model does not reconnect to popup filtering");
+            // Deliberately destroy the selector with the popup still open.
+        }
+        selector.reset();
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
     }
 }
 
@@ -282,9 +316,18 @@ int main(int argc, char** argv) {
     int result = 0;
     try {
         seedDevices();
+        std::cout << "[RUN] DeviceCatalog merge and persistence" << std::endl;
         testMergeAndPersistence();
+        std::cout << "[PASS] DeviceCatalog merge and persistence" << std::endl;
+        std::cout << "[RUN] DeviceSelector search and activation" << std::endl;
         testSelector();
+        std::cout << "[PASS] DeviceSelector search and activation" << std::endl;
+        std::cout << "[RUN] DeviceSelector model replacement and teardown" << std::endl;
+        testSelectorLifetime();
+        std::cout << "[PASS] DeviceSelector model replacement and teardown" << std::endl;
+        std::cout << "[RUN] Device center and main selector consistency" << std::endl;
         testHubAndMainConsistency();
+        std::cout << "[PASS] Device center and main selector consistency" << std::endl;
         std::cout << "Device picker tests passed\n";
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

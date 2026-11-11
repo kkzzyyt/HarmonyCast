@@ -12,7 +12,7 @@ Format adheres to [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and 
 
 ---
 
-## [2.3.2] - 2026-11-11
+## [2.3.3] - 2026-11-11
 
 ### Changed / 变更
 - [界面] 调整为中性雾灰与低饱和灰蓝，投屏空白画布及视频边缘跟随主题。
@@ -23,6 +23,7 @@ Format adheres to [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and 
 - [更新] 默认使用中文 GitHub API 中转，失败后回退官方源；保留自定义更新地址。
 
 ### Fixed / 修复
+- [兼容] 加固 Qt5 设备选择器模型与弹窗的销毁顺序，Windows 编译显式使用 UTF-8。
 - [投屏] 软件模式同时禁用硬件视频解码；增加首帧与画面停滞超时、采屏启动检查、截图兼容回退及阶段错误日志，故障 Windows 设备仍需实机验证。
 - [Windows] 增强 RemoteFX 远程会话检测及崩溃后软件模式恢复；HDC、日志、巡检统一进程环境，支持中文/空格路径，并补充日志进程启动与退出错误。
 - [解码] 硬件解码或帧传输持续失败后安全切换 CPU，保留视频参数并等待关键帧，避免在解码回调中重建正在使用的上下文。

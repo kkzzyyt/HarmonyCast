@@ -1,4 +1,4 @@
-# HarmonyCast 2.3.2 · 鸿蒙投屏工作台
+# HarmonyCast 2.3.3 · 鸿蒙投屏工作台
 
 <p align="center">
   <img src="resources/app-icon.svg" width="96" height="96" alt="HarmonyCast Logo"/>

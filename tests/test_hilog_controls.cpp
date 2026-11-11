@@ -16,6 +16,10 @@
 #include <QThread>
 #include <iostream>
 #include <stdexcept>
+#ifdef _WIN32
+#include <cstdlib>
+#include <windows.h>
+#endif
 
 using namespace harmonycast;
 
@@ -79,12 +83,14 @@ static void testProcessEnvironment(const QString& directory) {
     HiLogSession unavailable(executable.toStdString(), "设备 USB:01");
     QString startFailure;
     int failedCompletions = 0;
+    int failedExitCode = 0;
     QObject::connect(&unavailable, &HiLogSession::errorOccurred, &unavailable,
                      [&](const QString& error) { startFailure = error; });
     QObject::connect(&unavailable, &HiLogSession::finished, &unavailable, [&](int code) {
-        check(code == -1, "failed launch does not report an unsuccessful completion");
+        failedExitCode = code;
         ++failedCompletions;
     });
+    std::cout << "[RUN] invalid executable path" << std::endl;
     unavailable.start();
     auto* process = unavailable.findChild<QProcess*>();
     check(process, "HiLog process configuration missing");
@@ -104,21 +110,27 @@ static void testProcessEnvironment(const QString& directory) {
     check((arguments.flags & 0x08000000) != 0, "HiLog creates a Windows console window");
 #endif
     waitUntil([&] { return !unavailable.isActive() && !startFailure.isEmpty() && failedCompletions == 1; });
+    check(failedExitCode == -1, "failed launch does not report an unsuccessful completion");
     check(startFailure.contains(executable), "failed launch loses the HDC path diagnostic");
     unavailable.stop();
+    std::cout << "[PASS] invalid executable path" << std::endl;
 
     const QString report = directory + "/process-environment.json";
     qputenv("HC_HILOG_PROCESS_PROBE", report.toUtf8());
     HiLogSession session(QCoreApplication::applicationFilePath().toStdString(), "environment-probe");
     bool finished = false;
+    int probeExitCode = -1;
     bool normalError = false;
     QObject::connect(&session, &HiLogSession::errorOccurred, &session, [&](const QString&) { normalError = true; });
     QObject::connect(&session, &HiLogSession::finished, &session, [&](int code) {
-        check(code == 0, "process environment probe exited with a failure");
+        probeExitCode = code;
         finished = true;
     });
+    std::cout << "[RUN] child process environment" << std::endl;
     session.start();
     waitUntil([&] { return finished; });
+    check(probeExitCode == 0, "process environment probe exited with a failure");
+    std::cout << "[PASS] child process environment" << std::endl;
     check(!normalError, "normal HiLog process completion emitted an error");
     const auto actual = QJsonDocument::fromJson(readFile(report)).object();
     const QString bundled = QFileInfo(QCoreApplication::applicationFilePath()).absolutePath();
@@ -133,16 +145,18 @@ static void testProcessFailureReporting() {
     HiLogSession session(QCoreApplication::applicationFilePath().toStdString(), "process-exit-failure");
     QString error;
     int errors = 0, completions = 0;
+    int exitCode = 0;
     QObject::connect(&session, &HiLogSession::errorOccurred, &session, [&](const QString& value) {
         error = value;
         ++errors;
     });
     QObject::connect(&session, &HiLogSession::finished, &session, [&](int code) {
-        check(code == 7, "HiLog completion loses the HDC exit code");
+        exitCode = code;
         ++completions;
     });
     session.start();
     waitUntil([&] { return completions == 1; });
+    check(exitCode == 7, "HiLog completion loses the HDC exit code");
     check(errors == 1 && error.contains("permission denied") && error.contains("7") && !session.isActive(),
           "HiLog failure did not preserve stderr or emitted duplicate completion");
     settle();
@@ -267,9 +281,14 @@ static int fakeHdc(int argc, char** argv) {
 }
 
 int main(int argc, char** argv) {
+#ifdef _WIN32
+    _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
+    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
+#endif
     if (argc > 1) return fakeHdc(argc, argv);
     if (!qEnvironmentVariableIsSet("HC_HILOG_TEST_NATIVE")) qputenv("QT_QPA_PLATFORM", "offscreen");
     QApplication app(argc, argv);
+    app.setQuitOnLastWindowClosed(false);
     QStandardPaths::setTestModeEnabled(true);
     QTemporaryDir temporary;
     QSettings::setDefaultFormat(QSettings::IniFormat);
@@ -285,10 +304,18 @@ int main(int argc, char** argv) {
     saved.write("[]\n"); saved.close();
     int result = 0;
     try {
+        std::cout << "[RUN] testProcessEnvironment(temporary.path())" << std::endl;
         testProcessEnvironment(temporary.path());
+        std::cout << "[PASS] testProcessEnvironment(temporary.path())" << std::endl;
+        std::cout << "[RUN] testProcessFailureReporting()" << std::endl;
         testProcessFailureReporting();
+        std::cout << "[PASS] testProcessFailureReporting()" << std::endl;
+        std::cout << "[RUN] testWirelessControls()" << std::endl;
         testWirelessControls();
+        std::cout << "[PASS] testWirelessControls()" << std::endl;
+        std::cout << "[RUN] testUsbAndFreshDefault()" << std::endl;
         testUsbAndFreshDefault();
+        std::cout << "[PASS] testUsbAndFreshDefault()" << std::endl;
         waitUntil([&] {
             for (auto* process : app.findChildren<QProcess*>()) {
                 if (process->state() != QProcess::NotRunning) return false;

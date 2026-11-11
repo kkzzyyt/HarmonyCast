@@ -34,9 +34,12 @@ public:
 
 protected:
     bool filterAcceptsRow(int row, const QModelIndex& parent) const override {
-        const auto index = sourceModel()->index(row, 0, parent);
-        QString text = sourceModel()->data(index, DeviceSelector::SearchRole).toString();
-        if (text.isEmpty()) text = sourceModel()->data(index, Qt::DisplayRole).toString();
+        const auto* source = sourceModel();
+        if (!source) return false;
+        const auto index = source->index(row, 0, parent);
+        if (!index.isValid()) return false;
+        QString text = source->data(index, DeviceSelector::SearchRole).toString();
+        if (text.isEmpty()) text = source->data(index, Qt::DisplayRole).toString();
         return DeviceCatalog::matchesSearchText(text, m_query);
     }
 
@@ -85,17 +88,40 @@ DeviceSelector::DeviceSelector(QWidget* parent)
     connect(m_results, &QListView::clicked, this, &DeviceSelector::selectResult);
     connect(m_results, &QListView::activated, this, &DeviceSelector::selectResult);
     auto refreshCount = [this] {
+        const auto* source = m_filter->sourceModel();
+        const int total = source ? source->rowCount() : 0;
         m_status->setText(m_filter->rowCount() == 0 ? QStringLiteral("没有匹配的设备") :
-                         QString("匹配 %1 / %2 台").arg(m_filter->rowCount()).arg(count()));
+                         QString("匹配 %1 / %2 台").arg(m_filter->rowCount()).arg(total));
     };
     connect(m_filter, &QAbstractItemModel::rowsInserted, this, refreshCount);
     connect(m_filter, &QAbstractItemModel::rowsRemoved, this, refreshCount);
     connect(m_filter, &QAbstractItemModel::modelReset, this, refreshCount);
 }
 
+DeviceSelector::~DeviceSelector() {
+    // Remove proxy/view dependencies while the source model and all popup
+    // children are still alive, before QComboBox starts its own teardown.
+    m_search->removeEventFilter(this);
+    m_results->removeEventFilter(this);
+    disconnect(m_search, nullptr, this, nullptr);
+    disconnect(m_results, nullptr, this, nullptr);
+    disconnect(m_filter, nullptr, this, nullptr);
+    m_popup->hide();
+    m_results->setModel(nullptr);
+    m_filter->setSourceModel(nullptr);
+    delete m_popup;
+    m_popup = nullptr;
+    m_search = nullptr;
+    m_results = nullptr;
+    m_status = nullptr;
+    delete m_filter;
+    m_filter = nullptr;
+}
+
 void DeviceSelector::setEntries(const std::vector<DeviceListEntry>& entries, const QString& preferredSerial) {
     const QString selected = preferredSerial.isEmpty() ? currentData().toString() : preferredSerial;
     const QSignalBlocker blocker(this);
+    if (m_filter->sourceModel() != model()) m_filter->setSourceModel(model());
     clear();
     int firstConnected = -1;
     for (const auto& entry : entries) {
