@@ -93,7 +93,6 @@ private slots:
     void exportHiLog();
     void setLogFontSize(int size);
     void onHiLogContextMenu(const QPoint& pos);
-    void restartHiLogForCurrentDevice();
 
     // WebView controls
     void switchLogSubtab(int index);
@@ -176,6 +175,9 @@ private:
     bool networkRequestMatches(const WebNetworkRequest& request) const;
     void flushNetworkUpdates();
     [[nodiscard]] std::string currentSerial() const;
+    void updateHiLogCollection();
+    void stopHiLogCollection();
+    void setHdcInput(const QString& command, bool shellMode = true);
 
     // Services
     std::shared_ptr<HdcClient> m_hdc;
@@ -276,6 +278,7 @@ private:
     QLineEdit* m_search_input{nullptr};
     QCheckBox* m_autoscroll_cb{nullptr};
     QCheckBox* m_pause_cb{nullptr};
+    QCheckBox* m_wireless_log_cb{nullptr};
     QPushButton* m_clear_log_btn{nullptr};
     QPushButton* m_export_log_btn{nullptr};
     QPlainTextEdit* m_log_view{nullptr};
@@ -322,6 +325,7 @@ private:
     QLabel* m_hdc_target_badge{nullptr};
     QLabel* m_hdc_desc_label{nullptr};
     QComboBox* m_hdc_preset_combo{nullptr};
+    QComboBox* m_hdc_mode_combo{nullptr};
     QLabel* m_hdc_target_prefix{nullptr};
     QLineEdit* m_hdc_input{nullptr};
     QPushButton* m_btn_run_hdc{nullptr};
@@ -338,6 +342,9 @@ private:
     bool m_projecting{false};
     bool m_info_loading{false};
     bool m_hdc_running{false};
+    std::string m_hilog_target;
+    std::string m_hilog_suspended_target;
+    std::string m_log_only_default_target;
     bool m_auto_start_mirror{true};
     bool m_user_stopped_mirror{false};
     bool m_background_services_enabled{true};

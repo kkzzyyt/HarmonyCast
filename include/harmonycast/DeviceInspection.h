@@ -36,7 +36,7 @@ struct InspectionResult {
     InspectionTarget target;
     InspectionStatus status{InspectionStatus::Pending};
     QDateTime inspectedAt;
-    QString model;
+    QString model; // Hardware model from the ICU/watchdog sysfs nodes.
     QString serial;
     QString systemVersion;
     QString apiVersion;
@@ -49,7 +49,6 @@ struct InspectionResult {
     std::optional<quint64> memoryAvailableKiB;
     std::optional<quint64> storageTotalKiB;
     std::optional<quint64> storageAvailableKiB;
-    std::optional<double> storageUsedPercent;
     std::vector<InspectionNetwork> networks;
     QString notes;
 };

@@ -14,6 +14,29 @@ UpdateChecker::UpdateChecker(QObject* parent)
       m_nam(new QNetworkAccessManager(this)) {
 }
 
+QString UpdateChecker::officialUpdateUrl() {
+    return QStringLiteral("https://api.github.com/repos/kkzzyyt/HarmonyCast/releases/latest");
+}
+
+QString UpdateChecker::defaultUpdateUrl() {
+    return QStringLiteral("https://gh-proxy.com/") + officialUpdateUrl();
+}
+
+void UpdateChecker::setUpdateUrl(const QString& url) {
+    m_update_url = url.trimmed();
+    m_fallback_urls.clear();
+}
+
+QStringList UpdateChecker::updateSources() const {
+    QStringList sources{m_update_url};
+    sources.append(m_fallback_urls);
+    // Only the built-in public mirror has an implicit fallback. Custom sources
+    // must never silently send their URLs or requests to an unrelated service.
+    if (m_update_url == defaultUpdateUrl()) sources.append(officialUpdateUrl());
+    sources.removeDuplicates();
+    return sources;
+}
+
 int UpdateChecker::compareVersions(const QString& v1, const QString& v2) {
     auto cleanVersion = [](QString v) -> QStringList {
         v = v.trimmed();
@@ -41,19 +64,34 @@ int UpdateChecker::compareVersions(const QString& v1, const QString& v2) {
 }
 
 void UpdateChecker::checkForUpdates(bool silent) {
+    const quint64 generation = ++m_check_generation;
     m_silent_check = silent;
-    emit checkStarted();
 
     if (m_current_reply) {
-        m_current_reply->abort();
-        m_current_reply->deleteLater();
-        m_current_reply = nullptr;
+        auto* previous = m_current_reply.data();
+        m_current_reply.clear();
+        // abort() can synchronously emit finished(). Disconnect before aborting
+        // so an earlier check cannot finish or clear the replacement request.
+        disconnect(previous, nullptr, this, nullptr);
+        previous->abort();
+        previous->deleteLater();
     }
+    m_pending_urls = updateSources();
+    m_failures.clear();
+    emit checkStarted();
+    requestNextSource(generation);
+}
 
-    QUrl url(m_update_url);
-    if (!url.isValid()) {
-        HC_LOG_WARN("Update check failed: invalid URL: " + m_update_url);
-        emit checkFailed("无效的更新检查地址", m_silent_check);
+void UpdateChecker::requestNextSource(quint64 generation) {
+    if (generation != m_check_generation) return;
+    if (m_pending_urls.isEmpty()) {
+        emit checkFailed(m_failures.join(QStringLiteral("；")), m_silent_check);
+        return;
+    }
+    const QString source = m_pending_urls.takeFirst();
+    const QUrl url(source);
+    if (!url.isValid() || url.host().isEmpty() || (url.scheme() != "https" && url.scheme() != "http")) {
+        sourceFailed(QStringLiteral("无效的更新检查地址"), generation);
         return;
     }
 
@@ -62,34 +100,45 @@ void UpdateChecker::checkForUpdates(bool silent) {
     request.setRawHeader("Accept", "application/vnd.github.v3+json, application/json");
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
 
-    HC_LOG_INFO(QString("Checking for updates from %1 (silent=%2)").arg(m_update_url).arg(silent ? "true" : "false"));
-    m_current_reply = m_nam->get(request);
+    HC_LOG_INFO(QString("Checking for updates from %1 (silent=%2)").arg(source).arg(m_silent_check ? "true" : "false"));
+    auto* reply = m_nam->get(request);
+    m_current_reply = reply;
 
     // 6-second timeout watchdog
-    QTimer* timer = new QTimer(m_current_reply);
+    QTimer* timer = new QTimer(reply);
     timer->setSingleShot(true);
-    connect(timer, &QTimer::timeout, this, [this]() {
-        if (m_current_reply && m_current_reply->isRunning()) {
+    connect(timer, &QTimer::timeout, this, [this, reply, generation]() {
+        if (generation == m_check_generation && m_current_reply == reply && reply->isRunning()) {
             HC_LOG_WARN("Update check timed out after 6000ms");
-            m_current_reply->abort();
+            reply->setProperty("hcTimedOut", true);
+            reply->abort();
         }
     });
     timer->start(6000);
 
-    connect(m_current_reply, &QNetworkReply::finished, this, &UpdateChecker::onReplyFinished);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, generation] { onReplyFinished(reply, generation); });
 }
 
-void UpdateChecker::onReplyFinished() {
-    if (!m_current_reply) return;
+void UpdateChecker::sourceFailed(const QString& reason, quint64 generation) {
+    if (generation != m_check_generation) return;
+    m_failures.append(reason);
+    HC_LOG_WARN("Update source failed: " + reason);
+    // Defer fallback to keep completion signals outside the old reply stack.
+    QTimer::singleShot(0, this, [this, generation] { requestNextSource(generation); });
+}
 
-    QNetworkReply* reply = m_current_reply;
-    m_current_reply = nullptr;
+void UpdateChecker::onReplyFinished(QNetworkReply* reply, quint64 generation) {
+    if (generation != m_check_generation || m_current_reply != reply) {
+        reply->deleteLater();
+        return;
+    }
+    m_current_reply.clear();
+    if (auto* timer = reply->findChild<QTimer*>()) timer->stop();
     reply->deleteLater();
 
     if (reply->error() != QNetworkReply::NoError) {
-        QString err = reply->errorString();
-        HC_LOG_WARN("Update check network error: " + err);
-        emit checkFailed(err, m_silent_check);
+        const QString err = reply->property("hcTimedOut").toBool() ? QStringLiteral("更新源连接超时（6 秒）") : reply->errorString();
+        sourceFailed(err, generation);
         return;
     }
 
@@ -97,8 +146,7 @@ void UpdateChecker::onReplyFinished() {
     UpdateInfo info = parseManifest(data);
 
     if (info.latestVersion.isEmpty()) {
-        HC_LOG_WARN("Failed to parse update manifest JSON");
-        emit checkFailed("无法解析远程版本数据", m_silent_check);
+        sourceFailed(QStringLiteral("无法解析远程版本数据"), generation);
         return;
     }
 

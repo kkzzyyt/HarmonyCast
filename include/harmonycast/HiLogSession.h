@@ -4,6 +4,7 @@
 #include "HiLogParser.h"
 #include <QObject>
 #include <QProcess>
+#include <QString>
 #include <vector>
 #include <deque>
 #include <mutex>
@@ -24,6 +25,7 @@ public:
     void start();
     void stop();
     [[nodiscard]] bool isRunning() const;
+    [[nodiscard]] bool isActive() const;
 
     void setBundle(std::string bundle) { m_bundle = std::move(bundle); }
     void setCategory(std::string cat) { m_category = std::move(cat); }
@@ -34,6 +36,7 @@ public:
 
 signals:
     void entriesReady(const std::vector<HiLogEntry>& entries);
+    void errorOccurred(const QString& error);
     void finished(int exit_code);
 
 private slots:
@@ -49,6 +52,9 @@ private:
     QProcess* m_process{nullptr};
     HiLogParser m_parser;
     QByteArray m_line_buffer;
+    QByteArray m_stderr_tail;
+    QByteArray m_stdout_tail;
+    bool m_finished_emitted{false};
 
     mutable std::mutex m_mutex;
     std::deque<HiLogEntry> m_entries;

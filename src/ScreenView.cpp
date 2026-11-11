@@ -151,6 +151,21 @@ void ScreenView::showEvent(QShowEvent* event) {
     emit presentationChanged(size(), m_rotation, devicePixelRatioF());
 }
 
+bool ScreenView::event(QEvent* event) {
+    const bool handled = QWidget::event(event);
+    bool displayChanged = event->type() == QEvent::ScreenChangeInternal;
+#if QT_VERSION >= QT_VERSION_CHECK(6, 6, 0)
+    displayChanged = displayChanged || event->type() == QEvent::DevicePixelRatioChange;
+#endif
+    if (displayChanged) {
+        m_scaled_cache = QImage();
+        m_cache_dirty = true;
+        emit presentationChanged(isVisible() ? size() : QSize{}, m_rotation, devicePixelRatioF());
+        update();
+    }
+    return handled;
+}
+
 void ScreenView::onFadeTick() {
     m_ripple_radius += 1.8f;
     m_ripple_opacity -= 0.10f;
@@ -200,7 +215,7 @@ std::pair<int, int> ScreenView::mapToDevice(const QPoint& pos) const {
 
 void ScreenView::paintEvent(QPaintEvent*) {
     QPainter painter(this);
-    painter.fillRect(rect(), QColor("#09111a"));
+    painter.fillRect(rect(), palette().brush(QPalette::Window));
 
     // 1. Placeholder screen if no video
     if (m_image.isNull()) {
@@ -218,12 +233,12 @@ void ScreenView::paintEvent(QPaintEvent*) {
         }
 
         // Device Silhouette
-        painter.setPen(QPen(QColor("#355a68"), 2));
+        painter.setPen(QPen(palette().color(QPalette::Mid), 2));
         painter.drawRoundedRect(cx - 26, cy - 42, 52, 84, 8, 8);
         painter.drawLine(cx - 10, cy + 28, cx + 10, cy + 28);
 
         // Text labels
-        painter.setPen(QColor("#cfdfeb"));
+        painter.setPen(palette().color(QPalette::WindowText));
         if (!m_status_msg.isEmpty()) {
             painter.drawText(statusRect, Qt::AlignHCenter | Qt::AlignTop | Qt::TextWordWrap, m_status_msg);
         } else if (m_active) {
@@ -231,7 +246,7 @@ void ScreenView::paintEvent(QPaintEvent*) {
         } else {
             painter.drawText(0, cy + 65, width(), 30, Qt::AlignCenter, "让设备画面来到桌面");
             painter.setFont(QFont("PingFang SC", 12));
-            painter.setPen(QColor("#748ca2"));
+            painter.setPen(palette().color(QPalette::Text));
             painter.drawText(0, cy + 98, width(), 25, Qt::AlignCenter, "连接设备，点击上方「开始投屏」");
         }
         return;
@@ -261,7 +276,7 @@ void ScreenView::paintEvent(QPaintEvent*) {
             for (size_t i = 0; i < m_trail.size() - 1; ++i) {
                 float ratio = static_cast<float>(i + 1) / m_trail.size();
                 int alpha = static_cast<int>(140 * ratio * (m_touch_active ? 1.0f : m_ripple_opacity));
-                painter.setPen(QPen(QColor(83, 214, 181, alpha), 3.0f + ratio * 3.0f, Qt::SolidLine, Qt::RoundCap));
+                painter.setPen(QPen(QColor(101, 121, 151, alpha), 3.0f + ratio * 3.0f, Qt::SolidLine, Qt::RoundCap));
                 painter.drawLine(m_trail[i], m_trail[i + 1]);
             }
         }
@@ -270,12 +285,12 @@ void ScreenView::paintEvent(QPaintEvent*) {
         float eff_op = m_touch_active ? 1.0f : m_ripple_opacity;
         int outer_alpha = std::clamp(static_cast<int>(160 * eff_op), 0, 255);
         int bg_alpha = std::clamp(static_cast<int>(45 * eff_op), 0, 255);
-        painter.setPen(QPen(QColor(83, 214, 181, outer_alpha), 2.0f));
-        painter.setBrush(QColor(83, 214, 181, bg_alpha));
+        painter.setPen(QPen(QColor(101, 121, 151, outer_alpha), 2.0f));
+        painter.setBrush(QColor(101, 121, 151, bg_alpha));
         painter.drawEllipse(m_touch_pos, static_cast<int>(m_ripple_radius), static_cast<int>(m_ripple_radius));
 
         // Inner Touch Dot
-        painter.setPen(QPen(QColor(83, 214, 181, 240), 1.5f));
+        painter.setPen(QPen(QColor(101, 121, 151, 240), 1.5f));
         painter.setBrush(QColor(255, 255, 255, 240));
         painter.drawEllipse(m_touch_pos, 5, 5);
 

@@ -1,8 +1,11 @@
 #include "harmonycast/VideoDecoder.h"
+#include "harmonycast/Logger.h"
+#include <QByteArray>
 #include <iostream>
 #include <thread>
 #include <algorithm>
 #include <cstring>
+#include <limits>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -69,7 +72,7 @@ void VideoDecoder::close() {
         m_hw_device_ctx = nullptr;
     }
     m_hw_active = false;
-    m_hw_transfer_failures = 0;
+    m_recovery.reset(false);
     m_decoded_count = 0;
     m_source_format = -1;
     m_images = {};
@@ -96,6 +99,9 @@ bool VideoDecoder::initHwContext() {
 
 bool VideoDecoder::init(int width, int height, bool enable_hardware) {
     close();
+    if (qgetenv("HARMONYCAST_SOFTWARE_RENDERING") == "1" || qgetenv("QT_OPENGL") == "software") {
+        enable_hardware = false;
+    }
 #if defined(HARMONYCAST_SERVER2012_COMPAT)
     // The compatibility FFmpeg build contains a CPU-only H.264 decoder.
     enable_hardware = false;
@@ -127,6 +133,8 @@ bool VideoDecoder::init(int width, int height, bool enable_hardware) {
         m_codec_ctx->thread_type = FF_THREAD_SLICE;
         m_hw_active = false;
     }
+    m_recovery.reset(m_hw_active);
+    HC_LOG_INFO(QString("Video decoder selected: %1").arg(m_hw_active ? "hardware" : "CPU"));
 
     if (avcodec_open2(m_codec_ctx, codec, nullptr) < 0) {
         close();
@@ -137,7 +145,8 @@ bool VideoDecoder::init(int width, int height, bool enable_hardware) {
 }
 
 bool VideoDecoder::decode(std::span<const uint8_t> data, bool is_keyframe, int64_t pts) {
-    if (!m_codec_ctx || data.empty()) return false;
+    if (!m_codec_ctx || !m_av_frame || !m_sw_frame || !m_av_packet || data.empty() ||
+        data.size() > size_t(std::numeric_limits<int>::max()) || softwareFallbackRequested()) return false;
 
     av_packet_unref(m_av_packet);
     if (av_new_packet(m_av_packet, static_cast<int>(data.size())) < 0) return false;
@@ -146,29 +155,50 @@ bool VideoDecoder::decode(std::span<const uint8_t> data, bool is_keyframe, int64
     m_av_packet->flags = is_keyframe ? AV_PKT_FLAG_KEY : 0;
 
     int ret = avcodec_send_packet(m_codec_ctx, m_av_packet);
+    bool frames_ok = true;
     if (ret == AVERROR(EAGAIN)) {
-        while (avcodec_receive_frame(m_codec_ctx, m_av_frame) == 0) emitFrame(m_av_frame);
+        while ((ret = avcodec_receive_frame(m_codec_ctx, m_av_frame)) == 0) {
+            frames_ok = emitFrame(m_av_frame) && frames_ok;
+            av_frame_unref(m_av_frame);
+            if (softwareFallbackRequested()) return false;
+        }
+        if (ret != AVERROR(EAGAIN) && ret != AVERROR_EOF) {
+            recordDecodeFailure("receive_frame", ret);
+            return false;
+        }
         ret = avcodec_send_packet(m_codec_ctx, m_av_packet);
     }
-    if (ret < 0) return false;
+    if (ret < 0) {
+        recordDecodeFailure("send_packet", ret);
+        return false;
+    }
 
     while (ret >= 0) {
         ret = avcodec_receive_frame(m_codec_ctx, m_av_frame);
         if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
             break;
         } else if (ret < 0) {
+            recordDecodeFailure("receive_frame", ret);
             return false;
         }
 
-        emitFrame(m_av_frame);
+        frames_ok = emitFrame(m_av_frame) && frames_ok;
+        av_frame_unref(m_av_frame);
+        if (softwareFallbackRequested()) return false;
     }
 
-    return true;
+    return frames_ok;
 }
 
-void VideoDecoder::emitFrame(AVFrame* frame) {
-    if (!m_frame_cb) return;
+void VideoDecoder::recordDecodeFailure(const char* operation, int error) {
+    m_recovery.decodeFailed();
+    if (!m_hw_active) return;
+    char message[128];
+    av_strerror(error, message, sizeof(message));
+    HC_LOG_WARN(QStringLiteral("Hardware video %1 failed: %2").arg(QString::fromLatin1(operation), QString::fromUtf8(message)));
+}
 
+bool VideoDecoder::emitFrame(AVFrame* frame) {
     AVFrame* render_frame = frame;
     m_hw_active = frame->format == s_hw_pix_fmt;
     if (frame->format == s_hw_pix_fmt) {
@@ -178,18 +208,14 @@ void VideoDecoder::emitFrame(AVFrame* frame) {
             char err[128];
             av_strerror(ret, err, sizeof(err));
             std::cerr << "[VideoDecoder] av_hwframe_transfer_data failed: " << err << std::endl;
-            m_hw_transfer_failures++;
-            if (m_hw_transfer_failures >= 3) {
-                std::cerr << "[VideoDecoder] Persistent hardware transfer failure, falling back to software decoding." << std::endl;
-                int w = m_width;
-                int h = m_height;
-                init(w, h, false);
-            }
-            return;
+            HC_LOG_WARN(QStringLiteral("Hardware video frame transfer failed: %1").arg(QString::fromUtf8(err)));
+            m_recovery.transferFailed();
+            return false;
         }
-        m_hw_transfer_failures = 0;
         render_frame = m_sw_frame;
     }
+    m_recovery.frameDecoded(m_hw_active);
+    if (!m_frame_cb) return true;
 
     DecodedFrame out;
     out.width = render_frame->width;
@@ -210,12 +236,12 @@ void VideoDecoder::emitFrame(AVFrame* frame) {
             SWS_BICUBIC | SWS_ACCURATE_RND, nullptr, nullptr, nullptr);
     }
 
-    if (!m_sws_ctx) return;
+    if (!m_sws_ctx) return false;
 
     for (auto& image : m_images) {
         if (image.isNull() || image.isDetached()) {
             if (image.size() != QSize(out.width, out.height)) image = QImage(out.width, out.height, QImage::Format_RGB32);
-            if (image.isNull()) return;
+            if (image.isNull()) return false;
             // The pool slot is detached, so writing cannot change a displayed frame.
             uint8_t* dst_data[4] = { image.bits(), nullptr, nullptr, nullptr };
             int dst_linesize[4] = { int(image.bytesPerLine()), 0, 0, 0 };
@@ -226,7 +252,7 @@ void VideoDecoder::emitFrame(AVFrame* frame) {
     }
     if (out.image.isNull()) {
         out.image = QImage(out.width, out.height, QImage::Format_RGB32);
-        if (out.image.isNull()) return;
+        if (out.image.isNull()) return false;
         uint8_t* dst_data[4] = { out.image.bits(), nullptr, nullptr, nullptr };
         int dst_linesize[4] = { int(out.image.bytesPerLine()), 0, 0, 0 };
         sws_scale(m_sws_ctx, render_frame->data, render_frame->linesize, 0, render_frame->height, dst_data, dst_linesize);
@@ -235,6 +261,7 @@ void VideoDecoder::emitFrame(AVFrame* frame) {
 
     m_decoded_count++;
     m_frame_cb(out);
+    return true;
 }
 
 void VideoDecoder::flush() {

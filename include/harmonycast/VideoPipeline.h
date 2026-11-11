@@ -15,21 +15,34 @@ public:
     explicit VideoPipeline(QObject* parent = nullptr);
     void consume(const QByteArray& data);
     void setPresentation(QSize viewport, int rotation, qreal dpr);
+    // Call on the owning worker thread. Each encoded stream gets one CPU retry.
+    bool useSoftwareDecoder();
+    void requestSoftwareDecoder();
 
 signals:
     void frameReady(const DecodedFrame& frame);
     void batchProcessed();
     void handshakeRequested();
     void headerParsed(const QString& name, int width, int height);
+    void decoderFallback(const QString& reason);
+    void softwareRetryCompleted(bool recovered);
 
 private:
     PacketDemuxer m_demuxer;
     VideoDecoder m_decoder;
     bool m_decoder_failed{false};
+    bool m_encoded_stream{false};
+    bool m_raw_stream{false};
+    bool m_software_attempted{false};
+    bool m_waiting_keyframe{true};
+    QByteArray m_sps;
+    QByteArray m_pps;
     QSize m_viewport;
     int m_rotation{0};
     qreal m_dpr{1};
     std::optional<DecodedFrame> m_latest;
+
+    void decodePacket(const StreamPacket& packet);
 };
 
 } // namespace harmonycast

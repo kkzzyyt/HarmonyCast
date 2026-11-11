@@ -14,6 +14,7 @@ import pefile
 REQUIRED_FILES = (
     "HarmonyCast.exe", "d3d12.dll", "Qt5Core.dll", "Qt5Gui.dll", "Qt5Widgets.dll",
     "Qt5Network.dll", "Qt5Svg.dll", "Qt5WebSockets.dll", "platforms/qwindows.dll",
+    "imageformats/qjpeg.dll",
     "avcodec-60.dll", "avutil-58.dll", "swscale-7.dll",
     "msvcp140.dll", "vcruntime140.dll", "ucrtbase.dll",
     "resources/hdc/hdc.exe", "resources/hdc/libusb_shared.dll",
@@ -25,7 +26,7 @@ WINDOWS10_IMPORTS = {
 }
 
 
-def check_directory(root: Path) -> list:
+def check_directory(root: Path) -> list[str]:
     errors = [f"Missing runtime file: {name}" for name in REQUIRED_FILES if not (root / name).is_file()]
     for binary in sorted(root.rglob("*")):
         if not binary.is_file() or binary.suffix.lower() not in {".dll", ".exe"}:

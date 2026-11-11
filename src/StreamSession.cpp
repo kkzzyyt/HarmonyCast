@@ -9,17 +9,34 @@
 #include <QFileInfo>
 #include <QImage>
 #include <QPointer>
+#include <QRegularExpression>
+#include <QImageReader>
+#include <QNetworkProxy>
 #include <iostream>
 #include <thread>
 
 namespace harmonycast {
+
+namespace {
+
+bool commandFailed(const CommandResult& result) {
+    static const QRegularExpression error(R"(\[Fail\]|\[E[0-9a-f]+\]|\bfailed\b|\berror\b|permission denied)", QRegularExpression::CaseInsensitiveOption);
+    return !result.success() || error.match(QString::fromStdString(result.out + "\n" + result.err)).hasMatch();
+}
+
+QString commandDetail(const CommandResult& result) {
+    return QString::fromStdString(result.err + "\n" + result.out).trimmed().left(700);
+}
+
+} // namespace
 
 StreamSession::StreamSession(std::shared_ptr<HdcClient> hdc,
                              Device device,
                              int fps,
                              int bitrate,
                              int max_size,
-                             QObject* parent)
+                             QObject* parent,
+                             StreamTimeouts timeouts)
     : QObject(parent),
       m_hdc(std::move(hdc)),
       m_device(std::move(device)),
@@ -28,13 +45,19 @@ StreamSession::StreamSession(std::shared_ptr<HdcClient> hdc,
       m_max_size(max_size),
       m_socket(new QTcpSocket(this)),
       m_heartbeat_timer(new QTimer(this)),
+      m_progress_timer(new QTimer(this)),
+      m_timeouts{std::max(100, timeouts.startup_ms), std::max(100, timeouts.frame_ms)},
       m_control(std::make_shared<ControlChannel>(this)) {
 
+    m_socket->setProxy(QNetworkProxy(QNetworkProxy::NoProxy));
     connect(m_socket, &QTcpSocket::connected, this, &StreamSession::onSocketConnected);
     connect(m_socket, &QTcpSocket::readyRead, this, &StreamSession::onSocketReadyRead);
     connect(m_socket, &QTcpSocket::disconnected, this, &StreamSession::onSocketDisconnected);
     connect(m_socket, &QAbstractSocket::errorOccurred, this, &StreamSession::onSocketError);
     connect(m_heartbeat_timer, &QTimer::timeout, this, &StreamSession::sendHeartbeat);
+    connect(m_progress_timer, &QTimer::timeout, this, &StreamSession::checkProgress);
+    m_progress_timer->setInterval(std::clamp(std::min(m_timeouts.startup_ms, m_timeouts.frame_ms) / 4, 25, 1000));
+    qRegisterMetaType<DecodedFrame>("harmonycast::DecodedFrame");
 
     m_socket->setReadBufferSize(4 * 1024 * 1024);
 
@@ -59,13 +82,23 @@ bool StreamSession::launchServerAsync(const std::shared_ptr<HdcClient>& hdc,
                                       int remote_port,
                                       int fps,
                                       int bitrate,
-                                      int max_size) {
-    if (!hdc || serial.empty()) return false;
+                                      int max_size,
+                                      const std::shared_ptr<std::atomic<bool>>& cancelled,
+                                      QString& error) {
+    if (!hdc || serial.empty() || cancelled->load()) return false;
 
     std::string arch = "arm64";
     auto res_uname = hdc->run({"shell", "uname", "-m"}, serial, 2000);
-    if (res_uname.success() && res_uname.out.find("riscv") != std::string::npos) {
+    if (cancelled->load()) return false;
+    if (commandFailed(res_uname)) {
+        error = "无法读取设备架构：" + commandDetail(res_uname);
+        return false;
+    }
+    if (res_uname.out.find("riscv") != std::string::npos) {
         arch = "riscv64";
+    } else if (res_uname.out.find("aarch64") == std::string::npos && res_uname.out.find("arm64") == std::string::npos) {
+        error = "设备架构没有匹配的原生采屏程序：" + QString::fromStdString(res_uname.out).trimmed();
+        return false;
     }
 
     QString bin_name = (arch == "riscv64") ? "harmonycast_capture_riscv64" : "harmonycast_capture_arm64";
@@ -86,13 +119,18 @@ bool StreamSession::launchServerAsync(const std::shared_ptr<HdcClient>& hdc,
     }
 
     std::string remote_bin = "/data/local/tmp/harmonycast_capture";
-    if (!local_bin.isEmpty()) {
+    if (local_bin.isEmpty()) {
+        error = "缺少设备采屏程序 " + bin_name + "，请使用完整安装包";
+        return false;
+    }
+    {
         QFileInfo linfo(local_bin);
         qint64 local_size = linfo.size();
         bool need_push = true;
 
         // Fast-path: check if binary already exists on remote device with matching file size
         auto check_res = hdc->run({"shell", "ls", "-l", remote_bin}, serial, 2000);
+        if (cancelled->load()) return false;
         if (check_res.success() && !check_res.out.empty()) {
             if (check_res.out.find(std::to_string(local_size)) != std::string::npos) {
                 need_push = false;
@@ -100,16 +138,29 @@ bool StreamSession::launchServerAsync(const std::shared_ptr<HdcClient>& hdc,
         }
 
         if (need_push) {
-            hdc->fileSend(serial, local_bin.toStdString(), remote_bin);
+            auto sent = hdc->run({"file", "send", local_bin.toStdString(), remote_bin}, serial, 30000);
+            if (cancelled->load()) return false;
+            if (commandFailed(sent)) {
+                error = "采屏程序传输失败：" + commandDetail(sent);
+                return false;
+            }
         }
-        hdc->run({"shell", "chmod", "755", remote_bin}, serial, 3000);
+        auto chmod = hdc->run({"shell", "chmod", "755", remote_bin}, serial, 3000);
+        if (cancelled->load()) return false;
+        if (commandFailed(chmod)) {
+            error = "采屏程序无法设置执行权限：" + commandDetail(chmod);
+            return false;
+        }
     }
 
     // Kill any previous capture instances
     hdc->run({"shell", "pkill -9 harmonycast_capture 2>/dev/null; killall -9 harmonycast_capture 2>/dev/null; pkill -9 harmonycast_capture_arm64 2>/dev/null; killall -9 harmonycast_capture_arm64 2>/dev/null"}, serial, 1500);
+    if (cancelled->load()) return false;
 
     // Launch remote capture server in background with output redirected to avoid blocking hdc shell
-    std::string cmd = QString("nohup %1 -p %2 -f %3 -b %4%5 >/dev/null 2>&1 &")
+    std::string cmd = QString("nohup %1 -p %2 -f %3 -b %4%5 >/data/local/tmp/harmonycast_capture_start.log 2>&1 & "
+                             "pid=$!; sleep 1; if kill -0 \"$pid\" 2>/dev/null; then echo __HC_CAPTURE_READY__; "
+                             "else echo __HC_CAPTURE_FAILED__; cat /data/local/tmp/harmonycast_capture_start.log; fi")
                           .arg(QString::fromStdString(remote_bin))
                           .arg(remote_port)
                           .arg(fps)
@@ -117,13 +168,24 @@ bool StreamSession::launchServerAsync(const std::shared_ptr<HdcClient>& hdc,
                           .arg(max_size > 0 ? QString(" -m %1").arg(max_size) : "")
                           .toStdString();
     auto res = hdc->run({"shell", cmd}, serial, 3000);
-    return res.success();
+    if (cancelled->load()) return false;
+    QStringList lines = QString::fromStdString(res.out).replace('\r', "").split('\n');
+    if (commandFailed(res) || !lines.contains("__HC_CAPTURE_READY__")) {
+        error = "设备采屏程序未能启动：" + commandDetail(res);
+        return false;
+    }
+    return true;
 }
 
 bool StreamSession::start() {
     stop();
     m_running = true;
     m_socket_connected = false;
+    m_received_frame = false;
+    m_software_retry_requested = false;
+    m_fallback_reason.clear();
+    m_progress_clock.start();
+    m_progress_timer->start();
     uint64_t current_gen = ++m_session_gen;
     HC_LOG_INFO(QString("StreamSession starting for device %1 (fps=%2, bitrate=%3)").arg(QString::fromStdString(m_device.serial)).arg(m_fps).arg(m_bitrate));
     emit statusChanged("正在准备投屏服务…");
@@ -151,7 +213,7 @@ bool StreamSession::start() {
             auto* session = weak_this.data();
             if (session) {
                 QMetaObject::invokeMethod(session, [weak_this, current_gen]() {
-                    if (!weak_this || !weak_this->m_running || weak_this->m_session_gen != current_gen) return;
+                    if (!weak_this || !weak_this->m_running || weak_this->m_session_gen != current_gen || weak_this->m_fallback_snapshot) return;
                     emit weak_this->statusChanged("端口映射失败，尝试兼容快照流…");
                     weak_this->startSnapshotFallback();
                 });
@@ -166,7 +228,8 @@ bool StreamSession::start() {
         }
 
         // 2. Launch capture server on device in worker thread
-        launchServerAsync(hdc, serial, remote_port, fps, bitrate, max_size);
+        QString launch_error;
+        const bool launched = launchServerAsync(hdc, serial, remote_port, fps, bitrate, max_size, cancelled, launch_error);
 
         if (cancelled->load()) {
             if (local_port > 0) hdc->removeForward(serial, local_port, remote_port);
@@ -176,9 +239,13 @@ bool StreamSession::start() {
         // 3. Inform main thread to begin non-blocking socket connection attempts
         auto* session = weak_this.data();
         if (session) {
-            QMetaObject::invokeMethod(session, [weak_this, current_gen]() {
-                if (!weak_this || !weak_this->m_running || weak_this->m_session_gen != current_gen) return;
+            QMetaObject::invokeMethod(session, [weak_this, current_gen, launched, launch_error]() {
+                if (!weak_this || !weak_this->m_running || weak_this->m_session_gen != current_gen || weak_this->m_fallback_snapshot) return;
                 weak_this->m_forwarded = true;
+                if (!launched) {
+                    weak_this->startSnapshotFallback(launch_error);
+                    return;
+                }
                 emit weak_this->statusChanged("正在连接设备视频流…");
                 weak_this->tryConnectSocket(0, current_gen);
             });
@@ -189,7 +256,7 @@ bool StreamSession::start() {
 }
 
 void StreamSession::tryConnectSocket(int attempt, uint64_t gen) {
-    if (!m_running || m_session_gen != gen) return;
+    if (!m_running || m_session_gen != gen || m_fallback_snapshot) return;
 
     if (m_socket->state() == QAbstractSocket::ConnectedState) {
         m_socket_connected = true;
@@ -229,6 +296,8 @@ void StreamSession::stop() {
     m_fallback_snapshot = false;
     m_session_gen++;
     m_heartbeat_timer->stop();
+    m_progress_timer->stop();
+    m_progress_clock.invalidate();
 
     if (m_snapshot_ctx) {
         m_snapshot_ctx->cancelled = true;
@@ -268,7 +337,9 @@ void StreamSession::cleanup() {
 }
 
 void StreamSession::onSocketConnected() {
+    if (!m_running || m_fallback_snapshot) return;
     m_socket_connected = true;
+    m_progress_clock.restart();
     m_socket->setSocketOption(QAbstractSocket::LowDelayOption, 1);
     m_socket->setSocketOption(QAbstractSocket::ReceiveBufferSizeSocketOption, 2 * 1024 * 1024);
     m_heartbeat_timer->start(2000);
@@ -292,11 +363,11 @@ void StreamSession::startPipeline() {
     connect(m_decode_thread, &QThread::finished, m_pipeline, &QObject::deleteLater);
     const uint64_t generation = m_session_gen;
     auto mailbox = m_frame_mailbox;
-    connect(m_pipeline, &VideoPipeline::frameReady, m_pipeline, [this, mailbox, generation](const DecodedFrame& frame) {
-        if (mailbox->publish(frame)) {
-            QMetaObject::invokeMethod(this, [this, mailbox, generation] { deliverLatestFrame(mailbox, generation); }, Qt::QueuedConnection);
-        }
-    }, Qt::DirectConnection);
+    // consume() is serialized by m_decode_busy, so only one owning frame can be
+    // queued per batch. A receiver context also drops delivery after shutdown.
+    connect(m_pipeline, &VideoPipeline::frameReady, this, [this, mailbox, generation](const DecodedFrame& frame) {
+        if (mailbox->publish(frame)) deliverLatestFrame(mailbox, generation);
+    }, Qt::QueuedConnection);
     connect(m_pipeline, &VideoPipeline::batchProcessed, this, [this, generation] {
         if (generation != m_session_gen) return;
         m_decode_busy = false;
@@ -306,6 +377,17 @@ void StreamSession::startPipeline() {
         if (generation != m_session_gen || !m_running || m_fallback_snapshot) return;
         m_socket->write("CONFIG_ACK\n");
         emit statusChanged("设备握手成功，开始接收流");
+    });
+    connect(m_pipeline, &VideoPipeline::decoderFallback, this, [this, generation](const QString& reason) {
+        if (generation != m_session_gen || !m_running || m_fallback_snapshot) return;
+        m_software_retry_requested = true;
+        m_progress_clock.restart();
+        HC_LOG_WARN("Video decoder recovery: " + reason);
+        emit statusChanged(reason);
+    });
+    connect(m_pipeline, &VideoPipeline::softwareRetryCompleted, this, [this, generation](bool recovered) {
+        if (generation != m_session_gen || !m_running || m_fallback_snapshot) return;
+        if (!recovered) startSnapshotFallback(m_software_retry_reason);
     });
     m_decode_thread->start();
     setPresentation(m_viewport, m_rotation, m_dpr);
@@ -329,20 +411,33 @@ void StreamSession::setPresentation(QSize viewport, int rotation, qreal dpr) {
 
 void StreamSession::stopPipeline() {
     if (!m_decode_thread) return;
-    m_decode_thread->requestInterruption();
-    m_decode_thread->quit();
-    m_decode_thread->wait();
-    delete m_decode_thread;
+    auto* thread = m_decode_thread;
     m_decode_thread = nullptr;
     m_pipeline = nullptr;
     m_decode_busy = false;
+    connect(thread, &QThread::finished, thread, &QObject::deleteLater);
+    thread->requestInterruption();
+    thread->quit();
+    if (thread->wait(1000)) {
+        delete thread;
+    } else {
+        thread->setParent(nullptr);
+        HC_LOG_WARN("Video decoder thread did not stop in time; UI recovery will continue without waiting for the driver");
+    }
 }
 
 void StreamSession::deliverLatestFrame(const std::shared_ptr<FrameMailbox>& mailbox, uint64_t generation) {
     auto frame = mailbox->take();
-    if (!frame || generation != m_session_gen || !m_running) return;
+    if (!frame || generation != m_session_gen || !m_running || mailbox != m_frame_mailbox) return;
+    const bool first_frame = !m_received_frame;
+    m_received_frame = true;
+    m_progress_clock.restart();
     const int width = frame->source_width > 0 ? frame->source_width : frame->width;
     const int height = frame->source_height > 0 ? frame->source_height : frame->height;
+    if (first_frame) {
+        HC_LOG_INFO(QString("First displayable frame received: %1x%2 (%3)")
+            .arg(width).arg(height).arg(m_fallback_snapshot ? "snapshot" : "native video"));
+    }
     bool changed = m_dev_width != width || m_dev_height != height;
     m_dev_width = width;
     m_dev_height = height;
@@ -442,14 +537,51 @@ void StreamSession::updateSnapshotTargetSize() {
     }
 }
 
-void StreamSession::startSnapshotFallback() {
+void StreamSession::checkProgress() {
+    if (!m_running || !m_progress_clock.isValid()) return;
+    const int timeout = !m_fallback_snapshot && !m_socket_connected ? m_timeouts.startup_ms : m_timeouts.frame_ms;
+    if (m_progress_clock.elapsed() < timeout) return;
+    if (m_fallback_snapshot) {
+        const QString error = QString("兼容截图在 %1 秒内未返回画面，请检查设备截图权限和 HDC 文件传输\n%2")
+            .arg(timeout / 1000.0, 0, 'g', 3).arg(m_fallback_reason);
+        HC_LOG_WARN(error);
+        stop();
+        emit streamFinished(error);
+        return;
+    }
+    const QString reason = !m_socket_connected ? QStringLiteral("投屏服务准备超时，采屏程序或端口映射未就绪") :
+        m_received_frame ? QStringLiteral("视频通道没有继续返回画面") : QStringLiteral("视频通道已连接，但一直未收到可显示的首帧");
+    if (m_socket_connected && m_pipeline && !m_software_retry_requested) {
+        m_software_retry_requested = true;
+        m_progress_clock.restart();
+        m_software_retry_reason = reason;
+        auto* pipeline = m_pipeline;
+        QMetaObject::invokeMethod(pipeline, [pipeline] { pipeline->requestSoftwareDecoder(); });
+        return;
+    }
+    startSnapshotFallback(reason);
+}
+
+void StreamSession::startSnapshotFallback(const QString& reason) {
     if (m_fallback_snapshot) return;
+    m_fallback_reason = reason.isEmpty() ? QStringLiteral("原生视频通道不可用") : reason;
     m_fallback_snapshot = true;
+    if (m_start_cancel) m_start_cancel->store(true);
+    m_received_frame = false;
+    m_progress_clock.restart();
     m_heartbeat_timer->stop();
     m_socket->abort();
     stopPipeline();
     if (m_frame_mailbox) m_frame_mailbox->clear();
     m_frame_mailbox = std::make_shared<FrameMailbox>();
+    emit statusChanged(m_fallback_reason + "\n正在尝试兼容截图…");
+    if (m_forwarded) cleanup();
+    if (!QImageReader::supportedImageFormats().contains("jpeg")) {
+        const QString error = "缺少 JPEG 图像插件，无法启用兼容截图，请使用完整安装包";
+        stop();
+        emit streamFinished(error);
+        return;
+    }
     HC_LOG_WARN(QString("StreamSession starting snapshot fallback mode for %1").arg(QString::fromStdString(m_device.serial)));
 
     if (m_snapshot_ctx) {
@@ -589,8 +721,9 @@ void StreamSession::startSnapshotFallback() {
                                  .arg(QString::fromStdString(ctx->serial)));
                 auto* session = weak_this.data();
                 if (session) {
-                    QMetaObject::invokeMethod(session, [weak_this]() {
-                        if (!weak_this || !weak_this->m_running) return;
+                    QMetaObject::invokeMethod(session, [weak_this, ctx, generation]() {
+                        if (!weak_this || !weak_this->m_running || ctx->cancelled.load() ||
+                            weak_this->m_session_gen != generation || weak_this->m_snapshot_ctx != ctx) return;
                         weak_this->stop();
                         if (weak_this) {
                             emit weak_this->streamFinished("设备画面流传输异常中断，已自动停止投屏");

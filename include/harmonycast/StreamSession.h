@@ -10,12 +10,18 @@
 #include <QObject>
 #include <QTcpSocket>
 #include <QTimer>
+#include <QElapsedTimer>
 #include <memory>
 #include <atomic>
 #include <thread>
 #include <QThread>
 
 namespace harmonycast {
+
+struct StreamTimeouts {
+    int startup_ms{30000};
+    int frame_ms{15000};
+};
 
 struct SnapshotWorkerContext {
     std::atomic<bool> cancelled{false};
@@ -38,7 +44,8 @@ public:
                            int fps = 60,
                            int bitrate = 8000000,
                            int max_size = 0,
-                           QObject* parent = nullptr);
+                           QObject* parent = nullptr,
+                           StreamTimeouts timeouts = {});
     ~StreamSession() override;
 
     bool start();
@@ -88,6 +95,13 @@ private:
     QTcpSocket* m_socket{nullptr};
     bool m_socket_connected{false};
     QTimer* m_heartbeat_timer{nullptr};
+    QTimer* m_progress_timer{nullptr};
+    QElapsedTimer m_progress_clock;
+    StreamTimeouts m_timeouts;
+    bool m_received_frame{false};
+    bool m_software_retry_requested{false};
+    QString m_software_retry_reason;
+    QString m_fallback_reason;
 
     QThread* m_decode_thread{nullptr};
     VideoPipeline* m_pipeline{nullptr};
@@ -112,10 +126,13 @@ private:
                                   int remote_port,
                                   int fps,
                                   int bitrate,
-                                  int max_size);
+                                  int max_size,
+                                  const std::shared_ptr<std::atomic<bool>>& cancelled,
+                                  QString& error);
     void tryConnectSocket(int attempt, uint64_t gen);
     void cleanup();
-    void startSnapshotFallback();
+    void startSnapshotFallback(const QString& reason = {});
+    void checkProgress();
     void startPipeline();
     void stopPipeline();
     void deliverLatestFrame(const std::shared_ptr<FrameMailbox>& mailbox, uint64_t generation);

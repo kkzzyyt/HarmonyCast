@@ -5,12 +5,14 @@
 #include <QDateTime>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
+#include <QPointer>
+#include <QStringList>
 #include <memory>
 
 namespace harmonycast {
 
 struct UpdateInfo {
-    QString currentVersion{"2.3.1"};
+    QString currentVersion{"2.3.2"};
     QString latestVersion;
     QString releaseTitle;
     QString changelog;
@@ -37,7 +39,11 @@ public:
     void setCurrentVersion(const QString& ver) { m_current_version = ver; }
 
     [[nodiscard]] QString updateUrl() const { return m_update_url; }
-    void setUpdateUrl(const QString& url) { m_update_url = url; }
+    void setUpdateUrl(const QString& url);
+    static QString defaultUpdateUrl();
+    static QString officialUpdateUrl();
+    [[nodiscard]] QStringList updateSources() const;
+    void setFallbackUrls(const QStringList& urls) { m_fallback_urls = urls; }
 
     // Ignore version management
     void ignoreVersion(const QString& version);
@@ -50,16 +56,20 @@ signals:
     void noUpdateAvailable(bool silent);
     void checkFailed(const QString& error, bool silent);
 
-private slots:
-    void onReplyFinished();
-
 private:
     QNetworkAccessManager* m_nam{nullptr};
-    QNetworkReply* m_current_reply{nullptr};
-    QString m_current_version{"2.3.1"};
-    QString m_update_url{"https://api.github.com/repos/kkzzyyt/HarmonyCast/releases/latest"};
+    QPointer<QNetworkReply> m_current_reply;
+    QString m_current_version{"2.3.2"};
+    QString m_update_url{defaultUpdateUrl()};
+    QStringList m_fallback_urls;
+    QStringList m_pending_urls;
+    QStringList m_failures;
+    quint64 m_check_generation{0};
     bool m_silent_check{true};
 
+    void requestNextSource(quint64 generation);
+    void onReplyFinished(QNetworkReply* reply, quint64 generation);
+    void sourceFailed(const QString& reason, quint64 generation);
     UpdateInfo parseManifest(const QByteArray& data) const;
 };
 

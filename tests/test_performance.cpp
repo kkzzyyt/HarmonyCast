@@ -192,6 +192,163 @@ static void testEncodedFrameOwnership() {
     }
 }
 
+static QByteArray encodedPacket(quint32 type, const QByteArray& payload) {
+    QByteArray packet(8, '\0');
+    for (int i = 0; i < 4; ++i) {
+        packet[i] = char(type >> (24 - 8 * i));
+        packet[i + 4] = char(quint32(payload.size()) >> (24 - 8 * i));
+    }
+    return packet + payload;
+}
+
+static QByteArray fixtureNalu(const QByteArray& bytes, int requestedType) {
+    auto prefix = [&](qsizetype pos) {
+        if (bytes.mid(pos, 4) == QByteArray::fromHex("00000001")) return 4;
+        if (bytes.mid(pos, 3) == QByteArray::fromHex("000001")) return 3;
+        return 0;
+    };
+    for (qsizetype pos = 0; pos < bytes.size();) {
+        const int length = prefix(pos);
+        if (!length) { ++pos; continue; }
+        const qsizetype payload = pos + length;
+        if (payload >= bytes.size()) break;
+        qsizetype end = payload + 1;
+        while (end < bytes.size() && !prefix(end)) ++end;
+        if ((quint8(bytes.constData()[payload]) & 31) == requestedType) return bytes.mid(pos, end - pos);
+        pos = end;
+    }
+    throw std::runtime_error("fixture NAL missing");
+}
+
+static QImage decodeFixtureFrame(const QByteArray& packet) {
+    VideoDecoder decoder;
+    check(decoder.init(64, 48, false), "reference CPU decoder failed");
+    QImage image;
+    decoder.setFrameCallback([&](const DecodedFrame& frame) { image = frame.image; });
+    check(decoder.decode(std::span(reinterpret_cast<const uint8_t*>(packet.constData()), size_t(packet.size())), true), "reference H.264 frame failed");
+    check(!image.isNull(), "reference H.264 frame missing");
+    return image;
+}
+
+static void testDecoderRecoveryPolicy() {
+    detail::DecoderRecoveryPolicy policy;
+    policy.reset(true);
+    policy.decodeFailed();
+    policy.decodeFailed();
+    check(!policy.fallbackRequested(), "isolated GPU decode errors triggered an early retry");
+    policy.frameDecoded(true);
+    policy.decodeFailed();
+    policy.decodeFailed();
+    check(!policy.fallbackRequested(), "a good frame did not reset GPU decode errors");
+    policy.decodeFailed();
+    check(policy.fallbackRequested(), "persistent GPU send/receive errors did not request CPU fallback");
+    policy.frameDecoded(true);
+    check(policy.fallbackRequested(), "fallback request must stay latched until a safe rebuild");
+
+    policy.reset(true);
+    policy.transferFailed();
+    policy.transferFailed();
+    policy.frameDecoded(true);
+    policy.transferFailed();
+    policy.transferFailed();
+    check(!policy.fallbackRequested(), "a good frame did not reset GPU transfer errors");
+    policy.transferFailed();
+    check(policy.fallbackRequested(), "persistent GPU transfer errors did not request CPU fallback");
+
+    policy.reset(true);
+    policy.decodeFailed();
+    policy.transferFailed();
+    policy.decodeFailed();
+    check(policy.fallbackRequested(), "mixed GPU decoding/transfer errors bypassed the recovery threshold");
+
+    policy.reset(false);
+    for (int i = 0; i < 8; ++i) policy.decodeFailed();
+    check(!policy.fallbackRequested(), "CPU decoding errors must not loop through GPU recovery");
+    policy.reset(true);
+    policy.frameDecoded(false);
+    for (int i = 0; i < 8; ++i) policy.decodeFailed();
+    check(!policy.fallbackRequested(), "FFmpeg's own CPU format fallback was treated as a GPU failure");
+}
+
+static void testEncodedPipelineRecovery() {
+    const auto fixtures = encodedFrames();
+    const QByteArray sps = fixtureNalu(fixtures.front(), 7);
+    const QByteArray pps = fixtureNalu(fixtures.front(), 8);
+    const QByteArray idr = fixtureNalu(fixtures.front(), 5);
+    const QImage reference = decodeFixtureFrame(fixtures.front());
+    check(sps.size() < 100 && pps.size() < 100 && idr.size() > 100, "H.264 recovery fixture is invalid");
+
+    VideoPipeline pipeline;
+    std::vector<DecodedFrame> frames;
+    int fallbacks = 0;
+    QObject::connect(&pipeline, &VideoPipeline::frameReady, &pipeline, [&](const DecodedFrame& frame) { frames.push_back(frame); });
+    QObject::connect(&pipeline, &VideoPipeline::decoderFallback, &pipeline, [&](const QString& reason) {
+        check(!reason.isEmpty(), "software recovery must explain its state");
+        ++fallbacks;
+    });
+    check(!pipeline.useSoftwareDecoder(), "unknown stream consumed its software retry");
+    // Three-byte Annex-B configuration is retained without decoding it alone.
+    pipeline.consume(encodedPacket(1, sps.mid(1)));
+    pipeline.consume(encodedPacket(2, pps.mid(1)));
+    check(frames.empty(), "configuration-only packets emitted a picture");
+    check(pipeline.useSoftwareDecoder(), "encoded stream could not request a CPU rebuild");
+    check(fallbacks == 1 && !pipeline.useSoftwareDecoder(), "software retry must be limited to once per stream");
+    bool queuedRetryRecovered = false;
+    QObject::connect(&pipeline, &VideoPipeline::softwareRetryCompleted, &pipeline, [&](bool recovered) { queuedRetryRecovered = recovered; });
+    pipeline.requestSoftwareDecoder();
+    check(queuedRetryRecovered && fallbacks == 1, "queued watchdog retry discarded an already recovered CPU decoder");
+    QByteArray nonKeyframe = QByteArray::fromHex("0000000141c0");
+    pipeline.consume(encodedPacket(4, nonKeyframe));
+    check(frames.empty(), "recovery must wait for a keyframe");
+    // Wire type 4 has no keyframe flag. The actual IDR and cached SPS/PPS must
+    // suffice after rebuilding; the IDR packet itself contains no configuration.
+    pipeline.consume(encodedPacket(4, idr));
+    check(frames.size() == 1 && frames.back().image == reference,
+          "CPU rebuild lost SPS/PPS or failed to recognize an unflagged IDR");
+    const QImage retained = frames.back().image.copy();
+    pipeline.consume(encodedPacket(4, fixtureNalu(fixtures[1], 5)));
+    check(frames.size() == 2 && frames.front().image == retained, "CPU recovery lost the next frame or changed retained pixels");
+
+    VideoPipeline combined;
+    int combinedFrames = 0;
+    QImage combinedImage;
+    QObject::connect(&combined, &VideoPipeline::frameReady, &combined, [&](const DecodedFrame& frame) {
+        ++combinedFrames;
+        combinedImage = frame.image;
+    });
+    // Some encoders put config and IDR in a packet marked as configuration.
+    combined.consume(encodedPacket(1, fixtures.front()));
+    check(combinedFrames == 1 && combinedImage.size() == reference.size() &&
+          combinedImage.pixelColor(20, 20) != combinedImage.pixelColor(40, 20),
+          "mixed configuration/IDR flags suppressed a valid picture");
+    // Malformed oversized parameter sets must not evict valid cached values.
+    combined.consume(encodedPacket(1, QByteArray::fromHex("0000000167") + QByteArray(128 * 1024, 'x')));
+    combined.consume(encodedPacket(2, QByteArray::fromHex("0000000168") + QByteArray(128 * 1024, 'x')));
+    check(combined.useSoftwareDecoder(), "an initialized encoded stream could not switch to CPU");
+    combined.consume(encodedPacket(2, idr));
+    check(combinedFrames == 2 && combinedImage == reference, "bounded configuration cache lost recovery data");
+    check(!combined.useSoftwareDecoder(), "persistent failures may not restart CPU decoding forever");
+
+    VideoPipeline partialConfig;
+    QImage partialImage;
+    QObject::connect(&partialConfig, &VideoPipeline::frameReady, &partialConfig, [&](const DecodedFrame& frame) { partialImage = frame.image; });
+    partialConfig.consume(encodedPacket(1, sps));
+    partialConfig.consume(encodedPacket(2, pps));
+    check(partialConfig.useSoftwareDecoder(), "partial configuration retry failed");
+    partialConfig.consume(encodedPacket(3, sps + idr));
+    check(partialImage == reference, "partial configuration replay did not preserve SPS/PPS ordering");
+
+    VideoPipeline raw;
+    int rawFrames = 0;
+    int rawFallbacks = 0;
+    QObject::connect(&raw, &VideoPipeline::frameReady, &raw, [&](const DecodedFrame&) { ++rawFrames; });
+    QObject::connect(&raw, &VideoPipeline::decoderFallback, &raw, [&](const QString&) { ++rawFallbacks; });
+    raw.consume(rawFrame(8, 6, 17));
+    check(!raw.useSoftwareDecoder(), "raw frames must bypass encoded recovery");
+    raw.consume(rawFrame(8, 6, 29));
+    check(rawFrames == 2 && rawFallbacks == 0, "software retry changed raw-frame transport");
+}
+
 static void sendEvent(WebViewDebugger& debugger, const QJsonObject& event) {
     QString text = QString::fromUtf8(QJsonDocument(event).toJson(QJsonDocument::Compact));
     check(QMetaObject::invokeMethod(&debugger, "onWsTextMessage", Qt::DirectConnection, Q_ARG(QString, text)), "CDP event dispatch failed");
@@ -393,7 +550,10 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (argc > 3 && std::string(argv[1]) == "-t" && std::string(argv[2]) == "performance-test-target") {
-        std::cout << (std::string(argv[3]) == "fport" ? "OK" : argv[argc - 1]);
+        const std::string last = argv[argc - 1];
+        if (argc > 4 && std::string(argv[4]) == "uname") std::cout << "aarch64\n";
+        else if (last.find("__HC_CAPTURE_READY__") != std::string::npos) std::cout << "__HC_CAPTURE_READY__\n";
+        else std::cout << (std::string(argv[3]) == "fport" ? "OK" : argv[argc - 1]);
         return 0;
     }
     qputenv("QT_QPA_PLATFORM", "offscreen");
@@ -408,6 +568,8 @@ int main(int argc, char** argv) {
         testPresentationAndTouchCoordinates();
         testWorkerPipeline();
         testEncodedFrameOwnership();
+        testDecoderRecoveryPolicy();
+        testEncodedPipelineRecovery();
         testNetworkRetentionAndBodies();
         testCommandOrderAndSessionShutdown();
         testPausedLogsAndBoundedConsole();

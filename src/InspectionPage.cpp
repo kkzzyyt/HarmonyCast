@@ -60,7 +60,7 @@ InspectionPage::InspectionPage(std::shared_ptr<HdcClient> hdc, QWidget* parent)
     m_input_errors = IconManager::label("", "Muted", true);
     m_input_errors->setTextFormat(Qt::PlainText);
     m_input_errors->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    m_input_errors->setStyleSheet("color: #9c6c12;");
+    m_input_errors->setStyleSheet("color: #80652f;");
     inputLayout->addWidget(m_input_errors);
 
     auto* actions = new QHBoxLayout;
@@ -106,27 +106,28 @@ InspectionPage::InspectionPage(std::shared_ptr<HdcClient> hdc, QWidget* parent)
     m_progress->hide();
     m_progress->setAlignment(Qt::AlignCenter);
     m_progress->setStyleSheet(
-        "QProgressBar { background: #e3ebf7; border: none; border-radius: 2px; }"
-        "QProgressBar::chunk { background: #2467d6; border-radius: 2px; }");
+        "QProgressBar { background: #d1d5dc; border: none; border-radius: 2px; }"
+        "QProgressBar::chunk { background: #566b8b; border-radius: 2px; }");
     results->addWidget(m_progress);
     m_table = new QTableWidget;
     m_table->setObjectName("InspectionResults");
-    m_table->setColumnCount(12);
+    m_table->setColumnCount(10);
     m_table->setHorizontalHeaderLabels({"IP / 端口", "状态", "运行时间", "MAC 地址", "内存（MiB）",
-                                       "内存使用率", "/data 使用率", "型号", "系统版本", "设备 IP", "巡检时间", "备注"});
+                                       "内存使用率", "型号", "系统版本", "巡检时间", "备注"});
+    m_table->horizontalHeaderItem(6)->setToolTip("ICU 硬件与看门狗中的硬件型号");
     m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_table->setWordWrap(false);
     m_table->setShowGrid(false);
     m_table->setAlternatingRowColors(true);
-    m_table->setStyleSheet("QTableWidget { border: none; border-radius: 0; } QTableWidget::item { border-bottom: 1px solid #eaf0f7; }");
+    m_table->setStyleSheet("QTableWidget { border: none; border-radius: 0; } QTableWidget::item { border-bottom: 1px solid #d4dbe5; }");
     m_table->horizontalHeaderItem(4)->setToolTip("已用内存 / 总内存（MiB）");
     m_table->verticalHeader()->setVisible(false);
     m_table->verticalHeader()->setDefaultSectionSize(36);
     m_table->horizontalHeader()->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     m_table->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
-    const int widths[] = {148, 72, 128, 164, 144, 112, 112, 120, 192, 208, 176, 320};
-    for (int i = 0; i < 12; ++i) m_table->setColumnWidth(i, widths[i]);
+    const int widths[] = {148, 72, 128, 164, 144, 112, 120, 192, 176, 320};
+    for (int i = 0; i < 10; ++i) m_table->setColumnWidth(i, widths[i]);
     results->addWidget(m_table, 1);
     m_summary = IconManager::label("采集运行时长、网络、内存、存储、系统和 CPU 信息", "Muted", true);
     results->addWidget(m_summary);
@@ -243,21 +244,21 @@ void InspectionPage::updateRow(int index) {
     if (index < 0 || index >= static_cast<int>(m_runner->results().size())) return;
     const auto& row = m_runner->results()[index];
     const auto cells = InspectionReport::cells(row);
-    const QString memory = cells[13].isEmpty() ? QString{} :
-        (cells[14].isEmpty() ? "—" : QString::number(cells[14].toDouble(), 'f', 0)) + " / " + QString::number(cells[13].toDouble(), 'f', 0);
+    const QString memory = cells[12].isEmpty() ? QString{} :
+        (cells[13].isEmpty() ? "—" : QString::number(cells[13].toDouble(), 'f', 0)) + " / " + QString::number(cells[12].toDouble(), 'f', 0);
     QString runtime;
     if (row.uptimeSeconds) {
         const auto seconds = *row.uptimeSeconds;
         runtime = QString("%1天 %2:%3:%4").arg(seconds / 86400)
             .arg(seconds / 3600 % 24, 2, 10, QChar('0')).arg(seconds / 60 % 60, 2, 10, QChar('0')).arg(seconds % 60, 2, 10, QChar('0'));
     }
-    QString mac = cells[6];
+    QString mac = cells[5];
     for (const auto& net : row.networks) {
         if (net.ips.contains(row.target.ip) && !net.mac.isEmpty()) { mac = net.mac; break; }
     }
     const QStringList visible{row.target.endpoint(), cells[2], runtime, mac, memory,
-        cells[16].isEmpty() ? QString{} : cells[16] + "%", cells[19].isEmpty() ? QString{} : cells[19] + "%",
-        row.model, row.systemVersion, cells[5], cells[22], row.notes};
+        cells[15].isEmpty() ? QString{} : cells[15] + "%",
+        row.model, row.systemVersion, cells[20], row.notes};
     for (int column = 0; column < visible.size(); ++column) {
         auto* item = m_table->item(index, column);
         if (!item) {
@@ -267,12 +268,12 @@ void InspectionPage::updateRow(int index) {
         item->setText(visible[column]);
         item->setToolTip(visible[column]);
         if (column == 2) item->setToolTip(cells[3]);
-        if (column == 3) item->setToolTip(cells[6]);
-        if (column == 4 || column == 5 || column == 6) item->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        if (column == 3) item->setToolTip(cells[5]);
+        if (column == 4 || column == 5) item->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
         if (column == 1) {
-            const char* color = row.status == InspectionStatus::Succeeded ? "#18815c" :
+            const char* color = row.status == InspectionStatus::Succeeded ? "#4b6585" :
                 row.status == InspectionStatus::Failed ? "#c63d48" :
-                row.status == InspectionStatus::Partial ? "#9c6c12" : "#60738a";
+                row.status == InspectionStatus::Partial ? "#80652f" : "#617087";
             item->setForeground(QColor(color));
         }
     }

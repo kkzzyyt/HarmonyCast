@@ -38,6 +38,8 @@ template<class Predicate> static void waitUntil(Predicate predicate, int timeout
 static const char* snapshot = R"(<<<HC_INSPECTION:BEGIN>>>
 <<<HC_INSPECTION:MODEL>>>
 HR36
+<<<HC_INSPECTION:ICU>>>
+model: "YH-H36M01"
 <<<HC_INSPECTION:SERIAL>>>
 SN-0007
 <<<HC_INSPECTION:SYSTEM>>>
@@ -93,12 +95,33 @@ static void testParsing() {
           "uptime parsed incorrectly");
     check(row.memoryTotalKiB == 2097152 && row.memoryAvailableKiB == 524288,
           "memory must use MemAvailable instead of MemFree");
-    check(row.storageTotalKiB == 8388608 && row.storageAvailableKiB == 6291456 && row.storageUsedPercent == 25.0,
-          "storage units or usage lost");
+    check(row.storageTotalKiB == 8388608 && row.storageAvailableKiB == 6291456,
+          "storage capacity units lost");
     check(row.networks.size() == 2 && InspectionReport::macs(row).contains("eth0: aa:bb:cc:dd:ee:01") &&
           !InspectionReport::ips(row).contains("127.0.0.1"), "network interfaces mismatched or loopback exported");
-    check(row.model == "HR36" && row.architecture == "aarch64" && row.cpuLoad == "0.15 / 0.25 / 0.35",
+    check(row.model == "YH-H36M01" && row.architecture == "aarch64" && row.cpuLoad == "0.15 / 0.25 / 0.35",
           "common device information missing");
+    auto noIcu = InspectionReport::parseSnapshot(target, QString::fromUtf8(snapshot).replace("model: \"YH-H36M01\"", ""));
+    check(noIcu.model.isEmpty() && noIcu.notes.contains("看门狗硬件型号"), "product model must not replace the watchdog model");
+    auto watchdogOnly = InspectionReport::parseSnapshot(target,
+        QString::fromUtf8(snapshot).replace("model: \"YH-H36M01\"", "StopWatchDog: 1\nVersion: v1.9"));
+    check(watchdogOnly.model.isEmpty(), "watchdog state or firmware must not become the hardware model");
+    auto uppercaseModel = InspectionReport::parseSnapshot(target,
+        QString::fromUtf8(snapshot).replace("model: \"YH-H36M01\"", "Model: 'YH-H35M01'\nStopWatchDog: 0"));
+    check(uppercaseModel.model == "YH-H35M01", "watchdog hardware model casing or quoting was lost");
+    auto aliases = InspectionReport::parseSnapshot(target,
+        QString::fromUtf8(snapshot).replace("model: \"YH-H36M01\"", "model: fail\nMODEL: \"YH-H36M01\"\nmodel: root-alias"));
+    check(aliases.model == "YH-H36M01", "lower-priority ICU aliases overwrote the hardware model");
+    QString withoutUnusedFields = QString::fromUtf8(snapshot);
+    withoutUnusedFields.replace(
+        "<<<HC_INSPECTION:IP>>>\n1: lo    inet 127.0.0.1/8 scope host lo\n"
+        "2: eth0    inet 192.0.2.1/24 brd 192.0.2.255 scope global eth0\n"
+        "3: wlan0    inet 198.51.100.7/24 scope global wlan0\n", "");
+    withoutUnusedFields.replace("6291456 25% /data", "6291456 - /data");
+    auto noIpOrStoragePercent = InspectionReport::parseSnapshot(target, withoutUnusedFields);
+    check(noIpOrStoragePercent.status == InspectionStatus::Succeeded && noIpOrStoragePercent.notes.isEmpty() &&
+          noIpOrStoragePercent.storageTotalKiB == 8388608 && noIpOrStoragePercent.storageAvailableKiB == 6291456,
+          "removed IP or storage usage fields must not be required for a complete inspection");
     auto partial = InspectionReport::parseSnapshot(target,
         "<<<HC_INSPECTION:BEGIN>>>\n<<<HC_INSPECTION:UPTIME>>>\n0.05 0\n"
         "<<<HC_INSPECTION:MEMORY>>>\nMemTotal: 1024 kB\nMemFree: 512 kB\n"
@@ -126,7 +149,25 @@ static void testParsing() {
 
 static void testExport(const QString& directory) {
     auto row = InspectionReport::parseSnapshot({"192.0.2.1", 8710}, QString::fromUtf8(snapshot));
-    check(InspectionReport::headers().size() == InspectionReport::cells(row).size(), "CSV columns do not match headers");
+    const auto headers = InspectionReport::headers();
+    const auto values = InspectionReport::cells(row);
+    check(headers.size() == 22 && headers.size() == values.size(), "CSV columns do not match headers");
+    check(!headers.contains("设备 IP") && !headers.contains("/data 使用率（%）"),
+          "removed inspection columns remain in CSV");
+    auto field = [&](const QString& header) {
+        const int index = headers.indexOf(header);
+        check(index >= 0, "CSV field missing");
+        return values[index];
+    };
+    check(field("目标 IP") == "192.0.2.1" && field("HDC 端口") == "8710" &&
+          field("设备型号") == "YH-H36M01" && field("序列号") == "SN-0007" &&
+          field("系统版本") == "OpenHarmony 5.0.1" && field("CPU 架构") == "aarch64",
+          "removing columns shifted target or system values");
+    check(field("总内存（MiB）") == "2048.00" && field("已用内存（MiB）") == "1536.00" &&
+          field("可用内存（MiB）") == "512.00" && field("内存使用率（%）") == "75.0" &&
+          field("/data 总容量（GiB）") == "8.00" && field("/data 可用容量（GiB）") == "6.00" &&
+          field("内核版本") == "5.10.184" && field("设备时间") == "2026-11-11 12:34:56 +0800",
+          "removing columns shifted capacity or time values");
     row.model = "=HYPERLINK(\"http://example.invalid\",\"open\")";
     row.notes = "quote \" and comma,\nnext line 中文";
     InspectionResult failed;
@@ -221,6 +262,15 @@ static void testPage(const QString& directory) {
     check(!start->isEnabled() && input->isReadOnly(), "running batch inputs not locked");
     waitUntil([&] { return !page.isRunning(); });
     check(table->rowCount() == 2 && exportButton->isEnabled(), "UI results or export state missing");
+    check(table->columnCount() == 10 && table->item(0, 6)->text() == "YH-H36M01", "inspection columns or watchdog model are incorrect");
+    check(table->item(0, 3)->text() == "aa:bb:cc:dd:ee:01" && table->item(0, 4)->text() == "1536 / 2048" &&
+          table->item(0, 5)->text() == "75.0%" && table->item(0, 7)->text() == "OpenHarmony 5.0.1" &&
+          !table->item(0, 8)->text().isEmpty() && table->item(0, 9)->text().isEmpty(),
+          "removing columns shifted inspection table values");
+    for (int column = 0; column < table->columnCount(); ++column) {
+        const QString header = table->horizontalHeaderItem(column)->text();
+        check(header != "设备 IP" && header != "/data 使用率", "removed inspection table columns remain visible");
+    }
     check(page.exportCsv(directory + "/page.csv"), "UI CSV export failed");
     QString error;
     const auto previous = input->toPlainText();

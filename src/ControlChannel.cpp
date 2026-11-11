@@ -1,5 +1,6 @@
 #include "harmonycast/ControlChannel.h"
 #include <QDataStream>
+#include <QNetworkProxy>
 
 namespace harmonycast {
 
@@ -19,6 +20,7 @@ enum ControlMsgType : uint8_t {
 
 ControlChannel::ControlChannel(QObject* parent)
     : QObject(parent), m_socket(new QTcpSocket(this)) {
+    m_socket->setProxy(QNetworkProxy(QNetworkProxy::NoProxy));
     connect(m_socket, &QTcpSocket::connected, this, &ControlChannel::connected);
     connect(m_socket, &QTcpSocket::disconnected, this, &ControlChannel::disconnected);
     connect(m_socket, &QTcpSocket::errorOccurred, this, [this](QAbstractSocket::SocketError) {

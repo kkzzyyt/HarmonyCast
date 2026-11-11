@@ -1,4 +1,5 @@
 #include "harmonycast/DeviceInspection.h"
+#include "harmonycast/DeviceManager.h"
 #include <QFileInfo>
 #include <QDir>
 #include <QMap>
@@ -110,7 +111,10 @@ QString InspectionReport::collectionScript() {
     // Fixed, read-only script: imported addresses are passed only as HDC arguments.
     return QStringLiteral(
         "echo '<<<HC_INSPECTION:BEGIN>>>'; "
-        "echo '<<<HC_INSPECTION:MODEL>>>'; param get const.product.model 2>/dev/null; "
+        "echo '<<<HC_INSPECTION:ICU>>>'; "
+        "for dir in /sys/class/ICU/version /sys/class/icu/version /sys/class/ICU /sys/class/icu; do "
+        "for f in model Model MODEL; do if [ -r \"$dir/$f\" ]; then "
+        "echo \"model: $(cat \"$dir/$f\" 2>/dev/null)\"; fi; done; done; "
         "echo '<<<HC_INSPECTION:SERIAL>>>'; param get ohos.boot.sn 2>/dev/null; "
         "echo '<<<HC_INSPECTION:SYSTEM>>>'; param get const.ohos.fullname 2>/dev/null; "
         "echo '<<<HC_INSPECTION:API>>>'; param get const.ohos.apiversion 2>/dev/null; "
@@ -153,7 +157,14 @@ InspectionResult InspectionReport::parseSnapshot(const InspectionTarget& target,
         row.notes = "读取失败：" + (output.trimmed().isEmpty() ? QStringLiteral("设备未返回巡检信息") : output.trimmed().left(1024));
         return row;
     }
-    row.model = cleanValue(sections["MODEL"]);
+    // The script orders version nodes before root nodes. Keep the first usable
+    // hardware model when a firmware exposes several aliases for the same ICU.
+    for (const auto& line : sections["ICU"].split('\n')) {
+        DeviceInfo icu;
+        DeviceManager::parseIcuInfo(icu, line.toStdString());
+        row.model = cleanValue(QString::fromStdString(icu.icu_model));
+        if (!row.model.isEmpty()) break;
+    }
     row.serial = cleanValue(sections["SERIAL"]);
     row.systemVersion = cleanValue(sections["SYSTEM"]);
     row.apiVersion = cleanValue(sections["API"]);
@@ -177,17 +188,15 @@ InspectionResult InspectionReport::parseSnapshot(const InspectionTarget& target,
     if (!row.memoryTotalKiB || (row.memoryAvailableKiB && *row.memoryAvailableKiB > *row.memoryTotalKiB))
         row.memoryAvailableKiB.reset();
 
-    const auto storage = QRegularExpression(R"((\d+)\s+\d+\s+(\d+)\s+(\d+(?:\.\d+)?)%\s+/data(?:\s|$))")
+    const auto storage = QRegularExpression(R"((\d+)\s+\d+\s+(\d+)\s+\S+\s+/data(?:\s|$))")
         .match(sections["STORAGE"]);
     if (storage.hasMatch()) {
-        bool totalOk, availableOk, percentOk;
+        bool totalOk, availableOk;
         const auto total = storage.captured(1).toULongLong(&totalOk);
         const auto available = storage.captured(2).toULongLong(&availableOk);
-        const double percent = storage.captured(3).toDouble(&percentOk);
         if (totalOk && availableOk && total > 0 && available <= total) {
             row.storageTotalKiB = total;
             row.storageAvailableKiB = available;
-            if (percentOk && percent >= 0 && percent <= 100) row.storageUsedPercent = percent;
         }
     }
     const auto loads = sections["LOAD"].simplified().split(' ', Qt::SkipEmptyParts);
@@ -240,10 +249,9 @@ InspectionResult InspectionReport::parseSnapshot(const InspectionTarget& target,
     if (!row.uptimeSeconds) missing << "运行时间";
     if (!row.memoryTotalKiB) missing << "总内存";
     if (!row.memoryAvailableKiB) missing << "可用内存";
-    if (ips(row).isEmpty()) missing << "设备 IP";
     if (macs(row).isEmpty()) missing << "MAC 地址";
-    if (!row.storageTotalKiB || !row.storageAvailableKiB || !row.storageUsedPercent) missing << "/data 存储";
-    if (row.model.isEmpty()) missing << "型号";
+    if (!row.storageTotalKiB || !row.storageAvailableKiB) missing << "/data 容量";
+    if (row.model.isEmpty()) missing << "看门狗硬件型号";
     if (row.systemVersion.isEmpty()) missing << "系统版本";
     if (row.architecture.isEmpty()) missing << "CPU 架构";
     if (row.cpuLoad.isEmpty()) missing << "CPU 负载";
@@ -290,10 +298,10 @@ QString InspectionReport::macs(const InspectionResult& row) {
 }
 
 QStringList InspectionReport::headers() {
-    return {"目标 IP", "HDC 端口", "巡检结果", "运行时间", "运行秒数", "设备 IP", "MAC 地址", "设备型号",
+    return {"目标 IP", "HDC 端口", "巡检结果", "运行时间", "运行秒数", "MAC 地址", "设备型号",
             "序列号", "系统版本", "API 版本", "CPU 架构", "CPU 负载（1/5/15 分钟）", "总内存（MiB）",
             "已用内存（MiB）", "可用内存（MiB）", "内存使用率（%）", "/data 总容量（GiB）",
-            "/data 可用容量（GiB）", "/data 使用率（%）", "内核版本", "设备时间", "巡检时间", "备注"};
+            "/data 可用容量（GiB）", "内核版本", "设备时间", "巡检时间", "备注"};
 }
 
 QStringList InspectionReport::cells(const InspectionResult& row) {
@@ -301,11 +309,11 @@ QStringList InspectionReport::cells(const InspectionResult& row) {
     if (row.memoryTotalKiB && row.memoryAvailableKiB && *row.memoryAvailableKiB <= *row.memoryTotalKiB)
         used = *row.memoryTotalKiB - *row.memoryAvailableKiB;
     return {row.target.ip, QString::number(row.target.port), statusText(row.status), uptime(row),
-            row.uptimeSeconds ? QString::number(*row.uptimeSeconds) : QString{}, ips(row), macs(row), row.model,
+            row.uptimeSeconds ? QString::number(*row.uptimeSeconds) : QString{}, macs(row), row.model,
             row.serial, row.systemVersion, row.apiVersion, row.architecture, row.cpuLoad,
             amount(row.memoryTotalKiB, 1024), amount(used, 1024), amount(row.memoryAvailableKiB, 1024), memoryPercent(row),
             amount(row.storageTotalKiB, 1048576), amount(row.storageAvailableKiB, 1048576),
-            row.storageUsedPercent ? QString::number(*row.storageUsedPercent, 'f', 1) : QString{}, row.kernel,
+            row.kernel,
             row.deviceTime, row.inspectedAt.toString("yyyy-MM-dd HH:mm:ss"), row.notes};
 }
 
@@ -461,22 +469,7 @@ void InspectionRunner::runCommand(const std::vector<std::string>& args, const QS
     QStringList arguments;
     if (!serial.isEmpty()) arguments << "-t" << serial;
     for (const auto& arg : args) arguments << QString::fromStdString(arg);
-    const QFileInfo executable(QString::fromStdString(m_hdc_path));
-    if (executable.isAbsolute() && executable.exists()) {
-        const auto directory = executable.absolutePath();
-        process->setWorkingDirectory(directory);
-        auto env = QProcessEnvironment::systemEnvironment();
-#ifdef Q_OS_WIN
-        env.insert("PATH", directory + ";" + env.value("PATH"));
-#else
-        env.insert("PATH", directory + ":" + env.value("PATH"));
-        env.insert("DYLD_LIBRARY_PATH", directory + ":" + env.value("DYLD_LIBRARY_PATH"));
-#endif
-        process->setProcessEnvironment(env);
-    }
-#if defined(Q_OS_WIN) && QT_VERSION >= QT_VERSION_CHECK(5, 7, 0)
-    process->setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments* args) { args->flags |= 0x08000000; });
-#endif
+    HdcClient::configureProcess(*process, m_hdc_path);
     auto* timeout = new QTimer(process);
     timeout->setSingleShot(true);
     connect(timeout, &QTimer::timeout, this, [this, process, timeoutMs] {

@@ -17,6 +17,37 @@ struct AVBufferRef;
 
 namespace harmonycast {
 
+namespace detail {
+
+// Keep error accounting independent of FFmpeg resource lifetime. Only the
+// pipeline may rebuild the decoder after decode() has returned.
+class DecoderRecoveryPolicy {
+public:
+    void reset(bool hardware) {
+        m_hardware = hardware;
+        m_failures = 0;
+        m_fallback_requested = false;
+    }
+    void frameDecoded(bool hardware) {
+        m_hardware = hardware;
+        m_failures = 0;
+    }
+    void decodeFailed() {
+        if (m_hardware && m_failures < 3 && ++m_failures == 3) m_fallback_requested = true;
+    }
+    void transferFailed() {
+        decodeFailed();
+    }
+    [[nodiscard]] bool fallbackRequested() const { return m_fallback_requested; }
+
+private:
+    bool m_hardware{false};
+    unsigned int m_failures{0};
+    bool m_fallback_requested{false};
+};
+
+} // namespace detail
+
 class VideoDecoder {
 public:
     using FrameCallback = std::function<void(const DecodedFrame&)>;
@@ -35,6 +66,7 @@ public:
 
     [[nodiscard]] bool isReady() const { return m_codec_ctx != nullptr; }
     [[nodiscard]] bool isHardwareAccelerated() const { return m_hw_active; }
+    [[nodiscard]] bool softwareFallbackRequested() const { return m_recovery.fallbackRequested(); }
     [[nodiscard]] int width() const { return m_width; }
     [[nodiscard]] int height() const { return m_height; }
     [[nodiscard]] uint64_t totalFramesDecoded() const { return m_decoded_count; }
@@ -48,7 +80,7 @@ private:
     SwsContext* m_sws_ctx{nullptr};
 
     bool m_hw_active{false};
-    int m_hw_transfer_failures{0};
+    detail::DecoderRecoveryPolicy m_recovery;
     int m_width{0};
     int m_height{0};
     uint64_t m_decoded_count{0};
@@ -57,7 +89,8 @@ private:
     FrameCallback m_frame_cb;
 
     bool initHwContext();
-    void emitFrame(AVFrame* frame);
+    void recordDecodeFailure(const char* operation, int error);
+    bool emitFrame(AVFrame* frame);
 };
 
 } // namespace harmonycast

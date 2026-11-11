@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(HarmonyCast VERSION 2.3.1 LANGUAGES CXX)
+project(HarmonyCast VERSION 2.3.2 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -79,6 +79,8 @@ set(CORE_HEADERS
     include/harmonycast/Types.h
     include/harmonycast/HdcClient.h
     include/harmonycast/DeviceManager.h
+    include/harmonycast/DeviceCatalog.h
+    include/harmonycast/DeviceSelector.h
     include/harmonycast/DeviceInspection.h
     include/harmonycast/InspectionPage.h
     include/harmonycast/PacketDemuxer.h
@@ -107,6 +109,8 @@ set(CORE_HEADERS
 set(CORE_SOURCES
     src/HdcClient.cpp
     src/DeviceManager.cpp
+    src/DeviceCatalog.cpp
+    src/DeviceSelector.cpp
     src/DeviceInspection.cpp
     src/InspectionPage.cpp
     src/PacketDemuxer.cpp
@@ -278,7 +282,23 @@ add_executable(test_harmonycast_scrolling tests/test_scrolling.cpp)
 target_link_libraries(test_harmonycast_scrolling PRIVATE harmonycast_core)
 add_test(NAME ScrollingRegressionTests COMMAND test_harmonycast_scrolling)
 
-set_tests_properties(CoreTests UpdateAssetTests PerformanceRegressionTests ConnectionRegressionTests InspectionTests ScrollingRegressionTests PROPERTIES TIMEOUT 60)
+add_executable(test_harmonycast_stream_recovery tests/test_stream_recovery.cpp)
+target_link_libraries(test_harmonycast_stream_recovery PRIVATE harmonycast_core)
+add_test(NAME StreamRecoveryTests COMMAND test_harmonycast_stream_recovery)
+
+add_executable(test_harmonycast_hilog_controls tests/test_hilog_controls.cpp)
+target_link_libraries(test_harmonycast_hilog_controls PRIVATE harmonycast_core)
+add_test(NAME HiLogControlTests COMMAND test_harmonycast_hilog_controls)
+
+add_executable(test_harmonycast_device_picker tests/test_device_picker.cpp)
+target_link_libraries(test_harmonycast_device_picker PRIVATE harmonycast_core)
+add_test(NAME DevicePickerTests COMMAND test_harmonycast_device_picker)
+
+add_executable(test_harmonycast_hdc_commands tests/test_hdc_commands.cpp)
+target_link_libraries(test_harmonycast_hdc_commands PRIVATE harmonycast_core)
+add_test(NAME HdcCommandTests COMMAND test_harmonycast_hdc_commands)
+
+set_tests_properties(CoreTests UpdateAssetTests PerformanceRegressionTests ConnectionRegressionTests InspectionTests ScrollingRegressionTests StreamRecoveryTests HiLogControlTests DevicePickerTests HdcCommandTests PROPERTIES TIMEOUT 60)
 
 add_executable(benchmark_harmonycast tests/benchmark_core.cpp)
 target_link_libraries(benchmark_harmonycast PRIVATE harmonycast_core)

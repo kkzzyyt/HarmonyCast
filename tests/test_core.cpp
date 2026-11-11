@@ -272,6 +272,7 @@ void test_stream_session_and_types() {
     assert(isSameDevice("192.168.1.50", "192.168.1.50:8710"));
     assert(isSameDevice("192.168.1.50:8710", "192.168.1.50"));
     assert(isSameDevice("192.168.1.50:8710", "192.168.1.50:8710"));
+    assert(!isSameDevice("192.168.1.50:8710", "192.168.1.50:9000"));
     assert(!isSameDevice("192.168.1.50:8710", "192.168.1.51:8710"));
     assert(isSameDevice("usb_device_a", "usb_device_a"));
     assert(!isSameDevice("usb_device_a", "usb_device_b"));
@@ -702,8 +703,7 @@ void test_logger_and_crash_handler() {
     assert(content.contains("Core unit test warning line 2"));
     f.close();
 
-    // 5. Verify CrashHandler setup and marker file logic
-    CrashHandler::install();
+    // Startup queries the marker before installing the signal handlers.
     assert(!CrashHandler::hasCrashFromPreviousRun());
 
     // Simulate crash marker file
@@ -714,6 +714,8 @@ void test_logger_and_crash_handler() {
     marker.write("test crash");
     marker.close();
 
+    assert(CrashHandler::hasCrashFromPreviousRun());
+    CrashHandler::install();
     assert(CrashHandler::hasCrashFromPreviousRun());
     CrashHandler::markCrashAsReviewed();
     assert(!CrashHandler::hasCrashFromPreviousRun());
@@ -745,7 +747,7 @@ void test_update_checker() {
 
     // 2. Ignore version logic
     UpdateChecker checker;
-    assert(checker.currentVersion() == "2.3.1");
+    assert(checker.currentVersion() == "2.3.2");
 
     checker.ignoreVersion("2.4.0");
     assert(checker.isVersionIgnored("2.4.0"));

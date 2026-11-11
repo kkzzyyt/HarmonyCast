@@ -8,6 +8,7 @@
 #include <exception>
 #include <csignal>
 #include <cstring>
+#include <cwchar>
 #ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -35,6 +36,10 @@ namespace harmonycast {
 static char g_crash_dir[512] = {0};
 static char g_marker_path[512] = {0};
 static char g_app_info[256] = "HarmonyCast";
+#ifdef _WIN32
+static wchar_t g_windows_crash_dir[512] = {0};
+static wchar_t g_windows_marker_path[512] = {0};
+#endif
 
 static const char* signalToName(int sig) {
     switch (sig) {
@@ -76,7 +81,11 @@ static void writeCrashReport(const char* reason, const char* details, void* faul
              tm_buf.tm_hour, tm_buf.tm_min, tm_buf.tm_sec);
 
 #ifdef _WIN32
-    int fd = ::_open(filename, _O_WRONLY | _O_CREAT | _O_TRUNC, _S_IREAD | _S_IWRITE);
+    wchar_t windows_filename[768];
+    std::swprintf(windows_filename, 768, L"%ls/crash_%04d%02d%02d_%02d%02d%02d.log", g_windows_crash_dir,
+                  tm_buf.tm_year + 1900, tm_buf.tm_mon + 1, tm_buf.tm_mday,
+                  tm_buf.tm_hour, tm_buf.tm_min, tm_buf.tm_sec);
+    int fd = ::_wopen(windows_filename, _O_WRONLY | _O_CREAT | _O_TRUNC, _S_IREAD | _S_IWRITE);
 #else
     int fd = ::open(filename, O_WRONLY | O_CREAT | O_TRUNC, 0644);
 #endif
@@ -151,7 +160,7 @@ static void writeCrashReport(const char* reason, const char* details, void* faul
     // Create marker file for previous crash alert
     if (g_marker_path[0] != '\0') {
 #ifdef _WIN32
-        int mfd = ::_open(g_marker_path, _O_WRONLY | _O_CREAT | _O_TRUNC, _S_IREAD | _S_IWRITE);
+        int mfd = ::_wopen(g_windows_marker_path, _O_WRONLY | _O_CREAT | _O_TRUNC, _S_IREAD | _S_IWRITE);
 #else
         int mfd = ::open(g_marker_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
 #endif
@@ -211,8 +220,12 @@ void CrashHandler::install() {
 
     QString markerPath = crashDirPath + "/.unreviewed_crash";
     std::strncpy(g_marker_path, markerPath.toUtf8().constData(), sizeof(g_marker_path) - 1);
+#ifdef _WIN32
+    std::wcsncpy(g_windows_crash_dir, crashDirPath.toStdWString().c_str(), 511);
+    std::wcsncpy(g_windows_marker_path, markerPath.toStdWString().c_str(), 511);
+#endif
 
-    snprintf(g_app_info, sizeof(g_app_info), "HarmonyCast v2.3.1 (Built %s %s)", __DATE__, __TIME__);
+    snprintf(g_app_info, sizeof(g_app_info), "HarmonyCast v2.3.2 (Built %s %s)", __DATE__, __TIME__);
 
 #ifdef _WIN32
     // Install Windows SEH unhandled exception filter
@@ -264,6 +277,10 @@ void CrashHandler::install() {
 }
 
 bool CrashHandler::hasCrashFromPreviousRun() {
+    if (g_marker_path[0] == '\0') {
+        const auto marker = (Logger::logDirectory() + "/crashes/.unreviewed_crash").toUtf8();
+        std::strncpy(g_marker_path, marker.constData(), sizeof(g_marker_path) - 1);
+    }
     if (g_marker_path[0] != '\0' && QFile::exists(QString::fromUtf8(g_marker_path))) {
         return true;
     }
@@ -287,6 +304,7 @@ QString CrashHandler::latestCrashReportPath() {
 }
 
 void CrashHandler::markCrashAsReviewed() {
+    hasCrashFromPreviousRun();
     if (g_marker_path[0] != '\0') {
         QFile::remove(QString::fromUtf8(g_marker_path));
     }

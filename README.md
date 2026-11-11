@@ -1,4 +1,4 @@
-# HarmonyCast 2.3.1 · 鸿蒙投屏工作台
+# HarmonyCast 2.3.2 · 鸿蒙投屏工作台
 
 <p align="center">
   <img src="resources/app-icon.svg" width="96" height="96" alt="HarmonyCast Logo"/>
@@ -47,6 +47,7 @@ HarmonyCast 是专为 OpenHarmony / 鸿蒙设备（平板、手机、智慧屏�
 ### 2. Flexible Workbench Layout / 自由分屏投屏工作台
 - **Multiple Layout Modes / 多形态布局**: One-click switching between **Horizontal Split**, **Vertical Split**, **Mirror Only**, and **Logs Only**.
   支持一键无缝切换 **左右分屏**、**上下分屏**、**仅投屏**、**仅日志** 四种工作流。
+- 顶部设备选择使用固定高度的可搜索列表，可按 IP、端口、名称或状态匹配；设备中心使用相同数据和搜索规则，添加或删除保存记录会同步刷新。
 - **Touch and Display Toolbar / 流式触控栏**: Dynamic bitrate selection (1.5M / 4M / 8M), 0°/90°/180°/270° orientation rotation, HD screenshot capture, Home/Back navigation, and F11 full-screen presentation.
   支持画质码率动态切换、多角度画面旋转、原画级高清截图、系统导航键与 F11 全屏演示。
 - **Visual Ripple Feedback / 触控交互反馈**: Built-in phone bezel rendering, glowing touch points, and gesture drag trails.
@@ -57,8 +58,8 @@ HarmonyCast 是专为 OpenHarmony / 鸿蒙设备（平板、手机、智慧屏�
   支持按包名前缀、日志级别及正则表达式全文即时检索过滤。
 - **Font Zoom Controls / 便捷字号缩放**: Fast zoom in/out/reset buttons, standard keyboard shortcuts (`⌘/+`, `⌘/-`, `⌘/0`), and `⌘/Ctrl + Mouse Wheel` stepless zooming.
   提供专用缩放按钮、标准快捷键及 `⌘/Ctrl + 鼠标滚轮` 无级平滑缩放。
-- **Streaming Export / 流式导出与流控**: Pause log ingestion, toggle auto-scrolling, and export logs to clean plain text. Wireless mirroring automatically defers background logging to conserve bandwidth.
-  支持日志冻结、自动滚屏切换与纯文本一键导出；无线投屏模式下按需懒加载，确保视频带宽不被挤占。
+- **Streaming Export / 流式导出与流控**: Pause log display, toggle auto-scrolling, and export logs to plain text. Wireless HiLog is off by default and can be enabled from the device log toolbar.
+  支持日志冻结、自动滚屏切换与纯文本导出；分屏投屏时 IP/无线日志默认关闭，可勾选「无线日志」开启，取消勾选即停止采集并保留记录。进入「仅日志」布局自动开启当前设备日志，不启动投屏；软件重启后默认关闭。
 
 ### 4. WebView Console and DevTools / WebView 控制台与 Chrome DevTools 联动
 - **Dual Tab View / 双标签视图**: Inspect device-side hybrid applications via Console logs and Network request lists.
@@ -85,6 +86,7 @@ HarmonyCast 是专为 OpenHarmony / 鸿蒙设备（平板、手机、智慧屏�
   集成一键挂载系统分区读写、安全重启、亮屏/息屏、HAP 应用安装与文件收发。
 - **Interactive Terminal / 交互式终端**: Asynchronous execution with process termination, console clearing, and full log export.
   命令实时异步执行，支持中断、清空控制台与终端日志导出。
+- 默认按 `hdc shell` 执行，直接输入 `ifconfig`、`ls -la /data` 等设备命令即可；文件传输、安装及 `target mount` 使用「HDC 命令」模式，选择对应模板会自动切换。
 
 ### 7. Batch Device Inspection / 批量设备巡检
 - 独立的「设备巡检」功能区，导入 IP TXT 或粘贴列表，支持 `IP:端口`、地址校验和去重，默认 HDC 端口为 `8710`。

@@ -24,9 +24,9 @@ UpdateDialog::UpdateDialog(const UpdateInfo& info, QWidget* parent)
     setWindowTitle("发现新版本 · HarmonyCast");
     resize(540, 440);
     setStyleSheet(
-        "QDialog { background: #f8fafd; color: #2b405a; } "
-        "QLabel { color: #2b405a; } "
-        "QTextEdit { background: #f8fbff; color: #2e455f; border: 1px solid #dfe8f2; border-radius: 6px; font-size: 12px; padding: 10px; line-height: 1.4; }"
+        "QDialog { background: #e5e7eb; color: #364254; } "
+        "QLabel { color: #364254; } "
+        "QTextEdit { background: #e5e7eb; color: #405065; border: 1px solid #c2cad5; border-radius: 6px; font-size: 12px; padding: 10px; line-height: 1.4; }"
     );
 
     setupUi();
@@ -54,44 +54,44 @@ void UpdateDialog::setupUi() {
     topRow->setSpacing(10);
 
     auto* badge = new QLabel("NEW");
-    badge->setStyleSheet("background: #e6f4ed; color: #138367; font-weight: bold; font-size: 11px; padding: 3px 8px; border-radius: 4px; border: 1px solid #bddccf;");
+    badge->setStyleSheet("background: #dfe3ea; color: #4b6585; font-weight: bold; font-size: 11px; padding: 3px 8px; border-radius: 4px; border: 1px solid #b7bbc2;");
     topRow->addWidget(badge);
 
     m_title_label = new QLabel(m_info.releaseTitle.isEmpty() ? "HarmonyCast 发现新版本！" : m_info.releaseTitle);
-    m_title_label->setStyleSheet("font-size: 15px; font-weight: bold; color: #ffffff;");
+    m_title_label->setStyleSheet("font-size: 15px; font-weight: bold; color: #354052;");
     topRow->addWidget(m_title_label, 1);
     layout->addLayout(topRow);
 
     // 2. Version comparison strip
     auto* verStrip = new QFrame();
-    verStrip->setStyleSheet("background: #ffffff; border: 1px solid #dce6f1; border-radius: 6px; padding: 8px;");
+    verStrip->setStyleSheet("background: #e2e4e8; border: 1px solid #c2cad5; border-radius: 6px; padding: 8px;");
     auto* verLayout = new QHBoxLayout(verStrip);
     verLayout->setContentsMargins(12, 6, 12, 6);
 
     auto* curVerLabel = new QLabel(QString("当前版本: v%1").arg(m_info.currentVersion));
-    curVerLabel->setStyleSheet("color: #637993; font-size: 12px;");
+    curVerLabel->setStyleSheet("color: #5b697d; font-size: 12px;");
     verLayout->addWidget(curVerLabel);
 
     auto* arrowLabel = new QLabel("➔");
-    arrowLabel->setStyleSheet("color: #138367; font-weight: bold; font-size: 13px;");
+    arrowLabel->setStyleSheet("color: #4b6585; font-weight: bold; font-size: 13px;");
     verLayout->addWidget(arrowLabel);
 
     auto* newVerLabel = new QLabel(QString("最新版本: v%1").arg(m_info.latestVersion));
-    newVerLabel->setStyleSheet("color: #138367; font-weight: bold; font-size: 13px;");
+    newVerLabel->setStyleSheet("color: #4b6585; font-weight: bold; font-size: 13px;");
     verLayout->addWidget(newVerLabel);
 
     verLayout->addStretch(1);
 
     if (!m_info.releaseDate.isEmpty()) {
         auto* dateLabel = new QLabel(QString("发布于 %1").arg(m_info.releaseDate));
-        dateLabel->setStyleSheet("color: #657991; font-size: 11px;");
+        dateLabel->setStyleSheet("color: #63676e; font-size: 11px;");
         verLayout->addWidget(dateLabel);
     }
     layout->addWidget(verStrip);
 
     // 3. Changelog box
     auto* clHeader = new QLabel("更新内容：");
-    clHeader->setStyleSheet("font-size: 12px; font-weight: 600; color: #637993;");
+    clHeader->setStyleSheet("font-size: 12px; font-weight: 600; color: #5b697d;");
     layout->addWidget(clHeader);
 
     m_changelog_view = new QTextEdit();
@@ -107,11 +107,11 @@ void UpdateDialog::setupUi() {
 
     auto* statusRow = new QHBoxLayout();
     m_status_label = new QLabel("准备下载…");
-    m_status_label->setStyleSheet("font-size: 12px; color: #637a95;");
+    m_status_label->setStyleSheet("font-size: 12px; color: #5b697d;");
     statusRow->addWidget(m_status_label, 1);
 
     m_speed_label = new QLabel("");
-    m_speed_label->setStyleSheet("font-size: 11px; color: #657c96;");
+    m_speed_label->setStyleSheet("font-size: 11px; color: #63676e;");
     statusRow->addWidget(m_speed_label);
     progLayout->addLayout(statusRow);
 
@@ -121,8 +121,8 @@ void UpdateDialog::setupUi() {
     m_progress_bar->setTextVisible(true);
     m_progress_bar->setFixedHeight(16);
     m_progress_bar->setStyleSheet(
-        "QProgressBar { background: #f8fbff; border: 1px solid #dfe8f2; border-radius: 4px; text-align: center; color: #ffffff; font-size: 10px; } "
-        "QProgressBar::chunk { background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #147a59, stop:1 #138367); border-radius: 3px; }"
+        "QProgressBar { background: #e5e7eb; border: 1px solid #c2cad5; border-radius: 4px; text-align: center; color: #354052; font-size: 10px; } "
+        "QProgressBar::chunk { background: #b7c5d9; border-radius: 3px; }"
     );
     progLayout->addWidget(m_progress_bar);
 
@@ -183,7 +183,7 @@ void UpdateDialog::setState(UpdateState state) {
         m_progress_container->show();
         m_progress_bar->setValue(0);
         m_status_label->setText("正在连接更新服务器…");
-        m_status_label->setStyleSheet("font-size: 12px; color: #637a95;");
+        m_status_label->setStyleSheet("font-size: 12px; color: #5b697d;");
         m_speed_label->setText("");
         m_btn_primary->setText("正在下载…");
         m_btn_primary->setEnabled(false);
@@ -196,11 +196,11 @@ void UpdateDialog::setState(UpdateState state) {
         m_progress_container->show();
         m_progress_bar->setValue(100);
         m_status_label->setText("✓ 升级包下载就绪！点击「立即重启升级」将自动替换并启动新版本。");
-        m_status_label->setStyleSheet("color: #138367; font-weight: bold; font-size: 12px;");
+        m_status_label->setStyleSheet("color: #4b6585; font-weight: bold; font-size: 12px;");
         m_speed_label->setText("");
         m_btn_primary->setText("立即重启升级");
         m_btn_primary->setEnabled(true);
-        m_btn_primary->setStyleSheet("background: #2467d6; color: #ffffff; font-weight: bold; font-size: 13px; border-radius: 4px; padding: 6px 16px;");
+        m_btn_primary->setStyleSheet("background: #566b8b; color: #e2e4e8; font-weight: bold; font-size: 13px; border-radius: 4px; padding: 6px 16px;");
         m_btn_secondary->setText("稍后安装");
         m_btn_browser->hide();
         m_btn_ignore->hide();

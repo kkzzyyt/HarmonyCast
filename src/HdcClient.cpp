@@ -89,13 +89,7 @@ bool HdcClient::isAvailable() const {
     return !QStandardPaths::findExecutable(QString::fromStdString(m_hdc_path)).isEmpty();
 }
 
-CommandResult HdcClient::runProcess(const std::string& hdc_path,
-                                    const std::vector<std::string>& args,
-                                    const std::string& serial,
-                                    int timeout_ms) {
-    QProcess process;
-    QStringList qargs;
-
+void HdcClient::configureProcess(QProcess& process, const std::string& hdc_path) {
     QFileInfo hdcFi(QString::fromStdString(hdc_path));
     if (hdcFi.exists() && hdcFi.isAbsolute()) {
         QString hdcDir = hdcFi.dir().absolutePath();
@@ -110,22 +104,26 @@ CommandResult HdcClient::runProcess(const std::string& hdc_path,
         process.setProcessEnvironment(env);
     }
 
-    if (!serial.empty()) {
-        qargs << "-t" << QString::fromStdString(serial);
-    }
-    for (const auto& a : args) {
-        qargs << QString::fromStdString(a);
-    }
-
 #if defined(Q_OS_WIN) && QT_VERSION >= QT_VERSION_CHECK(5, 7, 0)
     process.setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments* pArgs) {
         pArgs->flags |= 0x08000000; // CREATE_NO_WINDOW
     });
 #endif
+}
+
+CommandResult HdcClient::runProcess(const std::string& hdc_path,
+                                    const std::vector<std::string>& args,
+                                    const std::string& serial,
+                                    int timeout_ms) {
+    QProcess process;
+    configureProcess(process, hdc_path);
+    QStringList qargs;
+    if (!serial.empty()) qargs << "-t" << QString::fromStdString(serial);
+    for (const auto& arg : args) qargs << QString::fromStdString(arg);
 
     process.start(QString::fromStdString(hdc_path), qargs);
     if (!process.waitForStarted(2000)) {
-        return {-1, "", "Failed to start HDC executable: " + hdc_path};
+        return {-1, "", "Failed to start HDC executable: " + hdc_path + ": " + process.errorString().toStdString()};
     }
 
     if (!process.waitForFinished(timeout_ms)) {
@@ -138,6 +136,10 @@ CommandResult HdcClient::runProcess(const std::string& hdc_path,
     res.exit_code = process.exitCode();
     res.out = QString::fromUtf8(process.readAllStandardOutput()).toStdString();
     res.err = QString::fromUtf8(process.readAllStandardError()).toStdString();
+    if (process.exitStatus() != QProcess::NormalExit) {
+        res.err += "\nHDC process terminated unexpectedly (exit=" + std::to_string(res.exit_code) + ")";
+        res.exit_code = -3;
+    }
     return res;
 }
 
@@ -145,6 +147,26 @@ CommandResult HdcClient::run(const std::vector<std::string>& args,
                              const std::string& serial,
                              int timeout_ms) const {
     return runProcess(m_hdc_path, args, serial, timeout_ms);
+}
+
+std::vector<std::string> HdcClient::commandArguments(QString input, bool shellByDefault) {
+    input = input.trimmed();
+    if (input.isEmpty()) return {};
+    const auto prefix = QRegularExpression(R"(^hdc(?:\.exe)?(?:\s+|$))", QRegularExpression::CaseInsensitiveOption).match(input);
+    if (prefix.hasMatch()) {
+        input = input.mid(prefix.capturedLength()).trimmed();
+        shellByDefault = false;
+    }
+    const auto shell = QRegularExpression(R"(^shell(?:\s+|$))").match(input);
+    if (shell.hasMatch()) {
+        input = input.mid(shell.capturedLength()).trimmed();
+        return input.isEmpty() ? std::vector<std::string>{} : std::vector<std::string>{"shell", input.toStdString()};
+    }
+    if (input.isEmpty()) return {};
+    if (shellByDefault) return {"shell", input.toStdString()};
+    std::vector<std::string> args;
+    for (const auto& token : QProcess::splitCommand(input)) args.push_back(token.toStdString());
+    return args;
 }
 
 std::vector<Device> HdcClient::parseDeviceList(const std::string& output) {

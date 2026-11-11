@@ -41,7 +41,7 @@ void LogHighlighter::initFormats() {
     // Levels
     m_fmt_debug.setForeground(QColor("#61758b"));
 
-    m_fmt_info.setForeground(QColor("#0e7f65"));
+    m_fmt_info.setForeground(QColor("#4b6585"));
 
     m_fmt_warn.setForeground(QColor("#8e6713"));
     m_fmt_warn.setFontWeight(QFont::DemiBold);
@@ -67,7 +67,7 @@ void LogHighlighter::initFormats() {
     m_fmt_url.setForeground(QColor("#1e63bd"));
     m_fmt_url.setFontUnderline(true);
 
-    m_fmt_success.setForeground(QColor("#187e4d"));
+    m_fmt_success.setForeground(QColor("#4b6585"));
 
     m_fmt_fail.setForeground(QColor("#bf3b4b"));
     m_fmt_fail.setFontWeight(QFont::Bold);

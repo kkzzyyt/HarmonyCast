@@ -11,12 +11,29 @@
 #include <cstring>
 #include <windows.h>
 #include <versionhelpers.h>
+#include <QSettings>
 #endif
 #include "harmonycast/MainWindow.h"
 #include "harmonycast/Logger.h"
 #include "harmonycast/CrashHandler.h"
 
+#if defined(Q_OS_WIN)
+static bool isRemoteDesktopSession() {
+    if (GetSystemMetrics(SM_REMOTESESSION) != 0) return true;
+    // RemoteFX vGPU sessions can report SM_REMOTESESSION == 0. Compare the
+    // process session with the console session as documented by Microsoft.
+    QSettings terminalServer(QStringLiteral("HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Terminal Server"), QSettings::NativeFormat);
+    bool valid = false;
+    const auto console = terminalServer.value("GlassSessionId").toUInt(&valid);
+    DWORD current = 0;
+    return valid && ProcessIdToSessionId(GetCurrentProcessId(), &current) && current != console;
+}
+#endif
+
 int main(int argc, char* argv[]) {
+    QCoreApplication::setApplicationName("HarmonyCast");
+    QCoreApplication::setOrganizationName("HarmonyCast");
+    QCoreApplication::setOrganizationDomain("local.harmonycast.desktop");
 #if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
     QApplication::setAttribute(Qt::AA_EnableHighDpiScaling);
     QApplication::setAttribute(Qt::AA_UseHighDpiPixmaps);
@@ -54,7 +71,7 @@ int main(int argc, char* argv[]) {
 
     // Remote Desktop (RDP) sessions: hardware Direct3D 11/12 swapchains frequently fail
     // or produce blank/black frames across remote connections. Automatically use software rendering.
-    if (GetSystemMetrics(SM_REMOTESESSION) != 0) {
+    if (isRemoteDesktopSession()) {
         use_software_rendering = true;
     }
 
@@ -65,6 +82,7 @@ int main(int argc, char* argv[]) {
     }
 
     if (use_software_rendering) {
+        qputenv("HARMONYCAST_SOFTWARE_RENDERING", "1");
         qputenv("QT_OPENGL", "software");
         qputenv("QSG_RHI_BACKEND", "software");
         qputenv("QT_QUICK_BACKEND", "software");

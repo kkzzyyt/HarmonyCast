@@ -12,8 +12,13 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QDateTime>
+#include <QSaveFile>
+#include <QScrollBar>
+#include <QHostAddress>
+#include <QIntValidator>
+#include <QSignalBlocker>
 #include <algorithm>
-#include <unordered_set>
+#include <stdexcept>
 
 namespace harmonycast {
 
@@ -60,84 +65,67 @@ std::vector<SavedNetworkDevice> NetworkDeviceDialog::loadSavedDevices() {
     return result;
 }
 
-void NetworkDeviceDialog::saveDevice(const std::string& raw_ip, const std::string& name, int default_port) {
-    std::string ip = raw_ip;
-    int port = default_port;
+namespace {
 
-    // Trim
-    while (!ip.empty() && (ip.front() == ' ' || ip.front() == '\t')) ip.erase(0, 1);
-    while (!ip.empty() && (ip.back() == ' ' || ip.back() == '\t')) ip.pop_back();
-
-    if (size_t col = ip.find(':'); col != std::string::npos) {
-        std::string port_str = ip.substr(col + 1);
-        ip = ip.substr(0, col);
-        if (!port_str.empty()) {
-            try {
-                int p = std::stoi(port_str);
-                if (p > 0 && p <= 65535) port = p;
-            } catch (...) {}
-        }
+void writeSavedDevices(const std::vector<SavedNetworkDevice>& devices) {
+    QJsonArray array;
+    for (const auto& device : devices) {
+        array.append(QJsonObject{{"ip", QString::fromStdString(device.ip)},
+                                 {"name", QString::fromStdString(device.name)},
+                                 {"port", device.port}, {"updated_at", static_cast<qint64>(device.updated_at)}});
     }
-
-    if (ip.empty()) return;
-
-    auto list = loadSavedDevices();
-    list.erase(std::remove_if(list.begin(), list.end(), [&](const SavedNetworkDevice& d) {
-        return d.ip == ip;
-    }), list.end());
-
-    SavedNetworkDevice new_dev;
-    new_dev.ip = ip;
-    new_dev.name = name;
-    new_dev.port = port;
-    new_dev.updated_at = QDateTime::currentSecsSinceEpoch();
-    list.insert(list.begin(), new_dev);
-
-    QJsonArray arr;
-    for (const auto& d : list) {
-        QJsonObject obj;
-        obj["ip"] = QString::fromStdString(d.ip);
-        obj["name"] = QString::fromStdString(d.name);
-        obj["port"] = d.port;
-        obj["updated_at"] = static_cast<qint64>(d.updated_at);
-        arr.append(obj);
-    }
-
-    QJsonDocument doc(arr);
-    QFile file(savedDevicesFilePath());
-    if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-        file.write(doc.toJson(QJsonDocument::Indented));
-        file.close();
+    QSaveFile file(NetworkDeviceDialog::savedDevicesFilePath());
+    if (file.open(QIODevice::WriteOnly)) {
+        const auto bytes = QJsonDocument(array).toJson(QJsonDocument::Indented);
+        if (file.write(bytes) == bytes.size()) file.commit();
     }
 }
 
+std::pair<std::string, int> splitEndpoint(const std::string& raw, int defaultPort) {
+    QString host = QString::fromStdString(raw).trimmed();
+    int port = defaultPort > 0 && defaultPort <= 65535 ? defaultPort : 8710;
+    const int colon = host.lastIndexOf(':');
+    if (colon > 0) {
+        bool ok = false;
+        const int parsed = host.mid(colon + 1).toInt(&ok);
+        if (!ok || parsed <= 0 || parsed > 65535 || host.left(colon).contains(':')) return {};
+        port = parsed;
+        host = host.left(colon).trimmed();
+    }
+    return {host.toStdString(), port};
+}
+
+} // namespace
+
+void NetworkDeviceDialog::saveDevice(const std::string& raw_ip, const std::string& name, int default_port) {
+    const auto [ip, port] = splitEndpoint(raw_ip, default_port);
+    if (ip.empty()) return;
+    auto devices = loadSavedDevices();
+    QString preservedName = QString::fromStdString(name).trimmed();
+    for (const auto& saved : devices) {
+        if (saved.ip == ip && saved.port == port && preservedName.isEmpty()) preservedName = QString::fromStdString(saved.name);
+    }
+    devices.erase(std::remove_if(devices.begin(), devices.end(), [&](const SavedNetworkDevice& saved) {
+        return saved.ip == ip && saved.port == port;
+    }), devices.end());
+    SavedNetworkDevice saved;
+    saved.ip = ip;
+    saved.port = port;
+    saved.name = preservedName.toStdString();
+    saved.updated_at = QDateTime::currentSecsSinceEpoch();
+    devices.insert(devices.begin(), std::move(saved));
+    writeSavedDevices(devices);
+}
+
 void NetworkDeviceDialog::deleteSavedDevice(const std::string& raw_ip) {
-    std::string ip = raw_ip;
-    if (size_t col = ip.find(':'); col != std::string::npos) {
-        ip = ip.substr(0, col);
-    }
-
-    auto list = loadSavedDevices();
-    list.erase(std::remove_if(list.begin(), list.end(), [&](const SavedNetworkDevice& d) {
-        return d.ip == ip;
-    }), list.end());
-
-    QJsonArray arr;
-    for (const auto& d : list) {
-        QJsonObject obj;
-        obj["ip"] = QString::fromStdString(d.ip);
-        obj["name"] = QString::fromStdString(d.name);
-        obj["port"] = d.port;
-        obj["updated_at"] = static_cast<qint64>(d.updated_at);
-        arr.append(obj);
-    }
-
-    QJsonDocument doc(arr);
-    QFile file(savedDevicesFilePath());
-    if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-        file.write(doc.toJson(QJsonDocument::Indented));
-        file.close();
-    }
+    const auto [ip, port] = splitEndpoint(raw_ip, 8710);
+    if (ip.empty()) return;
+    const bool exactEndpoint = raw_ip.find(':') != std::string::npos;
+    auto devices = loadSavedDevices();
+    devices.erase(std::remove_if(devices.begin(), devices.end(), [&](const SavedNetworkDevice& saved) {
+        return saved.ip == ip && (!exactEndpoint || saved.port == port);
+    }), devices.end());
+    writeSavedDevices(devices);
 }
 
 NetworkDeviceDialog::NetworkDeviceDialog(
@@ -148,12 +136,15 @@ NetworkDeviceDialog::NetworkDeviceDialog(
 )
     : QDialog(parent)
     , m_hdc(std::move(hdc))
-    , m_connected_targets(connected_targets)
     , m_current_target(current_target)
 {
-    setWindowTitle("设备维护与连接中心");
+    for (const auto& target : connected_targets) {
+        const auto parsed = HdcClient::parseDeviceList(target + " TCP Connected");
+        if (!parsed.empty()) m_live_devices.push_back(parsed.front());
+    }
+    setWindowTitle("设备中心");
     setMinimumSize(600, 440);
-    resize(660, 480);
+    resize(720, 520);
     initUi();
     refreshData();
 }
@@ -167,18 +158,40 @@ void NetworkDeviceDialog::initUi() {
     hdr_layout->setSpacing(6);
 
     auto* hdr_top = new QHBoxLayout();
-    hdr_top->addWidget(IconManager::label("设备维护与连接中心", "CardTitle"));
+    hdr_top->addWidget(IconManager::label("设备中心", "CardTitle"));
     hdr_top->addStretch();
+    auto* refresh = IconManager::button("刷新", "", "refresh");
+    refresh->setFixedHeight(32);
+    connect(refresh, &QPushButton::clicked, this, [this] { refreshData(); emit refreshRequested(); });
+    hdr_top->addWidget(refresh);
     hdr_layout->addLayout(hdr_top);
 
-    m_target_status_label = IconManager::label("默认端口 8710 · 单设备独占连接 · 双击列表项快速切换", "Muted");
+    m_target_status_label = IconManager::label("默认端口 8710 · 双击切换设备", "Muted", true);
     hdr_layout->addWidget(m_target_status_label);
     layout->addLayout(hdr_layout);
 
+    m_search = new QLineEdit(this);
+    m_search->setObjectName("DeviceHubSearch");
+    m_search->setPlaceholderText("搜索 IP、端口、名称或状态");
+    m_search->setClearButtonEnabled(true);
+    m_search->setFixedHeight(32);
+    m_search->addAction(IconManager::getIcon("search"), QLineEdit::LeadingPosition);
+    connect(m_search, &QLineEdit::textChanged, this, &NetworkDeviceDialog::filterDevices);
+    connect(m_search, &QLineEdit::returnPressed, this, [this] {
+        for (int row = 0; row < m_table->rowCount(); ++row) {
+            if (!m_table->isRowHidden(row) && row < static_cast<int>(m_displayed_devices.size())) {
+                onTableDoubleClicked(row, 0);
+                return;
+            }
+        }
+    });
+    layout->addWidget(m_search);
+
     m_table = new QTableWidget(this);
+    m_table->setObjectName("DeviceHubTable");
     IconManager::setupScrollArea(m_table);
     m_table->setColumnCount(4);
-    m_table->setHorizontalHeaderLabels({"设备 IP", "端口", "状态", "操作"});
+    m_table->setHorizontalHeaderLabels({"设备 / IP", "端口", "状态", "操作"});
     auto* header = m_table->horizontalHeader();
     header->setSectionResizeMode(0, QHeaderView::Stretch);
     header->setSectionResizeMode(1, QHeaderView::Interactive);
@@ -189,6 +202,9 @@ void NetworkDeviceDialog::initUi() {
     m_table->setColumnWidth(2, 105);
     m_table->setColumnWidth(3, 140);
     m_table->verticalHeader()->setVisible(false);
+    m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_table->setShowGrid(false);
+    m_table->setAlternatingRowColors(true);
     m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_table->setSelectionMode(QAbstractItemView::SingleSelection);
     connect(m_table, &QTableWidget::cellDoubleClicked, this, &NetworkDeviceDialog::onTableDoubleClicked);
@@ -205,6 +221,7 @@ void NetworkDeviceDialog::initUi() {
     input_row->setSpacing(8);
 
     m_ip_input = new QLineEdit();
+    m_ip_input->setObjectName("DeviceHubAddress");
     m_ip_input->setPlaceholderText("设备 IP 地址，例如 10.10.220.41");
     connect(m_ip_input, &QLineEdit::returnPressed, this, &NetworkDeviceDialog::onConnectAndSave);
     input_row->addWidget(m_ip_input, 1);
@@ -212,6 +229,8 @@ void NetworkDeviceDialog::initUi() {
     input_row->addWidget(IconManager::label(":", "Muted"));
 
     m_port_input = new QLineEdit("8710");
+    m_port_input->setObjectName("DeviceHubPort");
+    m_port_input->setValidator(new QIntValidator(1, 65535, m_port_input));
     m_port_input->setPlaceholderText("8710");
     m_port_input->setFixedWidth(68);
     m_port_input->setAlignment(Qt::AlignCenter);
@@ -231,22 +250,6 @@ void NetworkDeviceDialog::initUi() {
 
     card_layout->addLayout(input_row);
 
-    auto* tools_row = new QHBoxLayout();
-    tools_row->setSpacing(8);
-
-    m_btn_enable_tcp = IconManager::button("开启 USB 无线调试端口 (8710)", "", "device");
-    m_btn_enable_tcp->setToolTip("为当前已连接的 USB 设备开启 TCP 模式 (hdc tmode port 8710)，开启后拔掉数据线即可无线连接");
-    connect(m_btn_enable_tcp, &QPushButton::clicked, this, &NetworkDeviceDialog::onEnableUsbTcpMode);
-    tools_row->addWidget(m_btn_enable_tcp);
-
-    m_btn_restart_hdc = IconManager::button("重启 HDC 服务", "Secondary", "refresh");
-    m_btn_restart_hdc->setToolTip("重启底层 HDC 服务进程 (hdc kill && hdc start -r)，修复服务假死或连接异常");
-    connect(m_btn_restart_hdc, &QPushButton::clicked, this, &NetworkDeviceDialog::onRestartHdcService);
-    tools_row->addWidget(m_btn_restart_hdc);
-
-    tools_row->addStretch();
-    card_layout->addLayout(tools_row);
-
     m_error_label = IconManager::label("", "Muted");
     m_error_label->setStyleSheet("color: #be4251; font-size: 12px;");
     card_layout->addWidget(m_error_label);
@@ -255,166 +258,107 @@ void NetworkDeviceDialog::initUi() {
 }
 
 std::pair<std::string, int> NetworkDeviceDialog::parseInputEndpoint() {
-    QString raw_ip = m_ip_input->text().trimmed();
-    if (raw_ip.isEmpty()) {
-        throw std::runtime_error("请输入设备 IP 地址");
+    const QString raw = m_ip_input->text().trimmed();
+    if (raw.isEmpty()) throw std::runtime_error("请输入设备 IP 地址");
+    QString host = raw;
+    QString portText = m_port_input->text().trimmed();
+    const int colon = raw.lastIndexOf(':');
+    if (colon >= 0) {
+        host = raw.left(colon).trimmed();
+        portText = raw.mid(colon + 1).trimmed();
     }
+    QHostAddress address;
+    if (!address.setAddress(host) || address.protocol() != QAbstractSocket::IPv4Protocol)
+        throw std::runtime_error("请输入有效的 IPv4 地址");
+    bool valid = false;
+    const int port = portText.toInt(&valid);
+    if (!valid || port < 1 || port > 65535) throw std::runtime_error("端口必须为 1–65535");
+    return {address.toString().toStdString(), port};
+}
 
-    QString clean_ip = raw_ip;
-    int port = 8710;
-    if (raw_ip.contains(':')) {
-        int idx = raw_ip.lastIndexOf(':');
-        clean_ip = raw_ip.left(idx).trimmed();
-        QString port_str = raw_ip.mid(idx + 1).trimmed();
-        bool ok = false;
-        int p = port_str.toInt(&ok);
-        if (ok && p >= 1 && p <= 65535) {
-            port = p;
-        }
-    } else if (m_port_input) {
-        QString port_str = m_port_input->text().trimmed();
-        bool ok = false;
-        int p = port_str.toInt(&ok);
-        if (ok && p >= 1 && p <= 65535) {
-            port = p;
-        }
-    }
-    return {clean_ip.toStdString(), port};
+void NetworkDeviceDialog::setDevices(const std::vector<Device>& devices, const std::string& current_target) {
+    m_live_devices = devices;
+    m_current_target = current_target;
+    refreshData();
 }
 
 void NetworkDeviceDialog::refreshData() {
-    auto saved_list = loadSavedDevices();
-    std::unordered_set<std::string> saved_ips;
-    for (const auto& d : saved_list) {
-        saved_ips.insert(d.ip);
-    }
-
-    // Merge online network targets from HDC to ensure live devices are never omitted
-    std::vector<SavedNetworkDevice> merged = saved_list;
-    int conn_count = 0;
-    for (const auto& target : m_connected_targets) {
-        if (target.find(':') != std::string::npos) {
-            conn_count++;
-            std::string host = target.substr(0, target.find(':'));
-            std::string port_str = target.substr(target.find(':') + 1);
-            int port = 8710;
-            try { port = std::stoi(port_str); } catch (...) {}
-            if (saved_ips.find(host) == saved_ips.end()) {
-                SavedNetworkDevice d;
-                d.ip = host;
-                d.port = port;
-                merged.push_back(d);
-                saved_ips.insert(host);
-            }
-        }
-    }
-
-    if (m_target_status_label) {
-        m_target_status_label->setText(
-            QString("在线目标: %1 台 · 端口固定 8710 · 单设备独占连接 · 双击列表项快速切换").arg(conn_count)
-        );
-    }
-
-    m_displayed_devices = merged;
-
-    if (merged.empty()) {
-        m_table->clearSpans();
-        m_table->setRowCount(1);
-        auto* item = new QTableWidgetItem("（暂无设备，请在下方输入 IP 连接）");
-        item->setForeground(QColor("#637a94"));
-        item->setTextAlignment(Qt::AlignCenter);
-        item->setFlags(Qt::NoItemFlags);
-        m_table->setItem(0, 0, item);
-        m_table->setSpan(0, 0, 1, 4);
-        return;
-    }
-
+    QString selected;
+    if (const auto* item = m_table->item(m_table->currentRow(), 0)) selected = item->data(Qt::UserRole).toString();
+    if (selected.isEmpty()) selected = QString::fromStdString(m_current_target);
+    const int oldScroll = m_table->verticalScrollBar()->value();
+    m_displayed_devices = DeviceCatalog::merge(m_live_devices, loadSavedDevices());
+    const QSignalBlocker blocker(m_table);
+    m_table->setUpdatesEnabled(false);
     m_table->clearSpans();
-    m_table->setRowCount(static_cast<int>(merged.size()));
-
-    for (size_t row = 0; row < merged.size(); ++row) {
-        const auto& dev = merged[row];
-        std::string ep = dev.ip + ":" + std::to_string(dev.port);
-        bool is_conn = false;
-        for (const auto& t : m_connected_targets) {
-            if (t == ep || t == dev.ip) {
-                is_conn = true;
-                break;
-            }
-        }
-
-        auto* item_ip = new QTableWidgetItem(QString::fromStdString(dev.ip));
-        item_ip->setForeground(QColor("#263c56"));
-        item_ip->setTextAlignment(Qt::AlignCenter);
-        QFont font = item_ip->font();
-        font.setBold(true);
-        item_ip->setFont(font);
-        item_ip->setFlags(Qt::ItemIsSelectable | Qt::ItemIsEnabled);
-        m_table->setItem(static_cast<int>(row), 0, item_ip);
-
-        auto* item_port = new QTableWidgetItem(QString::number(dev.port));
-        item_port->setTextAlignment(Qt::AlignCenter);
-        item_port->setForeground(QColor("#637a94"));
-        item_port->setFlags(Qt::ItemIsSelectable | Qt::ItemIsEnabled);
-        m_table->setItem(static_cast<int>(row), 1, item_port);
-
-        auto* item_status = new QTableWidgetItem(is_conn ? "● 已连接" : "○ 未连接");
-        item_status->setTextAlignment(Qt::AlignCenter);
-        item_status->setForeground(QColor(is_conn ? "#138367" : "#637a94"));
-        item_status->setFlags(Qt::ItemIsSelectable | Qt::ItemIsEnabled);
-        m_table->setItem(static_cast<int>(row), 2, item_status);
-
+    m_table->clearContents();
+    m_table->setRowCount(static_cast<int>(m_displayed_devices.size()));
+    for (int row = 0; row < static_cast<int>(m_displayed_devices.size()); ++row) {
+        const auto& entry = m_displayed_devices[row];
+        const auto& device = entry.device;
+        const auto endpoint = device.serial;
+        const QString serial = QString::fromStdString(endpoint);
+        const bool connected = device.state == DeviceState::Connected;
+        QString display = device.is_network ? QString::fromStdString(device.ip) : "USB: " + serial;
+        if (!entry.name.isEmpty() && entry.name != display && entry.name != serial) display += "\n" + entry.name;
+        auto* address = new QTableWidgetItem(display);
+        address->setData(Qt::UserRole, serial);
+        address->setData(Qt::UserRole + 1, entry.searchText());
+        address->setToolTip(entry.label());
+        m_table->setItem(row, 0, address);
+        auto* port = new QTableWidgetItem(device.is_network ? QString::number(device.port) : QString{});
+        port->setTextAlignment(Qt::AlignCenter);
+        m_table->setItem(row, 1, port);
+        auto* state = new QTableWidgetItem(entry.stateText());
+        state->setTextAlignment(Qt::AlignCenter);
+        state->setForeground(QColor(device.state == DeviceState::Unauthorized ? "#a25a60" : connected ? "#4b6585" : "#617087"));
+        m_table->setItem(row, 2, state);
         auto* actions = new QWidget();
-        auto* act_layout = new QHBoxLayout(actions);
-        act_layout->setContentsMargins(4, 0, 4, 0);
-        act_layout->setSpacing(6);
-        act_layout->setAlignment(Qt::AlignCenter);
-
-        if (is_conn) {
-            auto* btn_select = IconManager::iconButton(
-                "mirror",
-                QString("切换至 %1 并投屏").arg(QString::fromStdString(ep)),
-                "IconBtnPrimary",
-                34,
-                28
-            );
-            connect(btn_select, &QPushButton::clicked, this, [this, ep]{ selectTarget(ep); });
-            act_layout->addWidget(btn_select);
-
-            auto* btn_disconn = IconManager::iconButton(
-                "disconnect",
-                QString("断开 %1 连接并从 HDC 目标彻底删除 (-remove)").arg(QString::fromStdString(ep)),
-                "IconBtnDanger",
-                34,
-                28
-            );
-            connect(btn_disconn, &QPushButton::clicked, this, [this, ep]{ disconnectTarget(ep); });
-            act_layout->addWidget(btn_disconn);
-        } else {
-            auto* btn_conn = IconManager::iconButton(
-                "connect",
-                QString("连接设备 %1").arg(QString::fromStdString(ep)),
-                "IconBtnPrimary",
-                34,
-                28
-            );
-            connect(btn_conn, &QPushButton::clicked, this, [this, ep]{ connectTarget(ep); });
-            act_layout->addWidget(btn_conn);
+        auto* actionLayout = new QHBoxLayout(actions);
+        actionLayout->setContentsMargins(4, 0, 4, 0);
+        actionLayout->setSpacing(6);
+        actionLayout->setAlignment(Qt::AlignCenter);
+        if (connected) {
+            auto* select = IconManager::iconButton("mirror", "切换至 " + serial, "IconBtnPrimary", 32, 28);
+            connect(select, &QPushButton::clicked, this, [this, endpoint] { selectTarget(endpoint); });
+            actionLayout->addWidget(select);
+        } else if (device.is_network) {
+            auto* connectButton = IconManager::iconButton("connect", "连接 " + serial, "IconBtnPrimary", 32, 28);
+            connect(connectButton, &QPushButton::clicked, this, [this, endpoint] { connectTarget(endpoint); });
+            actionLayout->addWidget(connectButton);
         }
-
-        auto* btn_del = IconManager::iconButton(
-            "delete",
-            QString("从设备列表中删除 %1").arg(QString::fromStdString(dev.ip)),
-            "IconBtnMuted",
-            34,
-            28
-        );
-        connect(btn_del, &QPushButton::clicked, this, [this, ip=dev.ip]{ deleteTarget(ip); });
-        act_layout->addWidget(btn_del);
-
-        m_table->setCellWidget(static_cast<int>(row), 3, actions);
-        m_table->setRowHeight(static_cast<int>(row), 44);
+        if (device.is_network && (connected || device.state == DeviceState::Offline || device.state == DeviceState::Unauthorized)) {
+            auto* disconnectButton = IconManager::iconButton("disconnect", "断开 " + serial, "IconBtnDanger", 32, 28);
+            connect(disconnectButton, &QPushButton::clicked, this, [this, endpoint] { disconnectTarget(endpoint); });
+            actionLayout->addWidget(disconnectButton);
+        }
+        if (entry.saved) {
+            auto* remove = IconManager::iconButton("delete", "删除保存记录 " + serial, "IconBtnMuted", 32, 28);
+            connect(remove, &QPushButton::clicked, this, [this, endpoint] { deleteTarget(endpoint); });
+            actionLayout->addWidget(remove);
+        }
+        m_table->setCellWidget(row, 3, actions);
+        m_table->setRowHeight(row, entry.name.isEmpty() ? 40 : 48);
+        if (serial == selected) m_table->setCurrentCell(row, 0);
     }
+    filterDevices(m_search->text());
+    m_table->verticalScrollBar()->setValue(oldScroll);
+    m_table->setUpdatesEnabled(true);
+}
+
+void NetworkDeviceDialog::filterDevices(const QString& query) {
+    int matched = 0, connected = 0;
+    for (int row = 0; row < static_cast<int>(m_displayed_devices.size()); ++row) {
+        const auto& entry = m_displayed_devices[row];
+        const bool visible = DeviceCatalog::matchesSearchText(entry.searchText(), query);
+        m_table->setRowHidden(row, !visible);
+        if (visible) ++matched;
+        if (entry.device.state == DeviceState::Connected) ++connected;
+    }
+    m_target_status_label->setText(QString("匹配 %1 / %2 台 · 已连接 %3 台 · 默认端口 8710")
+        .arg(matched).arg(m_displayed_devices.size()).arg(connected));
+    m_target_status_label->setToolTip(m_displayed_devices.empty() ? "暂无设备，请在下方输入 IP 连接" :
+        matched == 0 ? "没有匹配的设备" : "按 IP、端口、名称和状态匹配；双击或搜索后按回车切换");
 }
 
 void NetworkDeviceDialog::selectTarget(const std::string& endpoint) {
@@ -438,15 +382,16 @@ void NetworkDeviceDialog::onTableDoubleClicked(int row, int column) {
     if (row < 0 || row >= static_cast<int>(m_displayed_devices.size())) {
         return;
     }
-    const auto& dev = m_displayed_devices[row];
-    std::string ep = dev.ip + ":" + std::to_string(dev.port);
-    connectTarget(ep);
+    const auto& device = m_displayed_devices[row].device;
+    if (device.state == DeviceState::Connected) selectTarget(device.serial);
+    else if (device.is_network) connectTarget(device.serial);
 }
 
 void NetworkDeviceDialog::onConnectAndSave() {
     try {
         auto [clean_ip, port] = parseInputEndpoint();
         saveDevice(clean_ip, "", port);
+        emit devicesChanged();
         m_error_label->setText("");
         std::string ep = clean_ip + ":" + std::to_string(port);
         connectTarget(ep);
@@ -467,103 +412,26 @@ void NetworkDeviceDialog::onDisconnectInput() {
     }
 }
 
-void NetworkDeviceDialog::deleteTarget(const std::string& ip) {
-    auto reply = QMessageBox::question(
-        this,
-        "确认删除设备",
-        QString("确定要从列表中删除设备 %1 吗？\n删除后该设备将不再出现在设备列表和快捷下拉菜单中。").arg(QString::fromStdString(ip)),
-        QMessageBox::Yes | QMessageBox::No,
-        QMessageBox::No
-    );
-    if (reply != QMessageBox::Yes) {
-        return;
-    }
-    deleteSavedDevice(ip);
-    m_error_label->setStyleSheet("color: #18815c; font-size: 12px;");
-    m_error_label->setText(QString("已删除设备 %1").arg(QString::fromStdString(ip)));
+void NetworkDeviceDialog::deleteTarget(const std::string& endpoint) {
+    const auto reply = QMessageBox::question(this, "删除保存记录",
+        QString("删除 %1 的保存记录？\n仍在线的设备会继续显示，断开后不再保留。").arg(QString::fromStdString(endpoint)),
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+    if (reply != QMessageBox::Yes) return;
+    deleteSavedDevice(endpoint);
+    m_error_label->setStyleSheet("color: #4b6585; font-size: 12px;");
+    m_error_label->setText(QString("已删除保存记录 %1").arg(QString::fromStdString(endpoint)));
     refreshData();
+    emit devicesChanged();
 }
 
 void NetworkDeviceDialog::disconnectTarget(const std::string& endpoint) {
-    if (m_on_disconnect) {
-        m_on_disconnect(endpoint);
-    } else if (m_hdc) {
-        m_hdc->executeAsync({"tconn", endpoint, "-remove"}, "", [](const CommandResult&){});
-    }
-
-    std::string clean_ip = endpoint;
-    if (size_t col = clean_ip.find(':'); col != std::string::npos) {
-        clean_ip = clean_ip.substr(0, col);
-    }
-    m_connected_targets.erase(
-        std::remove_if(m_connected_targets.begin(), m_connected_targets.end(),
-            [&](const std::string& t) {
-                return t == endpoint || t == clean_ip;
-            }),
-        m_connected_targets.end()
-    );
-
-    m_error_label->setStyleSheet("color: #18815c; font-size: 12px;");
-    m_error_label->setText(QString("已执行 hdc tconn %1 -remove").arg(QString::fromStdString(endpoint)));
-    refreshData();
-}
-
-void NetworkDeviceDialog::onEnableUsbTcpMode() {
-    if (!m_hdc) return;
-
-    m_error_label->setStyleSheet("color: #8b6717; font-size: 12px;");
-    m_error_label->setText("正在检测 USB 设备并开启无线调试模式 (8710端口)…");
-
-    auto devs = m_hdc->listDevices();
-    std::string usb_serial;
-    for (const auto& d : devs) {
-        if (d.serial.find(':') == std::string::npos && d.state == DeviceState::Connected) {
-            usb_serial = d.serial;
-            break;
-        }
-    }
-
-    if (usb_serial.empty()) {
-        for (const auto& d : devs) {
-            if (d.serial.find(':') == std::string::npos && d.state == DeviceState::Unauthorized) {
-                m_error_label->setStyleSheet("color: #be4251; font-size: 12px;");
-                m_error_label->setText("USB 设备未授权：请先在设备屏幕上点击【允许USB调试】或【始终允许】！");
-                return;
-            }
-        }
-        m_error_label->setStyleSheet("color: #be4251; font-size: 12px;");
-        m_error_label->setText("未检测到已连接的 USB 设备。请先用 USB 数据线将设备与电脑连接！");
-        return;
-    }
-
-    bool ok = m_hdc->enableTcpMode(usb_serial, 8710);
-    if (ok) {
-        m_error_label->setStyleSheet("color: #18815c; font-size: 12px;");
-        m_error_label->setText(QString("成功为设备开启 8710 无线调试端口！拔出 USB 线后输入 IP 即可无线投屏。"));
-        QMessageBox::information(this, "无线调试开启成功",
-            QString("已成功为设备开启 8710 无线调试端口！\n\n设备标识: %1\n\n使用指南：\n1. 现在您可以安全拔下 USB 数据线；\n2. 确保手机与电脑在同一 Wi-Fi 局域网；\n3. 查看手机【设置 -> WLAN / 关于手机】中的 IP 地址并在上方输入连接即可。")
-            .arg(QString::fromStdString(usb_serial)));
-    } else {
-        m_error_label->setStyleSheet("color: #be4251; font-size: 12px;");
-        m_error_label->setText("开启无线调试模式失败，请确认设备已授权或尝试点击【重启 HDC 服务】。");
-    }
-}
-
-void NetworkDeviceDialog::onRestartHdcService() {
-    if (!m_hdc) return;
-
-    m_error_label->setStyleSheet("color: #8b6717; font-size: 12px;");
-    m_error_label->setText("正在重启底层 HDC 服务…");
-
-    bool ok = m_hdc->restartServer();
-    if (ok) {
-        m_error_label->setStyleSheet("color: #18815c; font-size: 12px;");
-        m_error_label->setText("HDC 服务已成功重启并重载设备连接。");
-    } else {
-        m_error_label->setStyleSheet("color: #be4251; font-size: 12px;");
-        m_error_label->setText("重启 HDC 服务失败，请检查 HDC 权限或进程。");
-    }
-    refreshData();
+    if (m_on_disconnect) m_on_disconnect(endpoint);
+    else if (m_hdc) m_hdc->executeAsync({"tconn", endpoint, "-remove"}, "", [](const CommandResult&) {});
+    m_error_label->setStyleSheet("color: #4b6585; font-size: 12px;");
+    m_error_label->setText(QString("正在断开 %1").arg(QString::fromStdString(endpoint)));
+    // Live state is owned by DeviceManager. Keep both lists on that snapshot
+    // until the command completes and discovery reports the actual result.
+    emit refreshRequested();
 }
 
 } // namespace harmonycast

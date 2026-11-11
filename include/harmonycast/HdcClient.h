@@ -7,6 +7,9 @@
 #include <functional>
 #include <QPointer>
 #include <QObject>
+#include <QString>
+
+class QProcess;
 
 namespace harmonycast {
 
@@ -33,6 +36,7 @@ public:
                                     const std::vector<std::string>& args,
                                     const std::string& serial = "",
                                     int timeout_ms = 10000);
+    static void configureProcess(QProcess& process, const std::string& hdc_path);
 
     CommandResult run(const std::vector<std::string>& args,
                       const std::string& serial = "",
@@ -45,6 +49,7 @@ public:
     std::vector<Device> listDevices() const;
     std::optional<std::vector<Device>> listDevicesChecked() const;
     static std::vector<Device> parseDeviceList(const std::string& output);
+    static std::vector<std::string> commandArguments(QString input, bool shellByDefault = true);
 
     bool forwardPort(const std::string& serial, int local_port, int remote_port) const;
     bool removeForward(const std::string& serial, int local_port, int remote_port) const;

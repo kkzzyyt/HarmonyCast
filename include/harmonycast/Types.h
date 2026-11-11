@@ -86,6 +86,7 @@ inline bool isSameDevice(const std::string& serial_a, const std::string& serial_
     std::string host_a = get_host(serial_a);
     std::string host_b = get_host(serial_b);
     if (serial_a.find('.') != std::string::npos && serial_b.find('.') != std::string::npos) {
+        if (serial_a.find(':') != std::string::npos && serial_b.find(':') != std::string::npos) return false;
         return host_a == host_b;
     }
     return false;
@@ -93,6 +94,7 @@ inline bool isSameDevice(const std::string& serial_a, const std::string& serial_
 
 inline const Device* findMatchingDevice(const std::vector<Device>& devices, const std::string& serial) {
     if (serial.empty()) return nullptr;
+    for (const auto& device : devices) if (device.serial == serial) return &device;
     for (const auto& d : devices) {
         if (isSameDevice(d.serial, serial)) {
             return &d;

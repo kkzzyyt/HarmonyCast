@@ -182,10 +182,10 @@ void ScrollBar::paintEvent(QPaintEvent*) {
         groove.setWidth(10.0);
     }
     painter.setPen(Qt::NoPen);
-    painter.setBrush(QColor(36, 103, 214, int(14 * m_hover)));
+    painter.setBrush(QColor(86, 107, 139, int(18 * m_hover)));
     painter.drawRoundedRect(groove, 5, 5);
-    const QColor idle("#879bb5"), hover("#557dab");
-    QColor color = isSliderDown() ? QColor("#2467d6") : QColor(
+    const QColor idle("#8994a4"), hover("#687993");
+    QColor color = isSliderDown() ? QColor("#566b8b") : QColor(
         qRound(idle.red() + (hover.red() - idle.red()) * m_hover),
         qRound(idle.green() + (hover.green() - idle.green()) * m_hover),
         qRound(idle.blue() + (hover.blue() - idle.blue()) * m_hover));
