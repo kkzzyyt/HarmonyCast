@@ -31,7 +31,7 @@ def check_directory(root: Path) -> list[str]:
     for binary in sorted(root.rglob("*")):
         if not binary.is_file() or binary.suffix.lower() not in {".dll", ".exe"}:
             continue
-        label = str(binary.relative_to(root))
+        label = binary.relative_to(root).as_posix()
         try:
             with pefile.PE(str(binary), fast_load=True) as image:
                 if image.FILE_HEADER.Machine != 0x8664:
