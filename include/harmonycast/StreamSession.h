@@ -31,6 +31,9 @@ struct SnapshotWorkerContext {
     std::string serial;
     uintptr_t session_id{0};
     std::mutex presentation_mutex;
+    std::mutex diagnostic_mutex;
+    QString progress_detail;
+    QString last_failure;
     QSize viewport;
     int rotation{0};
     qreal dpr{1};
@@ -108,6 +111,7 @@ private:
     bool m_decode_busy{false};
     std::shared_ptr<FrameMailbox> m_frame_mailbox;
     std::shared_ptr<std::atomic<bool>> m_start_cancel;
+    std::shared_ptr<QObject> m_delivery_context;
     QSize m_viewport;
     int m_rotation{0};
     qreal m_dpr{1};

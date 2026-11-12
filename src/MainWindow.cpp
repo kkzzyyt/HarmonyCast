@@ -85,7 +85,7 @@ MainWindow::MainWindow(QWidget* parent, bool startBackgroundServices, std::strin
 
     m_log_flush_timer = new QTimer(this);
     m_log_flush_timer->setSingleShot(true);
-    m_log_flush_timer->setInterval(50);
+    m_log_flush_timer->setInterval(500);
     connect(m_log_flush_timer, &QTimer::timeout, this, &MainWindow::flushLogViews);
     m_log_search_timer = new QTimer(this);
     m_log_search_timer->setSingleShot(true);
@@ -3003,9 +3003,9 @@ void MainWindow::startMirror() {
 
     connect(m_stream.get(), &StreamSession::streamFinished, this, [this](const QString& error){
         if (m_projecting) {
-            showToast(QString("投屏长连接已断开: %1").arg(error));
-            statusBar()->showMessage(QString("投屏长连接异常断开: %1").arg(error), 6000);
-            m_screen->setStatusMessage(QString("投屏长连接已断开\n%1\n\n请检查设备状态后点击上方「开始投屏」重试").arg(error));
+            showToast("投屏已停止，详细原因见画面提示");
+            statusBar()->showMessage(QString("投屏已停止：%1").arg(error), 6000);
+            m_screen->setStatusMessage(QString("投屏已停止\n%1\n\n检查设备状态后点击「开始投屏」重试").arg(error));
             m_user_stopped_mirror = true;
             stopMirror(false);
         }

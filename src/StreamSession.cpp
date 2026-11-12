@@ -25,7 +25,16 @@ bool commandFailed(const CommandResult& result) {
 }
 
 QString commandDetail(const CommandResult& result) {
-    return QString::fromStdString(result.err + "\n" + result.out).trimmed().left(700);
+    return QString::fromStdString(result.err + "\n" + result.out).trimmed().left(16384);
+}
+
+QString fallbackSummary(const QString& detail) {
+    static const QRegularExpression unavailableApi(
+        R"(Error loading shared library|symbol not found|undefined symbol|cannot locate symbol)",
+        QRegularExpression::CaseInsensitiveOption);
+    if (unavailableApi.match(detail).hasMatch()) return QStringLiteral("设备系统不支持当前原生采屏接口");
+    if (detail.isEmpty()) return QStringLiteral("原生视频通道不可用");
+    return detail.section('\n', 0, 0).section(QChar(0xff1a), 0, 0).left(120);
 }
 
 } // namespace
@@ -49,6 +58,10 @@ StreamSession::StreamSession(std::shared_ptr<HdcClient> hdc,
       m_timeouts{std::max(100, timeouts.startup_ms), std::max(100, timeouts.frame_ms)},
       m_control(std::make_shared<ControlChannel>(this)) {
 
+    // Workers retain this GUI-thread receiver until they finish. A session
+    // can be destroyed while HDC is running; dereference its QPointer only
+    // after delivery returns to the GUI thread.
+    m_delivery_context = std::shared_ptr<QObject>(new QObject, [](QObject* receiver) { receiver->deleteLater(); });
     m_socket->setProxy(QNetworkProxy(QNetworkProxy::NoProxy));
     connect(m_socket, &QTcpSocket::connected, this, &StreamSession::onSocketConnected);
     connect(m_socket, &QTcpSocket::readyRead, this, &StreamSession::onSocketReadyRead);
@@ -206,18 +219,16 @@ bool StreamSession::start() {
 
     m_start_cancel = std::make_shared<std::atomic<bool>>(false);
     auto cancelled = m_start_cancel;
-    std::thread([weak_this, current_gen, hdc, serial, local_port, remote_port, fps, bitrate, max_size, cancelled]() {
+    auto delivery = m_delivery_context;
+    std::thread([delivery, weak_this, current_gen, hdc, serial, local_port, remote_port, fps, bitrate, max_size, cancelled]() {
         if (cancelled->load()) return;
         // 1. Setup port forwarding in worker thread
         if (!hdc || serial.empty() || !hdc->forwardPort(serial, local_port, remote_port)) {
-            auto* session = weak_this.data();
-            if (session) {
-                QMetaObject::invokeMethod(session, [weak_this, current_gen]() {
-                    if (!weak_this || !weak_this->m_running || weak_this->m_session_gen != current_gen || weak_this->m_fallback_snapshot) return;
-                    emit weak_this->statusChanged("端口映射失败，尝试兼容快照流…");
-                    weak_this->startSnapshotFallback();
-                });
-            }
+            QMetaObject::invokeMethod(delivery.get(), [weak_this, current_gen]() {
+                if (!weak_this || !weak_this->m_running || weak_this->m_session_gen != current_gen || weak_this->m_fallback_snapshot) return;
+                emit weak_this->statusChanged("端口映射失败，尝试兼容快照流…");
+                weak_this->startSnapshotFallback();
+            });
             return;
         }
 
@@ -237,19 +248,16 @@ bool StreamSession::start() {
         }
 
         // 3. Inform main thread to begin non-blocking socket connection attempts
-        auto* session = weak_this.data();
-        if (session) {
-            QMetaObject::invokeMethod(session, [weak_this, current_gen, launched, launch_error]() {
-                if (!weak_this || !weak_this->m_running || weak_this->m_session_gen != current_gen || weak_this->m_fallback_snapshot) return;
-                weak_this->m_forwarded = true;
-                if (!launched) {
-                    weak_this->startSnapshotFallback(launch_error);
-                    return;
-                }
-                emit weak_this->statusChanged("正在连接设备视频流…");
-                weak_this->tryConnectSocket(0, current_gen);
-            });
-        }
+        QMetaObject::invokeMethod(delivery.get(), [weak_this, current_gen, launched, launch_error]() {
+            if (!weak_this || !weak_this->m_running || weak_this->m_session_gen != current_gen || weak_this->m_fallback_snapshot) return;
+            weak_this->m_forwarded = true;
+            if (!launched) {
+                weak_this->startSnapshotFallback(launch_error);
+                return;
+            }
+            emit weak_this->statusChanged("正在连接设备视频流…");
+            weak_this->tryConnectSocket(0, current_gen);
+        });
     }).detach();
 
     return true;
@@ -437,6 +445,11 @@ void StreamSession::deliverLatestFrame(const std::shared_ptr<FrameMailbox>& mail
     if (first_frame) {
         HC_LOG_INFO(QString("First displayable frame received: %1x%2 (%3)")
             .arg(width).arg(height).arg(m_fallback_snapshot ? "snapshot" : "native video"));
+        if (m_fallback_snapshot) {
+            const QPointer<StreamSession> guard(this);
+            emit statusChanged("已启用兼容截图投屏");
+            if (!guard || !m_running || generation != m_session_gen || mailbox != m_frame_mailbox) return;
+        }
     }
     bool changed = m_dev_width != width || m_dev_height != height;
     m_dev_width = width;
@@ -542,8 +555,16 @@ void StreamSession::checkProgress() {
     const int timeout = !m_fallback_snapshot && !m_socket_connected ? m_timeouts.startup_ms : m_timeouts.frame_ms;
     if (m_progress_clock.elapsed() < timeout) return;
     if (m_fallback_snapshot) {
+        QString stage;
+        if (m_snapshot_ctx) {
+            std::lock_guard lock(m_snapshot_ctx->diagnostic_mutex);
+            stage = m_snapshot_ctx->progress_detail;
+            if (!m_snapshot_ctx->last_failure.isEmpty() && m_snapshot_ctx->last_failure != stage) {
+                stage += "\n最近失败：" + m_snapshot_ctx->last_failure;
+            }
+        }
         const QString error = QString("兼容截图在 %1 秒内未返回画面，请检查设备截图权限和 HDC 文件传输\n%2")
-            .arg(timeout / 1000.0, 0, 'g', 3).arg(m_fallback_reason);
+            .arg(timeout / 1000.0, 0, 'g', 3).arg(stage.isEmpty() ? m_fallback_reason : stage);
         HC_LOG_WARN(error);
         stop();
         emit streamFinished(error);
@@ -564,7 +585,8 @@ void StreamSession::checkProgress() {
 
 void StreamSession::startSnapshotFallback(const QString& reason) {
     if (m_fallback_snapshot) return;
-    m_fallback_reason = reason.isEmpty() ? QStringLiteral("原生视频通道不可用") : reason;
+    if (!reason.isEmpty()) HC_LOG_WARN("Native capture fallback details: " + reason);
+    m_fallback_reason = fallbackSummary(reason);
     m_fallback_snapshot = true;
     if (m_start_cancel) m_start_cancel->store(true);
     m_received_frame = false;
@@ -574,12 +596,17 @@ void StreamSession::startSnapshotFallback(const QString& reason) {
     stopPipeline();
     if (m_frame_mailbox) m_frame_mailbox->clear();
     m_frame_mailbox = std::make_shared<FrameMailbox>();
-    emit statusChanged(m_fallback_reason + "\n正在尝试兼容截图…");
+    emit statusChanged(m_fallback_reason + "\n正在切换兼容截图，请稍候…");
     if (m_forwarded) cleanup();
     if (!QImageReader::supportedImageFormats().contains("jpeg")) {
         const QString error = "缺少 JPEG 图像插件，无法启用兼容截图，请使用完整安装包";
         stop();
         emit streamFinished(error);
+        return;
+    }
+    if (!m_hdc) {
+        stop();
+        emit streamFinished("HDC 工具不可用，无法获取兼容截图");
         return;
     }
     HC_LOG_WARN(QString("StreamSession starting snapshot fallback mode for %1").arg(QString::fromStdString(m_device.serial)));
@@ -601,7 +628,8 @@ void StreamSession::startSnapshotFallback(const QString& reason) {
 
     auto mailbox = m_frame_mailbox;
     const uint64_t generation = m_session_gen;
-    std::thread([weak_this, ctx, mailbox, generation]() {
+    auto delivery = m_delivery_context;
+    std::thread([delivery, weak_this, ctx, mailbox, generation]() {
         std::string remote_path = "/data/local/tmp/harmonycast_stream_" + std::to_string(ctx->session_id) + ".jpeg";
         QString local_temp[2] = {
             QDir::toNativeSeparators(QDir::tempPath() + QString("/hc_snap_%1_%2_0.jpeg")
@@ -613,53 +641,100 @@ void StreamSession::startSnapshotFallback(const QString& reason) {
         };
         int buf_idx = 0;
 
+        auto stage = [ctx](const QString& detail) {
+            std::lock_guard lock(ctx->diagnostic_mutex);
+            ctx->progress_detail = detail;
+        };
+        stage("正在唤醒设备以获取兼容截图");
         ctx->hdc->wakeup(ctx->serial);
 
+        auto finish = [delivery, weak_this, ctx, generation](const QString& error) {
+            QMetaObject::invokeMethod(delivery.get(), [weak_this, ctx, generation, error]() {
+                if (!weak_this || !weak_this->m_running || ctx->cancelled.load() ||
+                    weak_this->m_session_gen != generation || weak_this->m_snapshot_ctx != ctx) return;
+                weak_this->stop();
+                if (weak_this) emit weak_this->streamFinished(error);
+            });
+        };
+        const QRegularExpression resizeUnsupported(
+            R"(invalid option|unknown option|unrecognized option|unsupported option)",
+            QRegularExpression::CaseInsensitiveOption);
+        const QRegularExpression missingCommand(R"(snapshot_display[^\n]*(not found|inaccessible|no such file or directory))",
+                                                 QRegularExpression::CaseInsensitiveOption);
+        const QRegularExpression denied(R"(permission denied|access denied|operation not permitted)",
+                                        QRegularExpression::CaseInsensitiveOption);
         int consecutive_errors = 0;
         int source_width = 0, source_height = 0;
+        bool resize_supported = true;
         while (!ctx->cancelled.load()) {
             auto t0 = std::chrono::steady_clock::now();
-
-            std::vector<std::string> snap_cmd = {"shell", "snapshot_display", "-f", remote_path};
-            int tw = ctx->target_width.load();
-            int th = ctx->target_height.load();
-            if (source_width > 0 && tw > 0 && th > 0) {
-                snap_cmd.push_back("-w");
-                snap_cmd.push_back(std::to_string(tw));
-                snap_cmd.push_back("-h");
-                snap_cmd.push_back(std::to_string(th));
-            }
-            auto res_snap = ctx->hdc->run(snap_cmd, ctx->serial, 8000);
+            // Delete the previous device image in the same shell invocation.
+            // A failing capture must never look successful by reusing that file.
+            std::string command = "rm -f " + remote_path + " && snapshot_display -f " + remote_path;
+            const int tw = ctx->target_width.load();
+            const int th = ctx->target_height.load();
+            const bool scaled = resize_supported && source_width > 0 && tw > 0 && th > 0;
+            if (scaled) command += " -w " + std::to_string(tw) + " -h " + std::to_string(th);
+            stage("正在执行设备截图命令");
+            const auto res_snap = ctx->hdc->run({"shell", command}, ctx->serial, 8000);
             if (ctx->cancelled.load()) break;
 
-            if (res_snap.success()) {
-                const QString& current_temp = local_temp[buf_idx];
-                std::string current_local_path = current_temp.toStdString();
-                buf_idx = 1 - buf_idx;
-
-                bool res_recv = ctx->hdc->fileRecv(ctx->serial, remote_path, current_local_path);
-                if (ctx->cancelled.load()) {
-                    break;
+            QString failure;
+            QString detail = commandDetail(res_snap);
+            bool permanent = false;
+            bool loaded = false;
+            if (commandFailed(res_snap) || resizeUnsupported.match(detail).hasMatch() ||
+                missingCommand.match(detail).hasMatch() || denied.match(detail).hasMatch()) {
+                if (scaled && resizeUnsupported.match(detail).hasMatch()) {
+                    resize_supported = false;
+                    HC_LOG_WARN("Device screenshot scaling unsupported; retrying at native size: " + detail);
+                    continue;
                 }
-
-                bool loaded = false;
-                if (res_recv && QFile::exists(current_temp)) {
-                    QFile file(current_temp);
-                    if (file.open(QIODevice::ReadOnly)) {
-                        QByteArray data = file.readAll();
-                        file.close();
-                        if (data.size() >= 4 &&
-                            static_cast<uint8_t>(data[0]) == 0xFF &&
-                            static_cast<uint8_t>(data[1]) == 0xD8 &&
-                            static_cast<uint8_t>(data[data.size() - 2]) == 0xFF &&
-                            static_cast<uint8_t>(data[data.size() - 1]) == 0xD9) {
-
+                if (denied.match(detail).hasMatch()) {
+                    failure = "设备未授予截图权限，兼容截图无法继续";
+                    permanent = true;
+                } else if (missingCommand.match(detail).hasMatch()) {
+                    failure = "设备截图命令不可用，无法启用兼容截图";
+                    permanent = true;
+                } else {
+                    failure = "兼容截图命令执行失败";
+                }
+            } else {
+                const QString current_temp = local_temp[buf_idx];
+                buf_idx = 1 - buf_idx;
+                // HDC can report success without creating a destination file.
+                // Remove each reused buffer before receiving a fresh image.
+                QFile destination(current_temp);
+                if (destination.exists() && !destination.remove()) {
+                    failure = "兼容截图本地旧文件无法清理";
+                    detail = destination.errorString();
+                } else {
+                    stage("兼容截图传输中");
+                    const auto received = ctx->hdc->run({"file", "recv", remote_path, current_temp.toStdString()},
+                                                        ctx->serial, 8000);
+                    if (ctx->cancelled.load()) break;
+                    if (commandFailed(received) || !QFile::exists(current_temp)) {
+                        failure = "兼容截图传输失败，未收到新的截图文件";
+                        detail = commandDetail(received);
+                    } else {
+                        QFile file(current_temp);
+                        if (!file.open(QIODevice::ReadOnly)) {
+                            failure = "兼容截图文件无法读取";
+                            detail = file.errorString();
+                        } else {
+                            const auto data = file.readAll();
+                            file.close();
                             QImage img;
-                            if (img.loadFromData(data, "JPEG")) {
-                                consecutive_errors = 0;
+                            const bool complete = data.size() >= 4 &&
+                                static_cast<uint8_t>(data[0]) == 0xFF && static_cast<uint8_t>(data[1]) == 0xD8 &&
+                                static_cast<uint8_t>(data[data.size() - 2]) == 0xFF &&
+                                static_cast<uint8_t>(data[data.size() - 1]) == 0xD9;
+                            if (!complete || !img.loadFromData(data, "JPEG")) {
+                                failure = "兼容截图图片不完整或无法解码";
+                                detail = QString("Received %1 bytes from %2").arg(data.size()).arg(current_temp);
+                            } else {
                                 loaded = true;
-
-                                if (source_width == 0 || tw == 0) {
+                                if (source_width == 0 || !scaled) {
                                     source_width = img.width();
                                     source_height = img.height();
                                 }
@@ -682,9 +757,8 @@ void StreamSession::startSnapshotFallback(const QString& reason) {
                                     dpr = ctx->dpr;
                                 }
                                 prepareFramePresentation(frame, viewport, rotation, dpr);
-                                auto* session = weak_this.data();
-                                if (session && mailbox->publish(frame)) {
-                                    QMetaObject::invokeMethod(session, [weak_this, ctx, mailbox, generation]() {
+                                if (mailbox->publish(frame)) {
+                                    QMetaObject::invokeMethod(delivery.get(), [weak_this, ctx, mailbox, generation]() {
                                         if (weak_this && !ctx->cancelled.load()) weak_this->deliverLatestFrame(mailbox, generation);
                                     });
                                 }
@@ -692,52 +766,30 @@ void StreamSession::startSnapshotFallback(const QString& reason) {
                         }
                     }
                 }
-
-                if (!loaded) {
-                    consecutive_errors++;
-                    HC_LOG_WARN(QString("Snapshot recv/parse failed for %1 (consecutive=%2)")
-                                    .arg(QString::fromStdString(ctx->serial))
-                                    .arg(consecutive_errors));
-                    int backoff_ms = std::min(800, 150 + consecutive_errors * 30);
-                    std::this_thread::sleep_for(std::chrono::milliseconds(backoff_ms));
-                }
+            }
+            stage(loaded ? QString{} : failure);
+            {
+                std::lock_guard lock(ctx->diagnostic_mutex);
+                ctx->last_failure = loaded ? QString{} : failure;
+            }
+            if (loaded) {
+                consecutive_errors = 0;
             } else {
-                consecutive_errors++;
-                HC_LOG_WARN(QString("Snapshot command failed (exit=%1, out='%2', err='%3') for %4")
-                                .arg(res_snap.exit_code)
-                                .arg(QString::fromStdString(res_snap.out).trimmed())
-                                .arg(QString::fromStdString(res_snap.err).trimmed())
-                                .arg(QString::fromStdString(ctx->serial)));
-                if (consecutive_errors % 4 == 0) {
-                    ctx->hdc->wakeup(ctx->serial);
+                ++consecutive_errors;
+                HC_LOG_WARN(QString("%1 for %2 (consecutive=%3): %4")
+                    .arg(failure, QString::fromStdString(ctx->serial)).arg(consecutive_errors).arg(detail));
+                if (permanent || consecutive_errors >= 25) {
+                    finish(failure + "\n请检查设备和 HDC 连接，详细原因见诊断日志");
+                    break;
                 }
-                int backoff_ms = std::min(800, 150 + consecutive_errors * 30);
-                std::this_thread::sleep_for(std::chrono::milliseconds(backoff_ms));
+                const int backoff_ms = std::min(800, 150 + consecutive_errors * 30);
+                for (int delay = 0; delay < backoff_ms && !ctx->cancelled.load(); delay += 10)
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
             }
-
-            if (consecutive_errors >= 25) {
-                HC_LOG_ERROR(QString("Snapshot fallback failed %1 consecutive times, terminating session for %2")
-                                 .arg(consecutive_errors)
-                                 .arg(QString::fromStdString(ctx->serial)));
-                auto* session = weak_this.data();
-                if (session) {
-                    QMetaObject::invokeMethod(session, [weak_this, ctx, generation]() {
-                        if (!weak_this || !weak_this->m_running || ctx->cancelled.load() ||
-                            weak_this->m_session_gen != generation || weak_this->m_snapshot_ctx != ctx) return;
-                        weak_this->stop();
-                        if (weak_this) {
-                            emit weak_this->streamFinished("设备画面流传输异常中断，已自动停止投屏");
-                        }
-                    });
-                }
-                break;
-            }
-
-            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
-            int target_delay = std::clamp(100 - static_cast<int>(elapsed), 10, 100);
-            for (int i = 0; i < target_delay / 10 && !ctx->cancelled.load(); ++i) {
+            const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+            const int target_delay = std::clamp(100 - static_cast<int>(elapsed), 10, 100);
+            for (int delay = 0; delay < target_delay && !ctx->cancelled.load(); delay += 10)
                 std::this_thread::sleep_for(std::chrono::milliseconds(10));
-            }
         }
 
         ctx->hdc->run({"shell", "rm", "-f", remote_path}, ctx->serial, 1000);
