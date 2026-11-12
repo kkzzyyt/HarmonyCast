@@ -85,6 +85,9 @@ private slots:
 
     // Workspace layout
     void setWorkspaceLayout(const QString& mode);
+    void updateWorkspaceLayoutFromSelection();
+    void toggleWorkspaceOrientation();
+    void updateWorkspaceOrientationControl();
 
     // HiLog controls
     void onHiLogEntries(const std::vector<HiLogEntry>& entries);
@@ -214,8 +217,6 @@ private:
     QFrame* m_header{nullptr};
     QLabel* m_page_title{nullptr};
     QWidget* m_layout_switcher{nullptr};
-    QPushButton* m_btn_layout_h{nullptr};
-    QPushButton* m_btn_layout_v{nullptr};
     QPushButton* m_btn_layout_screen{nullptr};
     QPushButton* m_btn_layout_logs{nullptr};
     QComboBox* m_device_combo{nullptr};
@@ -265,6 +266,7 @@ private:
     QPushButton* m_fullscreen_btn{nullptr};
     QLabel* m_state_badge{nullptr};
     ScreenView* m_screen{nullptr};
+    QPushButton* m_btn_workspace_orientation{nullptr};
 
     // Workspace Right: Logs & WebView
     QWidget* m_log_panel{nullptr};
@@ -338,13 +340,13 @@ private:
     int m_user_rotation{0};
     int m_bitrate_idx{1};
     int m_log_font_size_val{11};
-    QString m_current_layout{"horizontal"};
+    QString m_current_layout{"mirror_only"};
     bool m_projecting{false};
     bool m_info_loading{false};
     bool m_hdc_running{false};
     std::string m_hilog_target;
     std::string m_hilog_suspended_target;
-    std::string m_log_only_default_target;
+    std::string m_log_default_target;
     bool m_auto_start_mirror{true};
     bool m_user_stopped_mirror{false};
     bool m_background_services_enabled{true};

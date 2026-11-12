@@ -14,6 +14,8 @@
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QThread>
+#include <QPushButton>
+#include <QSplitter>
 #include <iostream>
 #include <stdexcept>
 #ifdef _WIN32
@@ -185,26 +187,43 @@ static void testWirelessControls() {
     auto* toggle = window.findChild<QCheckBox*>("WirelessHiLog");
     check(toggle && !toggle->isChecked(), "wireless HiLog must have an unchecked control by default");
     const QString first = "192.0.2.51:8710", second = "192.0.2.52:9000";
-    showLogs(window, false);
+    QPushButton* logsLayout = nullptr;
+    for (auto* button : window.findChildren<QPushButton*>("LayoutSwitchBtn")) {
+        if (button->text() == "日志") logsLayout = button;
+    }
+    auto* orientation = window.findChild<QPushButton*>("WorkspaceOrientation");
+    check(logsLayout && orientation, "workspace selection controls missing");
+    QMetaObject::invokeMethod(&window, "switchModule", Qt::DirectConnection, Q_ARG(int, 1));
     setDevices(window, "192.0.2.51:8710 TCP Connected TEST\n");
     settle();
     check(toggle->isEnabled() && starts(first) == 0 && collectors(window) == 0,
-          "opening a wireless log panel starts collection without consent");
-    check(!window.isProjecting(), "logs-only layout starts screen mirroring");
-    toggle->setChecked(true);
+          "default screen-only workspace starts wireless log collection");
+    logsLayout->click();
+    check(toggle->isChecked(), "selecting logs alongside the screen does not enable collection");
     auto* logs = window.findChild<QPlainTextEdit*>("LogView");
     waitUntil([&] { return starts(first) == 1 && logs->toPlainText().contains(first); });
     check(collectors(window) == 1, "enabling wireless logs did not create one collector");
     const auto captured = logs->toPlainText();
     toggle->setChecked(false);
     check(collectors(window) == 0 && logs->toPlainText() == captured, "disabling collection erases captured logs or leaves collection active");
-    showLogs(window);
-    check(toggle->isChecked(), "entering the logs-only layout does not enable wireless collection");
+    orientation->click();
+    setDevices(window, "192.0.2.51:8710 TCP Connected TEST\n");
+    settle();
+    check(!toggle->isChecked() && starts(first) == 1 && collectors(window) == 0,
+          "changing split orientation or polling overrides manual collection pause");
+    logsLayout->click();
+    check(logs->toPlainText() == captured, "hiding logs clears the captured content");
+    logsLayout->click();
+    check(toggle->isChecked(), "reopening logs does not enable wireless collection");
     waitUntil([&] { return starts(first) == 2; });
+    logsLayout->click();
+    check(collectors(window) == 0, "hiding the log pane leaves collection running");
+    logsLayout->click();
+    waitUntil([&] { return starts(first) == 3; });
     setDevices(window, "192.0.2.51:8710 TCP Connected TEST\n");
     showLogs(window);
     settle();
-    check(starts(first) == 2 && collectors(window) == 1, "refreshing the panel duplicates HiLog processes");
+    check(starts(first) == 3 && collectors(window) == 1, "refreshing the panel duplicates HiLog processes");
 
     setDevices(window, "192.0.2.51:8710 TCP Connected TEST\n192.0.2.52:9000 TCP Connected TEST\n");
     for (auto* combo : window.findChildren<QComboBox*>()) {
@@ -248,11 +267,55 @@ static void testUsbAndFreshDefault() {
     window.show();
     auto* toggle = window.findChild<QCheckBox*>("WirelessHiLog");
     check(toggle && !toggle->isChecked(), "new window inherits wireless collection opt-in");
+    QPushButton* screenLayout = nullptr;
+    QPushButton* logsLayout = nullptr;
+    for (auto* button : window.findChildren<QPushButton*>("LayoutSwitchBtn")) {
+        if (button->text() == "投屏") screenLayout = button;
+        if (button->text() == "日志") logsLayout = button;
+    }
+    auto* logPanel = window.findChild<QWidget*>("LogPanel");
+    auto* orientation = window.findChild<QPushButton*>("WorkspaceOrientation");
+    auto* splitter = window.findChild<QSplitter*>("WorkspaceSplitter");
+    check(window.findChildren<QPushButton*>("LayoutSwitchBtn").size() == 2,
+          "obsolete top-level split orientation controls remain");
+    check(screenLayout && logsLayout && screenLayout->isChecked() && !logsLayout->isChecked() &&
+          logPanel && !logPanel->isVisible(), "new workspace must default to screen-only mode");
+    check(orientation && orientation->text() == "上下" && splitter &&
+          splitter->orientation() == Qt::Horizontal, "split workspace must default to horizontal orientation");
+    QMetaObject::invokeMethod(&window, "switchModule", Qt::DirectConnection, Q_ARG(int, 1));
+    const QString artifacts = QString::fromUtf8(qgetenv("HC_HILOG_TEST_ARTIFACTS"));
+    auto preview = [&](const QString& name) {
+        if (artifacts.isEmpty()) return;
+        QCoreApplication::processEvents();
+        check(window.grab().save(artifacts + "/" + name + ".png"), "workspace preview unavailable");
+    };
+    preview("workspace-screen-only");
+    screenLayout->click();
+    check(screenLayout->isChecked() && !logsLayout->isChecked(), "last pane toggle leaves an empty workspace");
+    logsLayout->click();
+    check(screenLayout->isChecked() && logsLayout->isChecked() && orientation->isVisible() &&
+          logPanel->isVisible() && splitter->orientation() == Qt::Horizontal,
+          "selecting logs does not add a horizontal split");
+    preview("workspace-horizontal");
+    orientation->click();
+    check(orientation->text() == "左右" && splitter->orientation() == Qt::Vertical,
+          "log workspace orientation button does not switch to vertical split");
+    preview("workspace-vertical");
+    screenLayout->click();
+    check(!screenLayout->isChecked() && logsLayout->isChecked() && !orientation->isVisible(),
+          "deselecting screen does not leave a single log pane");
+    logsLayout->click();
+    check(logsLayout->isChecked() && !screenLayout->isChecked(), "last log pane can be deselected");
     const QString usb = "aa:bb:cc:dd:ee:01";
     setDevices(window, "aa:bb:cc:dd:ee:01 USB Connected TEST\n");
-    showLogs(window);
     waitUntil([&] { return starts(usb) == 1 && collectors(window) == 1; });
     check(!toggle->isEnabled() && !toggle->isChecked(), "USB serial containing colons is mistaken for a network endpoint");
+    screenLayout->click();
+    check(screenLayout->isChecked() && logsLayout->isChecked() && logPanel->isVisible() &&
+          splitter->orientation() == Qt::Vertical, "screen and logs cannot be selected together");
+    check(window.isProjecting(), "re-enabling screen from logs-only does not start mirroring");
+    QMetaObject::invokeMethod(&window, "stopMirror", Qt::DirectConnection, Q_ARG(bool, true));
+    check(collectors(window) == 1, "resuming and stopping the screen restarts or stops the log collector");
 }
 
 static int fakeHdc(int argc, char** argv) {

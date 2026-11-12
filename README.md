@@ -1,4 +1,4 @@
-# HarmonyCast 2.3.3 · 鸿蒙投屏工作台
+# HarmonyCast 2.3.4 · 鸿蒙投屏工作台
 
 <p align="center">
   <img src="resources/app-icon.svg" width="96" height="96" alt="HarmonyCast Logo"/>
@@ -58,8 +58,8 @@ HarmonyCast 是专为 OpenHarmony / 鸿蒙设备（平板、手机、智慧屏�
   支持按包名前缀、日志级别及正则表达式全文即时检索过滤。
 - **Font Zoom Controls / 便捷字号缩放**: Fast zoom in/out/reset buttons, standard keyboard shortcuts (`⌘/+`, `⌘/-`, `⌘/0`), and `⌘/Ctrl + Mouse Wheel` stepless zooming.
   提供专用缩放按钮、标准快捷键及 `⌘/Ctrl + 鼠标滚轮` 无级平滑缩放。
-- **Streaming Export / 流式导出与流控**: Pause log display, toggle auto-scrolling, and export logs to plain text. Wireless HiLog is off by default and can be enabled from the device log toolbar.
-  支持日志冻结、自动滚屏切换与纯文本导出；分屏投屏时 IP/无线日志默认关闭，可勾选「无线日志」开启，取消勾选即停止采集并保留记录。进入「仅日志」布局自动开启当前设备日志，不启动投屏；软件重启后默认关闭。
+- **Streaming Export / 流式导出与流控**: Pause log display, toggle auto-scrolling, and export logs to plain text. The workspace defaults to screen mirroring only. Select Logs to start HiLog collection; Screen and Logs can be selected together, with a split orientation control inside the log panel. Hiding Logs stops HiLog collection and keeps captured history.
+  默认仅投屏、不采集日志；勾选顶部「日志」后自动采集当前设备日志，可与「投屏」同时选择，在日志区域右上角切换左右/上下布局。取消「日志」停止 HiLog 采集并保留历史；也可在面板内手动关闭无线采集，或用「暂停刷新」冻结显示。
 
 ### 4. WebView Console and DevTools / WebView 控制台与 Chrome DevTools 联动
 - **Dual Tab View / 双标签视图**: Inspect device-side hybrid applications via Console logs and Network request lists.

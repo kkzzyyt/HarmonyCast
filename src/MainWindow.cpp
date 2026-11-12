@@ -33,6 +33,7 @@
 #include <QInputDialog>
 #include <QScreen>
 #include <QAbstractScrollArea>
+#include <QSignalBlocker>
 #include <iostream>
 
 namespace harmonycast {
@@ -239,7 +240,7 @@ void MainWindow::setupUi() {
     bottom_box->setContentsMargins(0, 0, 0, 0);
     bottom_box->setSpacing(6);
 
-    auto* version_label = IconManager::label("HarmonyCast\nv2.3.3", "Muted");
+    auto* version_label = IconManager::label("HarmonyCast\nv2.3.4", "Muted");
     bottom_box->addWidget(version_label, 1);
 
     m_settings_btn = IconManager::iconButton("settings", "系统设置", "IconBtnSettings", 30, 30);
@@ -268,62 +269,41 @@ void MainWindow::setupUi() {
     heading->addWidget(m_page_title);
     heading->addStretch();
 
-    // Layout Switcher (左右分屏 / 上下分屏 / 仅投屏 / 仅日志)
+    // Layout Switcher (投屏和日志可独立选择)
     m_layout_switcher = new QWidget(this);
     m_layout_switcher->setObjectName("LayoutSwitcher");
     m_layout_switcher->setFixedHeight(28);
     m_layout_switcher->setStyleSheet(
-        "QWidget#LayoutSwitcher { background: #e5e7eb; border: 1px solid #c2cad5; border-radius: 6px; padding: 2px; } "
-        "QPushButton { background: transparent; border: none; border-radius: 4px; padding: 2px 7px; color: #62666d; font-size: 12px; } "
-        "QPushButton:hover { background: #dfe3ea; color: #405065; } "
-        "QPushButton:checked { background: #d2d6dd; color: #62666d; font-weight: bold; }"
+        "QWidget#LayoutSwitcher { background: transparent; border: none; } "
+        "QPushButton { background: #e2e4e8; border: 1px solid #bec8d6; border-radius: 6px; padding: 2px 10px; color: #617087; font-size: 12px; } "
+        "QPushButton:hover { background: #dce1e8; color: #405065; } "
+        "QPushButton:checked { background: #cbd5e3; border-color: #a0b0c4; color: #405879; font-weight: 600; } "
+        "QPushButton:focus { border-color: #7589a5; }"
     );
     auto* layout_box = new QHBoxLayout(m_layout_switcher);
-    layout_box->setContentsMargins(2, 2, 2, 2);
-    layout_box->setSpacing(2);
-
-    m_btn_layout_h = new QPushButton("左右");
-    m_btn_layout_h->setIcon(IconManager::getIcon("layout_h"));
-    m_btn_layout_h->setIconSize(QSize(13, 13));
-    m_btn_layout_h->setObjectName("LayoutSwitchBtn");
-    m_btn_layout_h->setToolTip("左右分屏 (投屏在左，日志在右，可自由拖拽)");
-    m_btn_layout_h->setCheckable(true);
-    m_btn_layout_h->setFixedHeight(24);
-    m_btn_layout_h->setCursor(Qt::PointingHandCursor);
-    connect(m_btn_layout_h, &QPushButton::clicked, this, [this]{ setWorkspaceLayout("horizontal"); });
-    layout_box->addWidget(m_btn_layout_h);
-
-    m_btn_layout_v = new QPushButton("上下");
-    m_btn_layout_v->setIcon(IconManager::getIcon("layout_v"));
-    m_btn_layout_v->setIconSize(QSize(13, 13));
-    m_btn_layout_v->setObjectName("LayoutSwitchBtn");
-    m_btn_layout_v->setToolTip("上下分屏 (投屏在上，日志在下，可自由拖拽)");
-    m_btn_layout_v->setCheckable(true);
-    m_btn_layout_v->setFixedHeight(24);
-    m_btn_layout_v->setCursor(Qt::PointingHandCursor);
-    connect(m_btn_layout_v, &QPushButton::clicked, this, [this]{ setWorkspaceLayout("vertical"); });
-    layout_box->addWidget(m_btn_layout_v);
+    layout_box->setContentsMargins(0, 0, 0, 0);
+    layout_box->setSpacing(8);
 
     m_btn_layout_screen = new QPushButton("投屏");
     m_btn_layout_screen->setIcon(IconManager::getIcon("layout_screen"));
     m_btn_layout_screen->setIconSize(QSize(13, 13));
     m_btn_layout_screen->setObjectName("LayoutSwitchBtn");
-    m_btn_layout_screen->setToolTip("仅投屏模式");
+    m_btn_layout_screen->setToolTip("显示投屏，可与日志同时选择");
     m_btn_layout_screen->setCheckable(true);
-    m_btn_layout_screen->setFixedHeight(24);
+    m_btn_layout_screen->setFixedHeight(28);
     m_btn_layout_screen->setCursor(Qt::PointingHandCursor);
-    connect(m_btn_layout_screen, &QPushButton::clicked, this, [this]{ setWorkspaceLayout("mirror_only"); });
+    connect(m_btn_layout_screen, &QPushButton::toggled, this, [this](bool) { updateWorkspaceLayoutFromSelection(); });
     layout_box->addWidget(m_btn_layout_screen);
 
     m_btn_layout_logs = new QPushButton("日志");
     m_btn_layout_logs->setIcon(IconManager::getIcon("layout_logs"));
     m_btn_layout_logs->setIconSize(QSize(13, 13));
     m_btn_layout_logs->setObjectName("LayoutSwitchBtn");
-    m_btn_layout_logs->setToolTip("仅日志模式");
+    m_btn_layout_logs->setToolTip("显示日志并开始采集，可与投屏同时选择");
     m_btn_layout_logs->setCheckable(true);
-    m_btn_layout_logs->setFixedHeight(24);
+    m_btn_layout_logs->setFixedHeight(28);
     m_btn_layout_logs->setCursor(Qt::PointingHandCursor);
-    connect(m_btn_layout_logs, &QPushButton::clicked, this, [this]{ setWorkspaceLayout("logs_only"); });
+    connect(m_btn_layout_logs, &QPushButton::toggled, this, [this](bool) { updateWorkspaceLayoutFromSelection(); });
     layout_box->addWidget(m_btn_layout_logs);
 
     heading->addWidget(m_layout_switcher);
@@ -389,7 +369,7 @@ void MainWindow::setupUi() {
     horizontal->addWidget(main_area, 1);
 
     statusBar()->showMessage("连接设备后查看基本信息；点击「投屏」开始投屏");
-    setWorkspaceLayout("horizontal");
+    setWorkspaceLayout("mirror_only");
     m_info_nav->setChecked(true);
 }
 
@@ -1526,6 +1506,13 @@ QWidget* MainWindow::buildWorkspacePage() {
     log_tab_bar->addWidget(m_btn_log_tab_webview);
 
     log_tab_bar->addStretch(1);
+    m_btn_workspace_orientation = IconManager::button("上下", "WorkspaceOrientation", "layout_v");
+    m_btn_workspace_orientation->setIconSize(QSize(14, 14));
+    m_btn_workspace_orientation->setFixedHeight(28);
+    m_btn_workspace_orientation->setCursor(Qt::PointingHandCursor);
+    m_btn_workspace_orientation->setToolTip("切换为上下分屏");
+    connect(m_btn_workspace_orientation, &QPushButton::clicked, this, &MainWindow::toggleWorkspaceOrientation);
+    log_tab_bar->addWidget(m_btn_workspace_orientation);
     log_panel_layout->addLayout(log_tab_bar);
 
     m_log_subtab_stack = new QStackedWidget();
@@ -1619,7 +1606,7 @@ QWidget* MainWindow::buildHiLogWidget() {
     m_wireless_log_cb->setEnabled(false);
     m_wireless_log_cb->setFixedHeight(26);
     m_wireless_log_cb->setCursor(Qt::PointingHandCursor);
-    m_wireless_log_cb->setToolTip("分屏投屏时默认关闭，可手动开启；进入仅日志模式会自动开启采集");
+    m_wireless_log_cb->setToolTip("打开日志区域时自动开启，也可手动暂停无线日志采集");
     connect(m_wireless_log_cb, &QCheckBox::toggled, this, [this] { updateHiLogCollection(); });
 
     m_autoscroll_cb = new QCheckBox("自动滚动");
@@ -2339,12 +2326,15 @@ QWidget* MainWindow::buildHdcPanel() {
 // Workspace Layout Switching
 // ==========================================
 void MainWindow::setWorkspaceLayout(const QString& mode) {
-    if (mode != m_current_layout) m_log_only_default_target.clear();
+    if (mode != "horizontal" && mode != "vertical" && mode != "mirror_only" && mode != "logs_only") return;
+    if (mode != "mirror_only" && m_current_layout == "mirror_only") m_log_default_target.clear();
     m_current_layout = mode;
-    m_btn_layout_h->setChecked(mode == "horizontal");
-    m_btn_layout_v->setChecked(mode == "vertical");
-    m_btn_layout_screen->setChecked(mode == "mirror_only");
-    m_btn_layout_logs->setChecked(mode == "logs_only");
+    if (m_btn_layout_screen && m_btn_layout_logs) {
+        const QSignalBlocker screenBlocker(m_btn_layout_screen);
+        const QSignalBlocker logsBlocker(m_btn_layout_logs);
+        m_btn_layout_screen->setChecked(mode != "logs_only");
+        m_btn_layout_logs->setChecked(mode != "mirror_only");
+    }
 
     if (mode == "horizontal") {
         m_workspace_splitter->setOrientation(Qt::Horizontal);
@@ -2369,7 +2359,48 @@ void MainWindow::setWorkspaceLayout(const QString& mode) {
         if (m_projecting) stopMirror(false);
     }
 
+    updateWorkspaceOrientationControl();
     updateHiLogCollection();
+}
+
+void MainWindow::updateWorkspaceLayoutFromSelection() {
+    if (!m_btn_layout_screen || !m_btn_layout_logs) return;
+    if (!m_btn_layout_screen->isChecked() && !m_btn_layout_logs->isChecked()) {
+        // Keep the last selected pane visible instead of leaving an empty
+        // workspace or switching to an unrequested pane.
+        setWorkspaceLayout(m_current_layout);
+        return;
+    }
+    const bool enableMirror = m_current_layout == "logs_only" && m_btn_layout_screen->isChecked();
+    if (m_btn_layout_screen->isChecked() && m_btn_layout_logs->isChecked()) {
+        setWorkspaceLayout(m_workspace_splitter && m_workspace_splitter->orientation() == Qt::Vertical
+                               ? "vertical" : "horizontal");
+    } else if (m_btn_layout_screen->isChecked()) {
+        setWorkspaceLayout("mirror_only");
+    } else {
+        setWorkspaceLayout("logs_only");
+    }
+    const auto* device = findMatchingDevice(m_cached_devices, currentSerial());
+    if (enableMirror && m_pages->currentIndex() == 1 && device && device->state == DeviceState::Connected) startMirror();
+}
+
+void MainWindow::toggleWorkspaceOrientation() {
+    if (!m_workspace_splitter) return;
+    const bool vertical = m_workspace_splitter->orientation() == Qt::Vertical;
+    m_workspace_splitter->setOrientation(vertical ? Qt::Horizontal : Qt::Vertical);
+    if (m_btn_layout_screen && m_btn_layout_logs && m_btn_layout_screen->isChecked() && m_btn_layout_logs->isChecked()) {
+        m_current_layout = vertical ? "horizontal" : "vertical";
+    }
+    updateWorkspaceOrientationControl();
+}
+
+void MainWindow::updateWorkspaceOrientationControl() {
+    if (!m_btn_workspace_orientation || !m_workspace_splitter) return;
+    const bool vertical = m_workspace_splitter->orientation() == Qt::Vertical;
+    m_btn_workspace_orientation->setVisible(m_current_layout == "horizontal" || m_current_layout == "vertical");
+    m_btn_workspace_orientation->setText(vertical ? "左右" : "上下");
+    m_btn_workspace_orientation->setIcon(IconManager::getIcon(vertical ? "layout_h" : "layout_v"));
+    m_btn_workspace_orientation->setToolTip(vertical ? "切换为左右分屏" : "切换为上下分屏");
 }
 
 void MainWindow::switchLogSubtab(int index) {
@@ -3598,18 +3629,18 @@ void MainWindow::updateHiLogCollection() {
     const bool wireless = device && device->is_network;
     const bool inspecting = m_inspection_page && m_inspection_page->isRunning();
     const bool suspended = !serial.empty() && serial == m_hilog_suspended_target;
-    if (m_current_layout == "logs_only" && m_pages->currentIndex() == 1 && connected && wireless &&
-        !inspecting && !suspended && m_log_only_default_target != serial) {
-        m_log_only_default_target = serial;
+    const bool logsSelected = m_current_layout != "mirror_only" && m_pages->currentIndex() == 1;
+    if (logsSelected && connected && wireless && !inspecting && !suspended && m_log_default_target != serial) {
+        m_log_default_target = serial;
         const QSignalBlocker blocker(m_wireless_log_cb);
         m_wireless_log_cb->setChecked(true);
     }
     m_wireless_log_cb->setEnabled(wireless && connected && !inspecting && !suspended);
-    if (!connected || inspecting || suspended || (wireless && !m_wireless_log_cb->isChecked())) {
+    if (!logsSelected || !connected || inspecting || suspended || (wireless && !m_wireless_log_cb->isChecked())) {
         stopHiLogCollection();
         m_log_view->setPlaceholderText(inspecting ? QStringLiteral("批量巡检期间暂停日志采集") :
             !connected || suspended ? QStringLiteral("连接设备后可查看日志") :
-            QStringLiteral("无线日志默认关闭，勾选上方「无线日志」开始采集"));
+            QStringLiteral("无线日志采集已关闭，勾选上方「无线日志」继续采集"));
         return;
     }
     if (m_hilog && m_hilog->isActive()) return;
@@ -4775,7 +4806,7 @@ void MainWindow::openSettingsDialog() {
     uLayout->setSpacing(8);
 
     auto* verRow = new QHBoxLayout();
-    QString curVer = m_updater ? m_updater->currentVersion() : "2.3.3";
+    QString curVer = m_updater ? m_updater->currentVersion() : "2.3.4";
     auto* lblCurVer = new QLabel(QString("当前版本: v%1 (正式版)").arg(curVer));
     lblCurVer->setStyleSheet("color: #364254; font-size: 12px; font-weight: 500;");
     verRow->addWidget(lblCurVer, 1);
@@ -4874,7 +4905,7 @@ void MainWindow::onUpdateAvailable(const UpdateInfo& info, bool silent) {
 
 void MainWindow::onNoUpdateAvailable(bool silent) {
     if (!silent) {
-        QString curVer = m_updater ? m_updater->currentVersion() : "2.3.3";
+        QString curVer = m_updater ? m_updater->currentVersion() : "2.3.4";
         showToast(QString("当前已是最新版本 (v%1)").arg(curVer));
         statusBar()->showMessage(QString("当前已是最新版本 (v%1)").arg(curVer), 4000);
         QWidget* parentDlg = QApplication::activeModalWidget() ? QApplication::activeModalWidget() : this;

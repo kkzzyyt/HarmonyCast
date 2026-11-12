@@ -177,6 +177,10 @@ static void testTableScrolling(MainWindow& window) {
 }
 
 static void testLogScrollPosition(MainWindow& window) {
+    // The production default is screen-only; opt into the split workspace so
+    // log viewport scrolling is exercised on a visible panel.
+    check(QMetaObject::invokeMethod(&window, "setWorkspaceLayout", Qt::DirectConnection,
+                                    Q_ARG(QString, QString("horizontal"))), "log layout unavailable");
     QMetaObject::invokeMethod(&window, "switchModule", Qt::DirectConnection, Q_ARG(int, 1));
     auto* logs = window.findChild<QPlainTextEdit*>("LogView");
     std::vector<HiLogEntry> entries(400);

@@ -225,7 +225,7 @@ void CrashHandler::install() {
     std::wcsncpy(g_windows_marker_path, markerPath.toStdWString().c_str(), 511);
 #endif
 
-    snprintf(g_app_info, sizeof(g_app_info), "HarmonyCast v2.3.3 (Built %s %s)", __DATE__, __TIME__);
+    snprintf(g_app_info, sizeof(g_app_info), "HarmonyCast v2.3.4 (Built %s %s)", __DATE__, __TIME__);
 
 #ifdef _WIN32
     // Install Windows SEH unhandled exception filter

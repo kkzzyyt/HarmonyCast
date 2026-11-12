@@ -476,6 +476,10 @@ static void testPausedLogsAndBoundedConsole() {
     auto* pause = window.findChild<QCheckBox*>("PauseHiLog");
     auto* console = window.findChild<QPlainTextEdit*>("WebConsoleView");
     check(logs && pause && console, "log controls missing");
+    // The production default is screen-only; opt into the log surface before
+    // testing buffered display behavior.
+    check(QMetaObject::invokeMethod(&window, "setWorkspaceLayout", Qt::DirectConnection,
+                                    Q_ARG(QString, QString("horizontal"))), "log layout unavailable");
     QMetaObject::invokeMethod(&window, "switchModule", Qt::DirectConnection, Q_ARG(int, 1));
     pause->setChecked(true);
     HiLogEntry entry;
