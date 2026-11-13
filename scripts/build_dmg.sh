@@ -27,7 +27,35 @@ if [ ! -x "$MACDEPLOYQT_BIN" ]; then
 fi
 
 if [ -x "$MACDEPLOYQT_BIN" ]; then
+    QT_PLUGIN_ROOT="$(/opt/homebrew/bin/qtpaths --query QT_INSTALL_PLUGINS)"
+    PLUGIN_ARGS=()
+    # This is a Widgets app. Deploy its platform, image, icon and TLS plugins
+    # explicitly so unrelated PDF/QML plugins do not add unresolved frameworks.
+    for plugin in \
+        platforms/libqcocoa.dylib \
+        platforms/libqoffscreen.dylib \
+        imageformats/libqjpeg.dylib \
+        imageformats/libqsvg.dylib \
+        iconengines/libqsvgicon.dylib \
+        styles/libqmacstyle.dylib \
+        tls/libqsecuretransportbackend.dylib \
+        tls/libqcertonlybackend.dylib \
+        networkinformation/libqapplenetworkinformation.dylib; do
+        if [ -f "$QT_PLUGIN_ROOT/$plugin" ]; then
+            mkdir -p "$APP_IN_STAGING/Contents/PlugIns/$(dirname "$plugin")"
+            cp -L "$QT_PLUGIN_ROOT/$plugin" "$APP_IN_STAGING/Contents/PlugIns/$plugin"
+            PLUGIN_ARGS+=("-executable=$APP_IN_STAGING/Contents/PlugIns/$plugin")
+        fi
+    done
+    for required in platforms/libqcocoa.dylib imageformats/libqjpeg.dylib tls/libqsecuretransportbackend.dylib; do
+        if [ ! -f "$APP_IN_STAGING/Contents/PlugIns/$required" ]; then
+            echo "ERROR: Missing required Qt plugin: $required" >&2
+            exit 1
+        fi
+    done
     "$MACDEPLOYQT_BIN" "$APP_IN_STAGING" \
+        -no-plugins \
+        "${PLUGIN_ARGS[@]}" \
         -always-overwrite \
         -verbose=1 \
         -libpath=/opt/homebrew/opt/ffmpeg/lib \
