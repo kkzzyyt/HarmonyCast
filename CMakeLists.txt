@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(HarmonyCast VERSION 2.4.1 LANGUAGES CXX)
+project(HarmonyCast VERSION 2.4.2 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -329,6 +329,12 @@ target_link_libraries(test_harmonycast_android PRIVATE harmonycast_core)
 target_compile_definitions(test_harmonycast_android PRIVATE HARMONYCAST_TEST_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
 add_test(NAME AndroidCompatibilityTests COMMAND test_harmonycast_android)
 set_tests_properties(AndroidCompatibilityTests PROPERTIES TIMEOUT 60)
+
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME Api10CaptureTests COMMAND ${Python3_EXECUTABLE} -m unittest discover -s tests -p test_capture_api10.py)
+    set_tests_properties(Api10CaptureTests PROPERTIES TIMEOUT 60 WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+endif()
 
 set_tests_properties(CoreTests UpdateAssetTests PerformanceRegressionTests ConnectionRegressionTests InspectionTests ScrollingRegressionTests StreamRecoveryTests HiLogControlTests DevicePickerTests HdcCommandTests PROPERTIES TIMEOUT 60)
 set_tests_properties(CoreTests UpdateAssetTests PerformanceRegressionTests ConnectionRegressionTests

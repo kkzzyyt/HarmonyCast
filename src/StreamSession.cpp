@@ -11,6 +11,7 @@
 #include <QImage>
 #include <QPointer>
 #include <QRegularExpression>
+#include <QCryptographicHash>
 #include <QNetworkProxy>
 #include <iostream>
 #include <thread>
@@ -110,85 +111,94 @@ bool StreamSession::launchServerAsync(const std::shared_ptr<DeviceClient>& hdc,
     }
     if (res_uname.out.find("riscv") != std::string::npos) {
         arch = "riscv64";
+    } else if (res_uname.out.find("armv7") != std::string::npos || res_uname.out.find("armv8l") != std::string::npos) {
+        arch = "armv7";
     } else if (res_uname.out.find("aarch64") == std::string::npos && res_uname.out.find("arm64") == std::string::npos) {
         error = "设备架构没有匹配的原生采屏程序：" + QString::fromStdString(res_uname.out).trimmed();
         return false;
     }
 
-    QString bin_name = (arch == "riscv64") ? "harmonycast_capture_riscv64" : "harmonycast_capture_arm64";
-
-    QStringList candidates = {
-        QCoreApplication::applicationDirPath() + "/../Resources/capture/" + bin_name,
-        QCoreApplication::applicationDirPath() + "/resources/capture/" + bin_name,
-        QDir::currentPath() + "/resources/capture/" + bin_name,
-        QDir::currentPath() + "/../resources/capture/" + bin_name
-    };
-
-    QString local_bin;
-    for (const auto& path : candidates) {
-        if (QFile::exists(path)) {
-            local_bin = QDir::toNativeSeparators(QFileInfo(path).absoluteFilePath());
-            break;
-        }
-    }
-
-    std::string remote_bin = "/data/local/tmp/harmonycast_capture";
-    if (local_bin.isEmpty()) {
-        error = "缺少设备采屏程序 " + bin_name + "，请使用完整安装包";
+    const auto api_result = hdc->run({"shell", "param", "get", "const.ohos.apiversion"}, serial, 2000);
+    if (cancelled->load()) return false;
+    bool api_valid = false;
+    const int api = QString::fromStdString(api_result.out).trimmed().toInt(&api_valid);
+    api_valid = api_valid && api_result.success();
+    if (api_valid && api > 0 && api < 10) {
+        error = "设备 API 低于 10，尝试兼容截图";
         return false;
     }
-    {
-        QFileInfo linfo(local_bin);
-        qint64 local_size = linfo.size();
-        bool need_push = true;
+    const bool legacy_only = arch == "armv7" || (arch != "riscv64" && api_valid && api >= 10 && api < 12);
+    HC_LOG_INFO(QString("Capture device architecture=%1, API=%2").arg(QString::fromStdString(arch)).arg(api_valid ? api : 0));
 
-        // Fast-path: check if binary already exists on remote device with matching file size
-        auto check_res = hdc->run({"shell", "ls", "-l", remote_bin}, serial, 2000);
-        if (cancelled->load()) return false;
-        if (check_res.success() && !check_res.out.empty()) {
-            if (check_res.out.find(std::to_string(local_size)) != std::string::npos) {
-                need_push = false;
-            }
+    auto launch = [&](bool legacy) {
+        const auto bin_name = QString("harmonycast_capture_%1%2").arg(legacy ? "api10_" : "", QString::fromStdString(arch));
+        const QStringList candidates = {
+            QCoreApplication::applicationDirPath() + "/../Resources/capture/" + bin_name,
+            QCoreApplication::applicationDirPath() + "/resources/capture/" + bin_name,
+            QDir::currentPath() + "/resources/capture/" + bin_name,
+            QDir::currentPath() + "/../resources/capture/" + bin_name
+        };
+        QString local_bin;
+        for (const auto& path : candidates) {
+            if (QFile::exists(path)) { local_bin = QDir::toNativeSeparators(QFileInfo(path).absoluteFilePath()); break; }
         }
+        if (local_bin.isEmpty()) { error = "缺少设备采屏程序 " + bin_name + "，请使用完整安装包"; return false; }
 
-        if (need_push) {
-            auto sent = hdc->run({"file", "send", local_bin.toStdString(), remote_bin}, serial, 30000);
+        QString geometry;
+        if (legacy) {
+            const auto display = hdc->run({"shell", "hidumper", "-s", "DisplayManagerService", "-a", "-a"}, serial, 3000);
             if (cancelled->load()) return false;
-            if (commandFailed(sent)) {
-                error = "采屏程序传输失败：" + commandDetail(sent);
+            const auto text = QString::fromStdString(display.out);
+            const auto width = QRegularExpression(R"(\bwidth\s*[:=]?\s*(\d+))", QRegularExpression::CaseInsensitiveOption).match(text);
+            const auto height = QRegularExpression(R"(\bheight\s*[:=]?\s*(\d+))", QRegularExpression::CaseInsensitiveOption).match(text);
+            const int w = width.captured(1).toInt(), h = height.captured(1).toInt();
+            if (commandFailed(display) || w < 1 || h < 1 || w > 8192 || h > 8192) {
+                error = "API 10 兼容采屏无法读取有效屏幕尺寸：" + commandDetail(display);
                 return false;
             }
+            geometry = QString(" -w %1 -h %2").arg(w).arg(h);
         }
-        auto chmod = hdc->run({"shell", "chmod", "755", remote_bin}, serial, 3000);
+        const std::string remote_bin = legacy ? "/data/local/tmp/harmonycast_capture_api10" : "/data/local/tmp/harmonycast_capture";
+        QFile binary(local_bin);
+        if (!binary.open(QIODevice::ReadOnly)) { error = "无法读取采屏程序：" + binary.errorString(); return false; }
+        QCryptographicHash digest(QCryptographicHash::Sha256);
+        if (!digest.addData(&binary)) { error = "无法校验采屏程序"; return false; }
+        const auto hash = digest.result().toHex();
+        const auto remote_hash = hdc->run({"shell", "sha256sum", remote_bin}, serial, 2000);
         if (cancelled->load()) return false;
-        if (commandFailed(chmod)) {
-            error = "采屏程序无法设置执行权限：" + commandDetail(chmod);
+        // Older tools without sha256sum simply receive a fresh binary.
+        if (!remote_hash.success() || !QByteArray::fromStdString(remote_hash.out).trimmed().startsWith(hash + " ")) {
+            const auto sent = hdc->run({"file", "send", local_bin.toStdString(), remote_bin}, serial, 30000);
+            if (cancelled->load()) return false;
+            if (commandFailed(sent)) { error = "采屏程序传输失败：" + commandDetail(sent); return false; }
+        }
+        const auto chmod = hdc->run({"shell", "chmod", "755", remote_bin}, serial, 3000);
+        if (cancelled->load()) return false;
+        if (commandFailed(chmod)) { error = "采屏程序无法设置执行权限：" + commandDetail(chmod); return false; }
+        hdc->run({"shell", "killall -9 harmonycast_capture harmonycast_capture_api10 2>/dev/null"}, serial, 1500);
+        if (cancelled->load()) return false;
+        const auto cmd = QString("nohup %1 -p %2 -f %3 -b %4%5%6 >/data/local/tmp/harmonycast_capture_start.log 2>&1 & "
+                                 "pid=$!; sleep 1; if kill -0 \"$pid\" 2>/dev/null; then echo __HC_CAPTURE_READY__; "
+                                 "else echo __HC_CAPTURE_FAILED__; cat /data/local/tmp/harmonycast_capture_start.log; fi")
+            .arg(QString::fromStdString(remote_bin)).arg(remote_port).arg(fps).arg(bitrate)
+            .arg(max_size > 0 ? QString(" -m %1").arg(max_size) : "").arg(geometry).toStdString();
+        const auto result = hdc->run({"shell", cmd}, serial, 3000);
+        if (cancelled->load()) return false;
+        const auto lines = QString::fromStdString(result.out).replace('\r', "").split('\n');
+        if (commandFailed(result) || !lines.contains("__HC_CAPTURE_READY__")) {
+            error = "设备采屏程序未能启动：" + commandDetail(result);
             return false;
         }
-    }
-
-    // Kill any previous capture instances
-    hdc->run({"shell", "pkill -9 harmonycast_capture 2>/dev/null; killall -9 harmonycast_capture 2>/dev/null; pkill -9 harmonycast_capture_arm64 2>/dev/null; killall -9 harmonycast_capture_arm64 2>/dev/null"}, serial, 1500);
-    if (cancelled->load()) return false;
-
-    // Launch remote capture server in background with output redirected to avoid blocking hdc shell
-    std::string cmd = QString("nohup %1 -p %2 -f %3 -b %4%5 >/data/local/tmp/harmonycast_capture_start.log 2>&1 & "
-                             "pid=$!; sleep 1; if kill -0 \"$pid\" 2>/dev/null; then echo __HC_CAPTURE_READY__; "
-                             "else echo __HC_CAPTURE_FAILED__; cat /data/local/tmp/harmonycast_capture_start.log; fi")
-                          .arg(QString::fromStdString(remote_bin))
-                          .arg(remote_port)
-                          .arg(fps)
-                          .arg(bitrate)
-                          .arg(max_size > 0 ? QString(" -m %1").arg(max_size) : "")
-                          .toStdString();
-    auto res = hdc->run({"shell", cmd}, serial, 3000);
-    if (cancelled->load()) return false;
-    QStringList lines = QString::fromStdString(res.out).replace('\r', "").split('\n');
-    if (commandFailed(res) || !lines.contains("__HC_CAPTURE_READY__")) {
-        error = "设备采屏程序未能启动：" + commandDetail(res);
-        return false;
-    }
-    return true;
+        HC_LOG_INFO("Native capture service selected: " + bin_name);
+        return true;
+    };
+    if (legacy_only) return launch(true);
+    if (launch(false)) return true;
+    if (cancelled->load() || arch == "riscv64") return false;
+    const auto modern_error = error;
+    if (launch(true)) return true;
+    error = modern_error + "\nAPI 10 兼容服务：" + error;
+    return false;
 }
 
 bool StreamSession::start() {
@@ -341,7 +351,7 @@ void StreamSession::cleanup() {
         if (local_port > 0) {
             hdc->removeForward(serial, local_port, remote_port);
         }
-        hdc->run({"shell", "killall", "-9", "harmonycast_capture", "2>/dev/null"}, serial, 1000);
+        hdc->run({"shell", "killall -9 harmonycast_capture harmonycast_capture_api10 2>/dev/null"}, serial, 1000);
     }).detach();
 }
 

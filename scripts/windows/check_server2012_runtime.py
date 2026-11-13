@@ -18,6 +18,8 @@ REQUIRED_FILES = (
     "avcodec-60.dll", "avutil-58.dll", "swscale-7.dll",
     "msvcp140.dll", "vcruntime140.dll", "ucrtbase.dll",
     "resources/hdc/hdc.exe", "resources/hdc/libusb_shared.dll",
+    "resources/capture/harmonycast_capture_api10_arm64",
+    "resources/capture/harmonycast_capture_api10_armv7",
 )
 WINDOWS10_IMPORTS = {
     "GetDpiForWindow", "GetDpiForSystem", "GetSystemDpiForProcess",

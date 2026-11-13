@@ -25,6 +25,8 @@ REQUIRED_FILES = (
     "D3Dcompiler_47.dll",
     "resources/hdc/hdc.exe",
     "resources/hdc/libusb_shared.dll",
+    "resources/capture/harmonycast_capture_api10_arm64",
+    "resources/capture/harmonycast_capture_api10_armv7",
     "resources/adb/windows-x64/adb.exe",
     "resources/adb/windows-x64/AdbWinApi.dll",
     "resources/adb/windows-x64/AdbWinUsbApi.dll",

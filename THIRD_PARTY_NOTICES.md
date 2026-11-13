@@ -13,6 +13,7 @@ and `NOTICE`. The files below retain their original licenses and attribution.
 - Reused assets: Darwin ARM64 HDC and libusb, ARM32 RK3568 and ARM64 HarmonyOS server binaries, and `ohscrcpy_server.cfg`.
 - The wrapper fixes macOS HDC argument handling and implements its own bounded packet receiver, process ownership, compatibility preview, log tools, and Qt user interface.
 - `native/capture_server.c` and the RISC-V startup entry are new HarmonyCast components. They use the device's public OpenHarmony C APIs for continuous capture, H.264 surface encoding, and RGBA fallback. Device system libraries are used for linking and are not redistributed.
+- `native/capture_server_api10.c` is the API 10 continuous RGBA capture service, built for ARM64 and ARMv7 using only public API 9/10 functions. Its binaries are checked by `scripts/check_capture_api10.py`; system libraries are not redistributed.
 
 ## Bundled HDC and libusb build inputs
 

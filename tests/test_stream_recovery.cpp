@@ -26,7 +26,7 @@ static void check(bool condition, const char* message) {
     if (!condition) throw std::runtime_error(message);
 }
 
-template<class Predicate> static void waitUntil(Predicate predicate, int timeout = 6000) {
+template<class Predicate> static void waitUntil(Predicate predicate, int timeout = 8000) {
     QElapsedTimer timer;
     timer.start();
     while (!predicate() && timer.elapsed() < timeout) {
@@ -230,7 +230,8 @@ static void testSnapshotFailures(const char* mode, const QString& expected, int 
     QObject::connect(&session, &StreamSession::frameReady, &session, [&](const DecodedFrame&) { ++frames; });
     QObject::connect(&session, &StreamSession::streamFinished, &session, [&](const QString& text) { failure = text; });
     session.start();
-    waitUntil([&] { return !failure.isEmpty(); }, 5000);
+    // Both native services can be tried before the snapshot watchdog starts.
+    waitUntil([&] { return !failure.isEmpty(); }, 8000);
     check(!session.isActive() && failure.contains(expected), "snapshot failure loses its stage or leaves the session running");
     check(validFrames == 0 ? frames == 0 : frames > 0 && frames <= validFrames,
           "failed capture or transfer reused a stale local/remote image");
@@ -250,7 +251,9 @@ static void testLegacySnapshotResize(const char* mode = "snapshot-no-resize") {
     session.start();
     waitUntil([&] { return frames >= 3; });
     check(failure.isEmpty() && session.isActive(), "legacy screenshot tool cannot recover without resize options");
-    check(commandLog().count(" -w ") == 1, "unsupported resize options keep being sent to the device");
+    int resizeCalls = 0;
+    for (const auto& line : commandLog().split('\n')) if (line.contains("snapshot_display") && line.contains(" -w ")) ++resizeCalls;
+    check(resizeCalls == 1, "unsupported resize options keep being sent to the device");
     session.stop();
 }
 
@@ -352,6 +355,27 @@ static void testSlowFileOnlyDevice() {
     check(!capture.next().image.isNull(), "slow file-only device lost its existing transfer timeout budget");
 }
 
+static void testApi10NativeLaunch(const char* mode, const char* binary, bool legacy = true) {
+    resetCommands(mode);
+    QTcpServer server;
+    check(server.listen(QHostAddress::LocalHost, 0), "API 10 test stream unavailable");
+    QObject::connect(&server, &QTcpServer::newConnection, &server, [&] {
+        auto* peer = server.nextPendingConnection(); peer->setParent(&server); peer->write(rawFrame());
+    });
+    StreamSession session(fakeClient(), testDevice(), 60, 8000000, 0, nullptr, {5000, 1500});
+    bool frame = false;
+    QObject::connect(&session, &StreamSession::frameReady, &session, [&](const DecodedFrame&) { frame = true; });
+    session.start();
+    waitUntil([&] { return commandLog().contains(legacy ? "nohup /data/local/tmp/harmonycast_capture_api10" : "nohup"); });
+    const auto calls = commandLog();
+    check(calls.contains(binary) && (!legacy || calls.contains(" -w 720 -h 1280")), "API 10 did not select a compatible service with display geometry");
+    auto* socket = session.findChild<QTcpSocket*>();
+    socket->abort(); socket->connectToHost(QHostAddress::LocalHost, server.serverPort());
+    waitUntil([&] { return frame; });
+    check(!session.isFallbackSnapshot(), "API 10 native stream immediately downgraded to snapshots");
+    session.stop();
+}
+
 static int fakeHdc(int argc, char** argv) {
     QStringList args;
     for (int i = 1; i < argc; ++i) args << QString::fromUtf8(argv[i]);
@@ -381,7 +405,9 @@ static int fakeHdc(int argc, char** argv) {
     else if (args.contains("send")) {
         if (qgetenv("HC_STREAM_TEST_MODE") == "push-failed") std::cout << "[Fail]file transfer denied\n";
         else std::cout << "FileTransfer finish\n";
-    } else if (args.contains("uname")) std::cout << "aarch64\n";
+    } else if (args.contains("uname")) std::cout << (mode == "api10-riscv64" ? "riscv64\n" : mode == "api10-armv7" ? "armv7l\n" : "aarch64\n");
+    else if (args.join(' ').contains("const.ohos.apiversion")) std::cout << (mode == "api-unknown-legacy" ? "unknown\n" : mode == "api11-arm64" ? "11\n" : mode.startsWith("api10-") ? "10\n" : "12\n");
+    else if (args.join(' ').contains("DisplayManagerService")) std::cout << "displayId: 0, width=720, height=1280, rotation=0\n";
     else if (args.contains("recv") && mode.startsWith("snapshot-")) {
         const int index = args.indexOf("recv");
         if (index + 2 >= args.size()) return 1;
@@ -407,7 +433,7 @@ static int fakeHdc(int argc, char** argv) {
         if (mode.startsWith("snapshot-")) std::cout << "snapshot success\n";
         else { std::cerr << "snapshot unavailable\n"; return 1; }
     } else if (args.contains("shell") && args.last().contains("nohup")) {
-        if (mode.startsWith("snapshot-")) {
+        if (mode.startsWith("snapshot-") || (mode == "api-unknown-legacy" && !args.last().contains("harmonycast_capture_api10"))) {
             std::cout << "__HC_CAPTURE_FAILED__\nError loading shared library libnative_display_manager.so: No such file or directory\n"
                          "Error relocating harmonycast_capture: OH_AVScreenCapture_SetDataCallback: symbol not found\n";
         } else std::cout << "__HC_CAPTURE_READY__\n";
@@ -467,6 +493,11 @@ int main(int argc, char** argv) {
         testSnapshotTextValidation();
         testPngWithoutJpegPlugin();
         testSlowFileOnlyDevice();
+        testApi10NativeLaunch("api10-arm64", "harmonycast_capture_api10_arm64");
+        testApi10NativeLaunch("api10-armv7", "harmonycast_capture_api10_armv7");
+        testApi10NativeLaunch("api11-arm64", "harmonycast_capture_api10_arm64");
+        testApi10NativeLaunch("api-unknown-legacy", "harmonycast_capture_api10_arm64");
+        testApi10NativeLaunch("api10-riscv64", "harmonycast_capture_riscv64", false);
         std::cout << "Stream recovery tests passed\n";
         return 0;
     } catch (const std::exception& error) {

@@ -1,5 +1,15 @@
 # Windows 投屏黑屏排查
 
+## API 10 / 11 设备（2.4.2）
+
+客户端先读取 `const.ohos.apiversion` 和 CPU 架构。API 10/11 的 ARM64 与 ARMv7 设备会自动使用独立的 API 10 连续采屏服务。该服务使用 `OH_AVScreenCapture_SetCallback`、`AcquireVideoBuffer` 和 `ReleaseVideoBuffer`，不需要 API 12 的 `libnative_display_manager.so`、`SetDataCallback` 或 `StartScreenCaptureWithSurface`。
+
+屏幕尺寸通过已有的 `hidumper -s DisplayManagerService -a -a` 获取，避免在设备进程中强制加载新版显示接口。无法读取有效尺寸、服务启动失败或没有采屏权限时会继续尝试截图，并记录原因。API 无法识别或新采屏程序无法启动时，也会尝试 API 10 服务。
+
+API 10 服务发送连续 RGBA 图像，由电脑显示，不调用设备端 H.264 编码器。为控制原始图像带宽，帧率上限为 10 FPS、图像长边上限为 1280 像素；实际速度取决于 HDC 和设备性能。缩放保留原始屏幕尺寸用于触控映射。横竖屏、厂商固件及采屏权限仍需真机验证。
+
+开发者可通过 `bash scripts/build_api10_capture.sh` 重建 ARM64/ARMv7 程序，使用 `HARMONYCAST_SDK` 指定 OpenHarmony Native SDK。脚本会检查 ELF 的架构、系统库依赖和原生函数导入，确保未引入 API 12 接口。`Api10CaptureTests` 同时验证发布二进制及模拟 API 10 的取帧和释放流程。
+
 设备信息和 HiLog 能读取时，说明基础 HDC 通道可用。投屏仍需完成设备采屏程序传输与启动、视频端口映射、视频握手和解码，任何一段失败都可能没有画面。
 
 ## 不同 Windows 环境

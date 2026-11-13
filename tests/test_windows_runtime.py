@@ -194,6 +194,8 @@ class TestWindowsGenericRuntimeGate(unittest.TestCase):
             "msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll",
             "opengl32sw.dll", "D3Dcompiler_47.dll",
             "resources/hdc/hdc.exe", "resources/hdc/libusb_shared.dll",
+            "resources/capture/harmonycast_capture_api10_arm64",
+            "resources/capture/harmonycast_capture_api10_armv7",
             "resources/adb/windows-x64/adb.exe", "resources/adb/windows-x64/AdbWinApi.dll",
             "resources/adb/windows-x64/AdbWinUsbApi.dll", "resources/adb/windows-x64/libwinpthread-1.dll",
             "resources/servers/android/scrcpy-server-v5.0.1",
@@ -226,6 +228,8 @@ class TestWindowsGenericRuntimeGate(unittest.TestCase):
             "imageformats/qjpeg.dll",
             "vcruntime140_1.dll",
             "resources/hdc/libusb_shared.dll",
+            "resources/capture/harmonycast_capture_api10_arm64",
+            "resources/capture/harmonycast_capture_api10_armv7",
         ):
             with self.subTest(name=name):
                 path = self.root / name
