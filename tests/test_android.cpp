@@ -260,7 +260,7 @@ static void testNativeSession(bool workbench = false) {
         MainWindow window(nullptr, false, "/missing/hdc", QCoreApplication::applicationFilePath().toStdString());
         std::vector<Device> devices{androidDevice()};
         check(QMetaObject::invokeMethod(&window, "onDevicesUpdated", Qt::DirectConnection,
-            Q_ARG(std::vector<harmonycast::Device>, devices)), "workbench discovery unavailable");
+            Q_ARG(std::vector<Device>, devices)), "workbench discovery unavailable");
         check(QMetaObject::invokeMethod(&window, "switchModule", Qt::DirectConnection, Q_ARG(int, 1)), "mirror module unavailable");
         window.show();
         check(QMetaObject::invokeMethod(&window, "startMirror", Qt::DirectConnection), "mirror action unavailable");
@@ -375,7 +375,7 @@ static void testPlatformSelection() {
     Device android = oh; android.platform = DevicePlatform::Android;
     std::vector<Device> devices{oh, android};
     check(QMetaObject::invokeMethod(&window, "onDevicesUpdated", Qt::DirectConnection,
-        Q_ARG(std::vector<harmonycast::Device>, devices)), "device discovery slot unavailable");
+        Q_ARG(std::vector<Device>, devices)), "device discovery slot unavailable");
     auto* picker = window.findChild<DeviceSelector*>("DeviceSelector");
     auto* mode = window.findChild<QComboBox*>("HdcCommandMode");
     check(picker && mode && picker->findData("same-usb") >= 0 && picker->findData("android:same-usb") >= 0,
