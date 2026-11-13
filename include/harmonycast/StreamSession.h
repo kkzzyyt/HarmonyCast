@@ -25,7 +25,6 @@ struct SnapshotWorkerContext {
     std::atomic<int> target_height{0};
     std::shared_ptr<DeviceClient> hdc;
     std::string serial;
-    uintptr_t session_id{0};
     std::mutex presentation_mutex;
     std::mutex diagnostic_mutex;
     QString progress_detail;

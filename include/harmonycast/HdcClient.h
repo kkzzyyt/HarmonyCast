@@ -28,12 +28,14 @@ public:
     static CommandResult runProcess(const std::string& hdc_path,
                                     const std::vector<std::string>& args,
                                     const std::string& serial = "",
-                                    int timeout_ms = 10000);
+                                    int timeout_ms = 10000, int max_output_bytes = 0);
     static void configureProcess(QProcess& process, const std::string& hdc_path);
 
     CommandResult run(const std::vector<std::string>& args,
                       const std::string& serial = "",
                       int timeout_ms = 10000) const override;
+    CommandResult runWithOutputLimit(const std::vector<std::string>& args, const std::string& serial,
+                                     int timeout_ms, int max_bytes) const override;
 
     void executeAsync(const std::vector<std::string>& args,
                       const std::string& serial,

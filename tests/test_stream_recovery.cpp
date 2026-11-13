@@ -3,6 +3,7 @@
 #include "harmonycast/Logger.h"
 #include "harmonycast/ScreenView.h"
 #include "harmonycast/IconManager.h"
+#include "harmonycast/SnapshotCapture.h"
 #include <QApplication>
 #include <QElapsedTimer>
 #include <QFile>
@@ -14,6 +15,7 @@
 #include <QThread>
 #include <QTimer>
 #include <QNetworkProxy>
+#include <QImageReader>
 #include <iostream>
 #include <cstring>
 #include <stdexcept>
@@ -276,6 +278,80 @@ static void testDestroyDuringSnapshotTransfer() {
     waitUntil([&] { return elapsed.elapsed() > 800; });
 }
 
+static void testAdditionalSnapshotRecovery(const char* mode, bool expectUitest = false) {
+    resetCommands(mode);
+    StreamSession session(fakeClient(), testDevice(), 60, 8000000, 0, nullptr, {4000, 1500});
+    int frames = 0;
+    QObject::connect(&session, &StreamSession::frameReady, &session, [&](const DecodedFrame& frame) {
+        check(frame.source_width == 720 && frame.source_height == 1280, "compatibility source dimensions lost");
+        ++frames;
+    });
+    session.start(); waitUntil([&] { return frames >= 2; }, 7000);
+    const auto calls = commandLog();
+    check(session.isFallbackSnapshot(), "additional screenshot recovery did not enter compatibility mode");
+    if (expectUitest) check(calls.contains("uitest screenCap -p"), "alternate PNG screenshot command was not used");
+    if (QByteArray(mode) == "snapshot-text-recovery") {
+        check(calls.contains("base64") && calls.count("file recv") <= 1, "failed Windows file transfer is retried instead of selecting text delivery");
+    }
+    session.stop();
+}
+
+static void testSlowFirstSnapshot() {
+    resetCommands("snapshot-destroy-transfer");
+    StreamSession session(fakeClient(), testDevice(), 60, 8000000, 0, nullptr, {4000, 350});
+    bool frame = false;
+    QObject::connect(&session, &StreamSession::frameReady, &session, [&](const DecodedFrame&) { frame = true; });
+    session.start(); waitUntil([&] { return frame; });
+    check(session.isActive(), "first compatibility frame uses the short steady-state deadline");
+    session.stop();
+}
+
+static void testSnapshotImageValidation() {
+    QFile jpeg(QString::fromUtf8(qgetenv("HC_STREAM_TEST_JPEG")));
+    QFile png(QString::fromUtf8(qgetenv("HC_STREAM_TEST_PNG")));
+    check(jpeg.open(QIODevice::ReadOnly) && png.open(QIODevice::ReadOnly), "snapshot validation fixtures unavailable");
+    const auto jpegBytes = jpeg.readAll(), pngBytes = png.readAll();
+    check(!SnapshotCapture::decodeImage(jpegBytes).isNull() && !SnapshotCapture::decodeImage(pngBytes).isNull(),
+          "compatibility image signature detection failed");
+    check(SnapshotCapture::decodeImage(pngBytes.left(pngBytes.size() - 1)).isNull() &&
+          SnapshotCapture::decodeImage(jpegBytes.left(jpegBytes.size() - 1)).isNull(), "truncated snapshot was accepted");
+    resetCommands("snapshot-text-recovery");
+    const auto bounded = fakeClient()->runWithOutputLimit({"shell", "base64"}, testDevice().serial, 2000, 1024);
+    check(bounded.exit_code == -4 && bounded.out.empty(), "screenshot text transport has no output bound");
+}
+
+static void testSnapshotTextValidation() {
+    for (const auto* mode : {"snapshot-text-malformed", "snapshot-text-truncated", "snapshot-text-missing-end", "snapshot-text-error-suffix"}) {
+        resetCommands(mode);
+        std::atomic<bool> cancelled{false};
+        SnapshotCapture capture(fakeClient(), testDevice().serial, cancelled, [](const QString&) {});
+        const auto result = capture.next();
+        check(result.image.isNull() && !result.error.isEmpty(), "invalid shell screenshot was displayed");
+        check(!result.detail.contains("__HC_IMAGE_BEGIN__"), "encoded screenshot leaked into diagnostic details");
+    }
+    resetCommands("snapshot-text-toybox");
+    std::atomic<bool> cancelled{false};
+    SnapshotCapture capture(fakeClient(), testDevice().serial, cancelled, [](const QString&) {});
+    for (int i = 0; i < 2; ++i) {
+        const auto result = capture.next();
+        check(!result.image.isNull() && result.route.contains("toybox base64"), "toybox text transport did not recover");
+    }
+    check(commandLog().count("; base64 ") == 1, "unavailable base64 encoder is retried for each frame");
+}
+
+static void testPngWithoutJpegPlugin() {
+    resetCommands("snapshot-uitest-only");
+    const auto probe = HdcClient::runProcess(QCoreApplication::applicationFilePath().toStdString(), {"--png-only-probe"}, "", 6000);
+    check(probe.success(), "PNG recovery failed without the JPEG plugin");
+}
+
+static void testSlowFileOnlyDevice() {
+    resetCommands("snapshot-long-file-transfer");
+    std::atomic<bool> cancelled{false};
+    SnapshotCapture capture(fakeClient(), testDevice().serial, cancelled, [](const QString&) {});
+    check(!capture.next().image.isNull(), "slow file-only device lost its existing transfer timeout budget");
+}
+
 static int fakeHdc(int argc, char** argv) {
     QStringList args;
     for (int i = 1; i < argc; ++i) args << QString::fromUtf8(argv[i]);
@@ -284,7 +360,24 @@ static int fakeHdc(int argc, char** argv) {
         QFile file(QString::fromUtf8(qgetenv("HC_STREAM_TEST_CALLS")));
         if (file.open(QIODevice::WriteOnly | QIODevice::Append)) file.write(args.join(' ').toUtf8() + '\n');
     }
-    if (args.contains("fport")) std::cout << "Forwardport result:OK\n";
+    if (args.join(' ').contains("base64") && mode.startsWith("snapshot-text-")) {
+        if (mode == "snapshot-text-toybox" && !args.join(' ').contains("toybox base64")) {
+            std::cerr << "base64: not found\n"; return 127;
+        }
+        QFile file(QString::fromUtf8(qgetenv(mode == "snapshot-text-png" ? "HC_STREAM_TEST_PNG" : "HC_STREAM_TEST_JPEG")));
+        if (!file.open(QIODevice::ReadOnly)) return 1;
+        auto bytes = file.readAll();
+        if (mode == "snapshot-text-truncated") bytes.chop(1);
+        auto encoded = bytes.toBase64();
+        if (mode == "snapshot-text-malformed") encoded.insert(encoded.size() / 2, '!');
+        std::cout << "__HC_IMAGE_BEGIN__\r\n" << encoded.constData();
+        if (mode != "snapshot-text-missing-end") std::cout << "\r\n__HC_IMAGE_END__\r\n";
+        if (mode == "snapshot-text-error-suffix") std::cout << "[Fail] transfer failed\n";
+    } else if (args.join(' ').contains("uitest screenCap")) {
+        if (mode == "snapshot-uitest-only") std::cout << "Screen capture saved\n";
+        else if (mode == "snapshot-permission" || mode == "snapshot-denied-zero") { std::cerr << "uitest: permission denied\n"; return 1; }
+        else { std::cerr << "uitest: not found\n"; return 127; }
+    } else if (args.contains("fport")) std::cout << "Forwardport result:OK\n";
     else if (args.contains("send")) {
         if (qgetenv("HC_STREAM_TEST_MODE") == "push-failed") std::cout << "[Fail]file transfer denied\n";
         else std::cout << "FileTransfer finish\n";
@@ -292,18 +385,20 @@ static int fakeHdc(int argc, char** argv) {
     else if (args.contains("recv") && mode.startsWith("snapshot-")) {
         const int index = args.indexOf("recv");
         if (index + 2 >= args.size()) return 1;
-        if (mode == "snapshot-recv-denied") { std::cout << "[Fail] FileTransfer rejected\n"; return 0; }
+        if (mode == "snapshot-recv-denied" || mode.startsWith("snapshot-text-")) { std::cout << "[Fail] FileTransfer rejected\n"; return 0; }
         if (mode == "snapshot-slow-transfer") QThread::msleep(1800);
+        if (mode == "snapshot-long-file-transfer") QThread::msleep(4000);
         if (mode == "snapshot-destroy-transfer") QThread::msleep(600);
         if (mode == "snapshot-stale" && commandLog().count("file recv") > 2) return 0;
         if (mode == "snapshot-invalid-image") {
             QFile file(args[index + 2]);
             if (file.open(QIODevice::WriteOnly)) file.write("incomplete JPEG");
-        } else QFile::copy(QString::fromUtf8(qgetenv("HC_STREAM_TEST_JPEG")), args[index + 2]);
+        } else QFile::copy(QString::fromUtf8(qgetenv(mode == "snapshot-uitest-only" || mode == "snapshot-png-payload" ?
+            "HC_STREAM_TEST_PNG" : "HC_STREAM_TEST_JPEG")), args[index + 2]);
     } else if (args.join(' ').contains("snapshot_display")) {
         if (mode == "snapshot-permission") { std::cout << "[Fail] snapshot permission denied\n"; return 0; }
         if (mode == "snapshot-denied-zero") { std::cerr << "snapshot_display: Operation not permitted\n"; return 0; }
-        if (mode.startsWith("snapshot-missing")) {
+        if (mode.startsWith("snapshot-missing") || mode == "snapshot-uitest-only") {
             std::cerr << "/bin/sh: snapshot_display: not found\n"; return mode.endsWith("zero") ? 0 : 127;
         }
         if (mode.startsWith("snapshot-no-resize") && args.join(' ').contains(" -w ")) {
@@ -321,16 +416,27 @@ static int fakeHdc(int argc, char** argv) {
 }
 
 int main(int argc, char** argv) {
-    if (argc > 1) return fakeHdc(argc, argv);
+    const bool pngProbe = argc == 2 && std::strcmp(argv[1], "--png-only-probe") == 0;
+    if (argc > 1 && !pngProbe) return fakeHdc(argc, argv);
     if (!qEnvironmentVariableIsSet("HC_STREAM_TEST_NATIVE")) qputenv("QT_QPA_PLATFORM", "offscreen");
     QApplication app(argc, argv);
+    if (pngProbe) {
+        QCoreApplication::setLibraryPaths({});
+        if (QImageReader::supportedImageFormats().contains("jpeg")) return 2;
+        std::atomic<bool> cancelled{false};
+        SnapshotCapture capture(fakeClient(), testDevice().serial, cancelled, [](const QString&) {});
+        const auto result = capture.next();
+        return !result.image.isNull() && result.route.contains("uitest screenCap") ? 0 : 3;
+    }
     QTemporaryDir temporary;
     qputenv("HC_STREAM_TEST_DIR", temporary.path().toUtf8());
     qputenv("HC_STREAM_TEST_CALLS", temporary.filePath("commands.log").toUtf8());
     qputenv("HC_STREAM_TEST_JPEG", temporary.filePath("snapshot.jpeg").toUtf8());
+    qputenv("HC_STREAM_TEST_PNG", temporary.filePath("snapshot.png").toUtf8());
     QImage fixture(720, 1280, QImage::Format_RGB32);
     fixture.fill(Qt::gray);
     check(fixture.save(QString::fromUtf8(qgetenv("HC_STREAM_TEST_JPEG")), "JPEG"), "snapshot fixture unavailable");
+    check(fixture.save(QString::fromUtf8(qgetenv("HC_STREAM_TEST_PNG")), "PNG"), "PNG snapshot fixture unavailable");
     Logger::init(temporary.filePath("logs"));
     try {
         testSoftwareMode();
@@ -352,6 +458,15 @@ int main(int argc, char** argv) {
         testUnavailableHdc();
         testSnapshotTransferTimeout();
         testDestroyDuringSnapshotTransfer();
+        testAdditionalSnapshotRecovery("snapshot-png-payload");
+        testAdditionalSnapshotRecovery("snapshot-text-recovery");
+        testAdditionalSnapshotRecovery("snapshot-text-png");
+        testAdditionalSnapshotRecovery("snapshot-uitest-only", true);
+        testSlowFirstSnapshot();
+        testSnapshotImageValidation();
+        testSnapshotTextValidation();
+        testPngWithoutJpegPlugin();
+        testSlowFileOnlyDevice();
         std::cout << "Stream recovery tests passed\n";
         return 0;
     } catch (const std::exception& error) {

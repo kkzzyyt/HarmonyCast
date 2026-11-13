@@ -114,12 +114,24 @@ void HdcClient::configureProcess(QProcess& process, const std::string& hdc_path)
 CommandResult HdcClient::runProcess(const std::string& hdc_path,
                                     const std::vector<std::string>& args,
                                     const std::string& serial,
-                                    int timeout_ms) {
+                                    int timeout_ms, int max_output_bytes) {
+    QByteArray output, errors;
+    bool oversized = false;
     QProcess process;
     configureProcess(process, hdc_path);
     QStringList qargs;
     if (!serial.empty()) qargs << "-t" << QString::fromStdString(deviceSerial(serial));
     for (const auto& arg : args) qargs << QString::fromStdString(arg);
+    const auto collect = [&] {
+        const auto out = process.readAllStandardOutput();
+        const auto err = process.readAllStandardError();
+        if (max_output_bytes > 0 && output.size() + errors.size() + out.size() + err.size() > max_output_bytes) {
+            oversized = true; process.kill(); return;
+        }
+        output += out; errors += err;
+    };
+    QObject::connect(&process, &QProcess::readyReadStandardOutput, &process, collect);
+    QObject::connect(&process, &QProcess::readyReadStandardError, &process, collect);
 
     process.start(QString::fromStdString(hdc_path), qargs);
     if (!process.waitForStarted(2000)) {
@@ -132,10 +144,12 @@ CommandResult HdcClient::runProcess(const std::string& hdc_path,
         return {-2, "", "HDC command timed out after " + std::to_string(timeout_ms) + " ms"};
     }
 
+    collect();
+    if (oversized) return {-4, {}, "HDC 返回内容超过截图传输限制"};
     CommandResult res;
     res.exit_code = process.exitCode();
-    res.out = QString::fromUtf8(process.readAllStandardOutput()).toStdString();
-    res.err = QString::fromUtf8(process.readAllStandardError()).toStdString();
+    res.out = QString::fromUtf8(output).toStdString();
+    res.err = QString::fromUtf8(errors).toStdString();
     if (process.exitStatus() != QProcess::NormalExit) {
         res.err += "\nHDC process terminated unexpectedly (exit=" + std::to_string(res.exit_code) + ")";
         res.exit_code = -3;
@@ -147,6 +161,11 @@ CommandResult HdcClient::run(const std::vector<std::string>& args,
                              const std::string& serial,
                              int timeout_ms) const {
     return runProcess(m_hdc_path, args, serial, timeout_ms);
+}
+
+CommandResult HdcClient::runWithOutputLimit(const std::vector<std::string>& args, const std::string& serial,
+                                           int timeout_ms, int max_bytes) const {
+    return runProcess(m_hdc_path, args, serial, timeout_ms, max_bytes);
 }
 
 std::vector<std::string> HdcClient::commandArguments(QString input, bool shellByDefault) {

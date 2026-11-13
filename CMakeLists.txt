@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(HarmonyCast VERSION 2.4.0 LANGUAGES CXX)
+project(HarmonyCast VERSION 2.4.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -101,6 +101,7 @@ set(CORE_HEADERS
     include/harmonycast/HiLogParser.h
     include/harmonycast/HiLogSession.h
     include/harmonycast/StreamSession.h
+    include/harmonycast/SnapshotCapture.h
     include/harmonycast/FlowLayout.h
     include/harmonycast/IconManager.h
     include/harmonycast/ScrollBar.h
@@ -132,6 +133,7 @@ set(CORE_SOURCES
     src/HiLogParser.cpp
     src/HiLogSession.cpp
     src/StreamSession.cpp
+    src/SnapshotCapture.cpp
     src/FlowLayout.cpp
     src/IconManager.cpp
     src/ScrollBar.cpp

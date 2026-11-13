@@ -747,7 +747,7 @@ void test_update_checker() {
 
     // 2. Ignore version logic
     UpdateChecker checker;
-    assert(checker.currentVersion() == "2.4.0");
+    assert(checker.currentVersion() == HARMONYCAST_VERSION);
 
     checker.ignoreVersion("2.4.0");
     assert(checker.isVersionIgnored("2.4.0"));

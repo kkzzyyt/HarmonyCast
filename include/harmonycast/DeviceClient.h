@@ -22,6 +22,12 @@ public:
     [[nodiscard]] virtual bool isAvailable() const = 0;
     virtual CommandResult run(const std::vector<std::string>& args, const std::string& serial = "",
                               int timeout_ms = 10000) const = 0;
+    virtual CommandResult runWithOutputLimit(const std::vector<std::string>& args, const std::string& serial,
+                                            int timeout_ms, int max_bytes) const {
+        auto result = run(args, serial, timeout_ms);
+        if (max_bytes > 0 && result.out.size() + result.err.size() > size_t(max_bytes)) return {-4, {}, "设备命令返回内容超过限制"};
+        return result;
+    }
     virtual void executeAsync(const std::vector<std::string>& args, const std::string& serial,
                               std::function<void(CommandResult)> callback) const = 0;
     virtual std::optional<std::vector<Device>> listDevicesChecked() const = 0;

@@ -12,6 +12,16 @@ Format adheres to [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and 
 
 ---
 
+## [2.4.1] - 2026-11-13
+
+### Fixed / 修复
+- [鸿蒙投屏] 兼容截图增加 `uitest screenCap` PNG 通道，在 `snapshot_display` 不可用或失败时自动尝试；按实际图片内容识别 JPEG/PNG，JPEG 插件缺失时可使用 PNG。
+- [Windows] 兼容截图优先通过 HDC shell 的 Base64 文本传输，失败后尝试文件传输，记住可用通道，减少中文临时目录、文件锁和文件接收失败的影响。
+- [恢复] 首张兼容截图使用启动超时预算，后续画面使用帧超时；每个会话使用独立临时文件，校验图片完整性、尺寸和文本输出上限，防止旧画面和异常数据误报成功。
+- [验证] 增加 PNG、文本传输、Toybox、无 JPEG 插件、慢速首帧及损坏数据回归；实际故障 Windows 电脑和设备仍需复测。
+
+---
+
 ## [2.4.0] - 2026-11-13
 
 ### Added / 新增
