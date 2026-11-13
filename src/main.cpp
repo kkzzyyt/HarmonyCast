@@ -32,6 +32,7 @@ static bool isRemoteDesktopSession() {
 
 int main(int argc, char* argv[]) {
     QCoreApplication::setApplicationName("HarmonyCast");
+    QCoreApplication::setApplicationVersion(QStringLiteral(HARMONYCAST_VERSION));
     QCoreApplication::setOrganizationName("HarmonyCast");
     QCoreApplication::setOrganizationDomain("local.harmonycast.desktop");
 #if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)

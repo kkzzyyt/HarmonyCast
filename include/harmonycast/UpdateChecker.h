@@ -12,7 +12,7 @@
 namespace harmonycast {
 
 struct UpdateInfo {
-    QString currentVersion{"2.3.4"};
+    QString currentVersion{QStringLiteral(HARMONYCAST_VERSION)};
     QString latestVersion;
     QString releaseTitle;
     QString changelog;
@@ -59,7 +59,7 @@ signals:
 private:
     QNetworkAccessManager* m_nam{nullptr};
     QPointer<QNetworkReply> m_current_reply;
-    QString m_current_version{"2.3.4"};
+    QString m_current_version{QStringLiteral(HARMONYCAST_VERSION)};
     QString m_update_url{defaultUpdateUrl()};
     QStringList m_fallback_urls;
     QStringList m_pending_urls;

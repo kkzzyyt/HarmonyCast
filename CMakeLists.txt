@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(HarmonyCast VERSION 2.3.4 LANGUAGES CXX)
+project(HarmonyCast VERSION 2.4.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -147,6 +147,7 @@ set(CORE_SOURCES
 )
 
 add_library(harmonycast_core STATIC ${CORE_SOURCES} ${CORE_HEADERS})
+target_compile_definitions(harmonycast_core PUBLIC HARMONYCAST_VERSION="${PROJECT_VERSION}")
 
 target_include_directories(harmonycast_core
     PUBLIC
