@@ -39,14 +39,14 @@ QString fallbackSummary(const QString& detail) {
 
 } // namespace
 
-StreamSession::StreamSession(std::shared_ptr<HdcClient> hdc,
+StreamSession::StreamSession(std::shared_ptr<DeviceClient> hdc,
                              Device device,
                              int fps,
                              int bitrate,
                              int max_size,
                              QObject* parent,
                              StreamTimeouts timeouts)
-    : QObject(parent),
+    : MirrorSession(parent),
       m_hdc(std::move(hdc)),
       m_device(std::move(device)),
       m_fps(fps),
@@ -90,7 +90,7 @@ int StreamSession::pickFreePort() {
     return 8990;
 }
 
-bool StreamSession::launchServerAsync(const std::shared_ptr<HdcClient>& hdc,
+bool StreamSession::launchServerAsync(const std::shared_ptr<DeviceClient>& hdc,
                                       const std::string& serial,
                                       int remote_port,
                                       int fps,
@@ -209,7 +209,7 @@ bool StreamSession::start() {
     startPipeline();
 
     auto hdc = m_hdc;
-    std::string serial = m_device.serial;
+    std::string serial = m_device.id();
     int local_port = m_local_port;
     int remote_port = m_remote_port;
     int fps = m_fps;
@@ -331,7 +331,7 @@ void StreamSession::cleanup() {
     if (!m_hdc || m_device.serial.empty()) return;
 
     auto hdc = m_hdc;
-    std::string serial = m_device.serial;
+    std::string serial = m_device.id();
     int local_port = m_local_port;
     int remote_port = m_remote_port;
     m_forwarded = false;
@@ -618,7 +618,7 @@ void StreamSession::startSnapshotFallback(const QString& reason) {
 
     auto ctx = std::make_shared<SnapshotWorkerContext>();
     ctx->hdc = m_hdc;
-    ctx->serial = m_device.serial;
+    ctx->serial = m_device.id();
     static std::atomic<uintptr_t> next_snapshot_id{0};
     ctx->session_id = ++next_snapshot_id;
     m_snapshot_ctx = ctx;

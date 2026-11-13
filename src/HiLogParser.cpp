@@ -10,7 +10,7 @@ HiLogParser::HiLogParser() {
     // Matches standard OpenHarmony HiLog output:
     // e.g. "10-23 11:24:45.913  1162  1162 D A06666/MVP_RealClientProcessor: [MVP_RealClientProcessor] msg..."
     m_line_regex = std::regex(
-        R"(^\s*(?:(?:\d{4}-)?\d{2}-\d{2}\s+)?(\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?)\s+(\d+)\s+(\d+)\s+([DIWEF])\s+(?:([ACIKP0-9a-fA-F]{3,10})/)?\s*([^:\s][^:]*?):\s*(.*)$)",
+        R"(^\s*(?:(?:\d{4}-)?\d{2}-\d{2}\s+)?(\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?)\s+(\d+)\s+(\d+)\s+([VDIWEF])\s+(?:([ACIKP0-9a-fA-F]{3,10})/)?\s*([^:\s][^:]*?):\s*(.*)$)",
         std::regex::optimize
     );
 
@@ -58,6 +58,7 @@ HiLogEntry HiLogParser::parseLine(std::string_view raw_line, const std::string& 
 
         char lvl_ch = m[4].str()[0];
         switch (lvl_ch) {
+            case 'V':
             case 'D': entry.level = LogLevel::Debug; break;
             case 'I': entry.level = LogLevel::Info;  break;
             case 'W': entry.level = LogLevel::Warn;  break;

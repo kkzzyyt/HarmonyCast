@@ -7,10 +7,11 @@
 #include <algorithm>
 #include <QFile>
 #include <QUuid>
+#include <thread>
 
 namespace harmonycast {
 
-WebViewDebugger::WebViewDebugger(std::shared_ptr<HdcClient> hdc, QObject* parent)
+WebViewDebugger::WebViewDebugger(std::shared_ptr<DeviceClient> hdc, QObject* parent)
     : QObject(parent),
       m_hdc(std::move(hdc)),
       m_http(new QNetworkAccessManager(this)),
@@ -44,17 +45,28 @@ WebViewDebugger::WebViewDebugger(std::shared_ptr<HdcClient> hdc, QObject* parent
 
 WebViewDebugger::~WebViewDebugger() {
     disconnectPage();
+    releaseForward();
+}
+
+void WebViewDebugger::setClient(std::shared_ptr<DeviceClient> client) {
+    if (m_hdc == client) return;
+    disconnectPage();
+    releaseForward();
+    m_hdc = std::move(client);
 }
 
 std::vector<WebViewInstance> WebViewDebugger::scanInstances(const std::string& serial) {
-    std::vector<WebViewInstance> list;
-    if (!m_hdc) return list;
+    if (!m_hdc) return {};
 
     auto res = m_hdc->run({"shell", "cat /proc/net/unix 2>/dev/null"}, serial, 4000);
-    if (!res.success()) return list;
+    return res.success() ? parseInstances(res.out) : std::vector<WebViewInstance>{};
+}
+
+std::vector<WebViewInstance> WebViewDebugger::parseInstances(const std::string& text) {
+    std::vector<WebViewInstance> list;
 
     QRegularExpression re(R"(@?(webview_devtools_remote_(\d+)))");
-    QString output = QString::fromStdString(res.out);
+    QString output = QString::fromStdString(text);
     auto it = re.globalMatch(output);
 
     std::map<int, WebViewInstance> unique_map;
@@ -80,28 +92,45 @@ bool WebViewDebugger::forwardInstance(const std::string& serial, const WebViewIn
 
 bool WebViewDebugger::forwardTarget(const std::string& serial, const std::string& remote_target, int local_port) {
     if (!m_hdc) return false;
-    m_active_serial = serial;
-    m_forwarded_port = local_port;
 
-    auto res = m_hdc->run({"fport", "tcp:" + std::to_string(local_port), remote_target}, serial, 4000);
+    auto res = m_hdc->run({m_hdc->platform() == DevicePlatform::Android ? "forward" : "fport",
+                          "tcp:" + std::to_string(local_port), remote_target}, serial, 4000);
+    if (res.success()) adoptForward(serial, local_port, remote_target);
     return res.success();
 }
 
+void WebViewDebugger::releaseForward() {
+    ++m_target_generation;
+    if (!m_hdc || !m_forwarded_port) return;
+    const auto client = m_hdc; const auto serial = m_active_serial; const int port = m_forwarded_port;
+    const auto target = m_forwarded_target;
+    m_forwarded_port = 0; m_active_serial.clear();
+    std::thread([client, serial, port, target] { client->removeSocketForward(serial, port, target); }).detach();
+}
+
+void WebViewDebugger::adoptForward(const std::string& serial, int localPort, const std::string& remoteTarget) {
+    if (m_forwarded_port != localPort || m_active_serial != serial) releaseForward();
+    m_active_serial = serial; m_forwarded_port = localPort; m_forwarded_target = remoteTarget;
+}
+
 void WebViewDebugger::fetchPages(int port) {
+    const auto generation = m_target_generation;
     QUrl url(QString("http://127.0.0.1:%1/json/list").arg(port));
     QNetworkRequest request(url);
     request.setHeader(QNetworkRequest::UserAgentHeader, "HarmonyCast");
     request.setAttribute(QNetworkRequest::Http2AllowedAttribute, false);
 
     QNetworkReply* reply = m_http->get(request);
-    connect(reply, &QNetworkReply::finished, this, [this, reply, port]() {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, port, generation]() {
         reply->deleteLater();
+        if (generation != m_target_generation) return;
         if (reply->error() != QNetworkReply::NoError) {
             // Try fallback endpoint /json
             QUrl fallback_url(QString("http://127.0.0.1:%1/json").arg(port));
             QNetworkReply* fb = m_http->get(QNetworkRequest(fallback_url));
-            connect(fb, &QNetworkReply::finished, this, [this, fb]() {
+            connect(fb, &QNetworkReply::finished, this, [this, fb, generation]() {
                 fb->deleteLater();
+                if (generation != m_target_generation) return;
                 if (fb->error() == QNetworkReply::NoError) {
                     QByteArray data = fb->readAll();
                     QJsonDocument doc = QJsonDocument::fromJson(data);
@@ -154,9 +183,9 @@ bool WebViewDebugger::connectPage(const WebViewPage& page) {
 }
 
 void WebViewDebugger::disconnectPage() {
-    if (m_ws && m_ws->isValid()) {
-        m_ws->close();
-    }
+    if (m_ws) m_ws->abort();
+    m_callbacks.clear(); m_callback_deadlines.clear();
+    if (m_callback_timer) m_callback_timer->stop();
 }
 
 bool WebViewDebugger::isConnected() const {

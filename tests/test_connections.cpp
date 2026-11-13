@@ -167,7 +167,7 @@ static void testConnectionFailure(const QByteArray& mode, const QString& expecte
             }
         }
         return false;
-    });
+    }, 15000); // Multiple child processes are slower under sanitizer builds.
     processFor(350);
     check(screen->statusMessage().contains(expected), "connection failure reason was hidden by device refresh");
     check(!window.isProjecting(), "failed connection started mirroring");

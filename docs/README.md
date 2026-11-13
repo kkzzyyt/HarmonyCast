@@ -3,7 +3,8 @@
 | Document / 文档 | Description / 内容概述 |
 | --- | --- |
 | [Changelog & Release History / 版本更新日志与历史说明](../CHANGELOG.md) | Detailed version release notes, upgrade history, and bug fixes / 详细版本发布说明、升级履历与缺陷修复记录 |
-| [Batch Device Inspection / 批量设备巡检](inspection.md) | IP TXT import, sequential HDC inspection and CSV reports / IP 列表导入、逐台 HDC 巡检与表格导出 |
+| [Batch Device Inspection / 批量设备巡检](inspection.md) | IP 列表导入、逐台巡检、指定应用数据清理与结果导出 |
+| [Android 8+ Devices / 安卓设备支持](android.md) | ADB 连接、投屏控制、Logcat、APK、文件、WebView、巡检和验证范围 |
 | [Update Sources / 更新源](update-sources.md) | 中文 GitHub API 中转、官方回退与自定义更新地址 |
 | [Windows Mirroring Troubleshooting / Windows 投屏黑屏排查](windows-mirroring.md) | Capture startup, first-frame recovery and software decoding / 采屏启动、首帧超时回退与软件解码 |
 | [Performance Optimization & Verification / 性能优化与验证](performance.md) | Benchmarking, memory management, regression testing, and verification boundaries / 基准压测、内存开销、回归套件与验证边界 |

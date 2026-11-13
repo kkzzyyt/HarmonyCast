@@ -25,7 +25,21 @@ REQUIRED_FILES = (
     "D3Dcompiler_47.dll",
     "resources/hdc/hdc.exe",
     "resources/hdc/libusb_shared.dll",
+    "resources/adb/windows-x64/adb.exe",
+    "resources/adb/windows-x64/AdbWinApi.dll",
+    "resources/adb/windows-x64/AdbWinUsbApi.dll",
+    "resources/adb/windows-x64/libwinpthread-1.dll",
+    "resources/servers/android/scrcpy-server-v5.0.1",
 )
+
+# Google's ADB runs as its own 32-bit process, with its own adjacent DLLs.
+# Qt, FFmpeg and every library loaded by HarmonyCast must still be x64.
+STANDALONE_ADB_FILES = frozenset({
+    "resources/adb/windows-x64/adb.exe",
+    "resources/adb/windows-x64/AdbWinApi.dll",
+    "resources/adb/windows-x64/AdbWinUsbApi.dll",
+    "resources/adb/windows-x64/libwinpthread-1.dll",
+})
 
 REQUIRED_PREFIXES = (
     "Qt6Core",
@@ -62,9 +76,11 @@ def _check_pe_images(root: Path) -> list[str]:
         label = binary.relative_to(root).as_posix()
         try:
             with pefile.PE(str(binary), fast_load=True) as image:
-                if image.FILE_HEADER.Machine != 0x8664:
+                expected_machine = 0x14C if label in STANDALONE_ADB_FILES else 0x8664
+                architecture = "x86 standalone ADB" if expected_machine == 0x14C else "x64"
+                if image.FILE_HEADER.Machine != expected_machine:
                     errors.append(
-                        f"{label}: expected x64 binary, found machine type "
+                        f"{label}: expected {architecture} binary, found machine type "
                         f"{hex(image.FILE_HEADER.Machine)}"
                     )
         except (pefile.PEFormatError, OSError) as error:

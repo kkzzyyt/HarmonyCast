@@ -2,6 +2,8 @@
 
 #include "Types.h"
 #include "HdcClient.h"
+#include "AdbClient.h"
+#include "AndroidStreamSession.h"
 #include "DeviceManager.h"
 #include "StreamSession.h"
 #include "HiLogSession.h"
@@ -45,7 +47,7 @@ class MainWindow : public QMainWindow {
 
 public:
     explicit MainWindow(QWidget* parent = nullptr, bool startBackgroundServices = true,
-                        std::string hdcPath = {});
+                        std::string hdcPath = {}, std::string adbPath = {});
     ~MainWindow() override;
 
     [[nodiscard]] int idleTimeoutSeconds() const { return m_idle_timeout_secs; }
@@ -178,16 +180,23 @@ private:
     bool networkRequestMatches(const WebNetworkRequest& request) const;
     void flushNetworkUpdates();
     [[nodiscard]] std::string currentSerial() const;
+    [[nodiscard]] std::shared_ptr<DeviceClient> currentClient() const;
+    void updatePlatformControls();
     void updateHiLogCollection();
     void stopHiLogCollection();
     void setHdcInput(const QString& command, bool shellMode = true);
 
     // Services
-    std::shared_ptr<HdcClient> m_hdc;
+    std::shared_ptr<DeviceClient> m_hdc;
+    std::shared_ptr<AdbClient> m_adb;
+    std::shared_ptr<QObject> m_delivery;
     std::shared_ptr<DeviceManager> m_dev_mgr;
-    std::unique_ptr<StreamSession> m_stream;
+    std::unique_ptr<MirrorSession> m_stream;
     std::unique_ptr<HiLogSession> m_hilog;
     std::unique_ptr<WebViewDebugger> m_webview;
+    std::string m_webview_device;
+    uint64_t m_webview_scan_generation{0};
+    uint64_t m_info_generation{0};
     std::unique_ptr<UpdateChecker> m_updater;
     std::unique_ptr<QSettings> m_settings;
 

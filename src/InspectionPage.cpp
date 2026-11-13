@@ -15,15 +15,18 @@
 #include <QSplitter>
 #include <QTableWidget>
 #include <QVBoxLayout>
+#include <QComboBox>
+#include <QCheckBox>
 
 namespace harmonycast {
 
-InspectionPage::InspectionPage(std::shared_ptr<HdcClient> hdc, QWidget* parent)
-    : QWidget(parent), m_runner(new InspectionRunner(std::move(hdc), this)) {
+InspectionPage::InspectionPage(std::shared_ptr<DeviceClient> hdc, QWidget* parent, std::shared_ptr<DeviceClient> android)
+    : QWidget(parent), m_runner(new InspectionRunner(hdc, this)),
+      m_harmony_client(std::move(hdc)), m_android_client(std::move(android)) {
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(24, 24, 24, 24);
     layout->setSpacing(16);
-    layout->addWidget(IconManager::label("导入设备列表，逐台采集状态并导出巡检表格", "Muted", true));
+    layout->addWidget(IconManager::label("导入设备列表，逐台巡检或清理应用数据，并导出执行结果", "Muted", true));
 
     auto* splitter = new QSplitter(Qt::Horizontal, this);
     splitter->setChildrenCollapsible(false);
@@ -45,6 +48,38 @@ InspectionPage::InspectionPage(std::shared_ptr<HdcClient> hdc, QWidget* parent)
         "#8295a9", "none", 2, 16));
     inputHeading->addWidget(m_import_button);
     inputLayout->addLayout(inputHeading);
+    m_task = new QComboBox(this);
+    m_task->setObjectName("InspectionTask");
+    m_task->addItem("设备巡检", int(InspectionTask::Inspect));
+    m_task->addItem("清理应用数据", int(InspectionTask::ClearApplicationData));
+    m_task->setFixedHeight(32);
+    IconManager::setupComboBoxPopup(m_task, 180);
+    inputLayout->addWidget(m_task);
+    m_platform = new QComboBox(this);
+    m_platform->setObjectName("InspectionPlatform");
+    m_platform->addItem("鸿蒙 · HDC", int(DevicePlatform::OpenHarmony));
+    if (m_android_client) m_platform->addItem("Android · ADB", int(DevicePlatform::Android));
+    m_platform->setFixedHeight(32);
+    IconManager::setupComboBoxPopup(m_platform, 180);
+    inputLayout->addWidget(m_platform);
+    m_cleanup_options = new QWidget(this);
+    m_cleanup_options->setObjectName("InspectionCleanupOptions");
+    m_cleanup_options->setStyleSheet("QWidget#InspectionCleanupOptions { background: transparent; }");
+    auto* cleanupLayout = new QVBoxLayout(m_cleanup_options);
+    cleanupLayout->setContentsMargins(0, 0, 0, 0);
+    cleanupLayout->setSpacing(8);
+    cleanupLayout->addWidget(IconManager::label("选择要清理的应用", "Section"));
+    for (const auto& package : InspectionReport::cleanupPackages()) {
+        auto* checkbox = new QCheckBox(package, m_cleanup_options);
+        checkbox->setProperty("cleanupPackage", package);
+        checkbox->setChecked(true);
+        checkbox->setToolTip(package);
+        cleanupLayout->addWidget(checkbox);
+        m_cleanup_packages.push_back(checkbox);
+    }
+    cleanupLayout->addWidget(IconManager::label("清除应用数据目录，包含本地配置和登录状态。仅处理设备已安装的所选应用。", "Muted", true));
+    inputLayout->addWidget(m_cleanup_options);
+    m_cleanup_options->hide();
     m_file_label = IconManager::label("导入 TXT 或直接粘贴 IP", "Muted", true);
     m_file_label->setTextFormat(Qt::PlainText);
     inputLayout->addWidget(m_file_label);
@@ -54,7 +89,8 @@ InspectionPage::InspectionPage(std::shared_ptr<HdcClient> hdc, QWidget* parent)
     m_input->setPlaceholderText("192.168.1.10\n192.168.1.11\n192.168.1.12:9000");
     m_input->setLineWrapMode(QPlainTextEdit::NoWrap);
     inputLayout->addWidget(m_input, 1);
-    inputLayout->addWidget(IconManager::label("默认端口 8710\n支持 IP:端口、# 注释，重复地址自动去重", "Muted", true));
+    m_port_hint = IconManager::label("默认端口 8710\n支持 IP:端口、# 注释，重复地址自动去重", "Muted", true);
+    inputLayout->addWidget(m_port_hint);
     m_input_summary = IconManager::label("有效 0 台", "Muted", true);
     inputLayout->addWidget(m_input_summary);
     m_input_errors = IconManager::label("", "Muted", true);
@@ -85,7 +121,7 @@ InspectionPage::InspectionPage(std::shared_ptr<HdcClient> hdc, QWidget* parent)
     results->setSpacing(12);
     auto* resultHeading = new QHBoxLayout;
     resultHeading->setSpacing(8);
-    resultHeading->addWidget(IconManager::label("巡检结果", "CardTitle"));
+    resultHeading->addWidget(IconManager::label("执行结果", "CardTitle"));
     resultHeading->addStretch();
     m_export_button = IconManager::button("导出表格", "", "export");
     m_export_button->setObjectName("InspectionExport");
@@ -138,6 +174,14 @@ InspectionPage::InspectionPage(std::shared_ptr<HdcClient> hdc, QWidget* parent)
     layout->addWidget(splitter, 1);
 
     connect(m_input, &QPlainTextEdit::textChanged, this, &InspectionPage::updateInput);
+    connect(m_task, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &InspectionPage::updateTaskControls);
+    for (auto* checkbox : m_cleanup_packages) connect(checkbox, &QCheckBox::toggled, this, &InspectionPage::updateInput);
+    connect(m_platform, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this] {
+        const auto platform = DevicePlatform(m_platform->currentData().toInt());
+        m_runner->setClient(platform == DevicePlatform::Android ? m_android_client : m_harmony_client);
+        m_port_hint->setText(QString("默认端口 %1\n支持 IP:端口、# 注释，重复地址自动去重").arg(defaultDevicePort(platform)));
+        updateInput();
+    });
     connect(m_import_button, &QPushButton::clicked, this, [this] {
         const QString path = QFileDialog::getOpenFileName(this, "导入巡检 IP 列表", {}, "IP 列表 (*.txt);;所有文件 (*)");
         if (path.isEmpty()) return;
@@ -150,8 +194,9 @@ InspectionPage::InspectionPage(std::shared_ptr<HdcClient> hdc, QWidget* parent)
         m_runner->stop();
     });
     connect(m_export_button, &QPushButton::clicked, this, [this] {
-        QString path = QFileDialog::getSaveFileName(this, "导出巡检表格",
-            "设备巡检_" + QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss") + ".csv", "CSV 表格 (*.csv)");
+        const auto prefix = m_results_task == InspectionTask::ClearApplicationData ? QStringLiteral("应用数据清理_") : QStringLiteral("设备巡检_");
+        QString path = QFileDialog::getSaveFileName(this, "导出执行结果",
+            prefix + QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss") + ".csv", "CSV 表格 (*.csv)");
         if (path.isEmpty()) return;
         if (!path.endsWith(".csv", Qt::CaseInsensitive)) path += ".csv";
         QString error;
@@ -161,6 +206,9 @@ InspectionPage::InspectionPage(std::shared_ptr<HdcClient> hdc, QWidget* parent)
     connect(m_runner, &InspectionRunner::runningChanged, this, [this](bool running) {
         m_progress->setVisible(running || !m_runner->results().empty());
         m_input->setReadOnly(running);
+        m_platform->setEnabled(!running && m_task->currentData().toInt() == int(InspectionTask::Inspect));
+        m_task->setEnabled(!running);
+        for (auto* checkbox : m_cleanup_packages) checkbox->setEnabled(!running);
         m_import_button->setEnabled(!running);
         m_stop_button->setEnabled(running);
         m_export_button->setEnabled(!running && !m_runner->results().empty());
@@ -220,7 +268,7 @@ void InspectionPage::updateInput() {
         m_import = {};
         m_import.errors << "IP 列表不能超过 1 MiB";
     } else {
-        m_import = InspectionReport::parseTargets(text);
+        m_import = InspectionReport::parseTargets(text, DevicePlatform(m_platform->currentData().toInt()));
     }
     m_input_summary->setText(QString("有效 %1 台 · 重复 %2 · 无效 %3")
         .arg(m_import.targets.size()).arg(m_import.duplicates).arg(m_import.errors.size()));
@@ -228,37 +276,99 @@ void InspectionPage::updateInput() {
     m_input_errors->setText(m_import.errors.mid(0, 3).join('\n') +
         (m_import.errors.isEmpty() ? QString{} : QStringLiteral("\n请修正无效地址后开始巡检")));
     m_input_errors->setToolTip(m_import.errors.join('\n'));
-    m_start_button->setEnabled(!isRunning() && !m_import.targets.empty() && m_import.errors.isEmpty());
+    const bool packagesValid = m_task->currentData().toInt() != int(InspectionTask::ClearApplicationData) || !selectedCleanupPackages().isEmpty();
+    m_start_button->setEnabled(!isRunning() && !m_import.targets.empty() && m_import.errors.isEmpty() && packagesValid);
+}
+
+QStringList InspectionPage::selectedCleanupPackages() const {
+    QStringList selected;
+    for (auto* checkbox : m_cleanup_packages) if (checkbox->isChecked()) selected << checkbox->property("cleanupPackage").toString();
+    return selected;
+}
+
+void InspectionPage::updateTaskControls() {
+    const bool cleanup = m_task->currentData().toInt() == int(InspectionTask::ClearApplicationData);
+    if (cleanup) m_platform->setCurrentIndex(0);
+    m_platform->setEnabled(!isRunning() && !cleanup);
+    m_cleanup_options->setVisible(cleanup);
+    m_start_button->setText(cleanup ? "开始清理" : "开始巡检");
+    m_input->parentWidget()->setMinimumWidth(cleanup ? 328 : 224);
+    updateInput();
+}
+
+void InspectionPage::configureResults(InspectionTask task) {
+    m_results_task = task;
+    m_table->clear();
+    if (task == InspectionTask::ClearApplicationData) {
+        m_table->setColumnCount(7);
+        QStringList columns{"IP / 端口", "状态", "执行时间"};
+        for (const auto& package : InspectionReport::cleanupPackages()) columns << package.section('.', -1);
+        columns << "备注";
+        m_table->setHorizontalHeaderLabels(columns);
+        const int widths[] = {140, 88, 160, 112, 104, 144, 320};
+        for (int i = 0; i < 7; ++i) {
+            m_table->setColumnWidth(i, widths[i]);
+            m_table->horizontalHeaderItem(i)->setToolTip(i >= 3 && i <= 5 ? InspectionReport::cleanupPackages()[i - 3] : columns[i]);
+        }
+    } else {
+        m_table->setColumnCount(10);
+        m_table->setHorizontalHeaderLabels({"IP / 端口", "状态", "运行时间", "MAC 地址", "内存（MiB）",
+            "内存使用率", "型号", "系统版本", "巡检时间", "备注"});
+        const int widths[] = {148, 72, 128, 164, 144, 112, 120, 192, 176, 320};
+        for (int i = 0; i < 10; ++i) m_table->setColumnWidth(i, widths[i]);
+        m_table->horizontalHeaderItem(4)->setToolTip("已用内存 / 总内存（MiB）");
+        m_table->horizontalHeaderItem(6)->setToolTip("ICU 硬件与看门狗中的硬件型号");
+    }
 }
 
 void InspectionPage::startInspection() {
     if (isRunning() || m_import.targets.empty() || !m_import.errors.isEmpty()) return;
+    const auto targets = m_import.targets;
+    const auto task = InspectionTask(m_task->currentData().toInt());
+    const auto packages = selectedCleanupPackages();
+    if (task == InspectionTask::ClearApplicationData) {
+        if (packages.isEmpty()) return;
+        const auto confirmation = QString("将在列表中的 %1 台设备上，清除以下应用的数据目录：\n\n%2\n\n"
+            "这会删除应用的本地配置和登录状态。未安装的应用会跳过，已完成的清理无法撤销。\n\n确认开始？")
+            .arg(targets.size()).arg(packages.join('\n'));
+        if (QMessageBox::warning(this, "批量清理应用数据", confirmation,
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes) return;
+    }
+    configureResults(task);
     m_table->clearContents();
-    m_table->setRowCount(static_cast<int>(m_import.targets.size()));
-    if (!m_runner->start(m_import.targets)) return;
+    m_table->setRowCount(static_cast<int>(targets.size()));
+    const bool started = task == InspectionTask::ClearApplicationData ? m_runner->startApplicationCleanup(targets, packages) :
+        m_runner->start(targets);
+    if (!started) return;
     for (int i = 0; i < m_table->rowCount(); ++i) updateRow(i);
-    m_summary->setText("失败设备也会保留记录；缺失信息留空并在备注中说明");
+    m_summary->setText(task == InspectionTask::ClearApplicationData ? "逐台处理，逐应用记录结果；未安装的包跳过，单项失败继续后续任务" :
+        "失败设备也会保留记录；缺失信息留空并在备注中说明");
 }
 
 void InspectionPage::updateRow(int index) {
     if (index < 0 || index >= static_cast<int>(m_runner->results().size())) return;
     const auto& row = m_runner->results()[index];
     const auto cells = InspectionReport::cells(row);
-    const QString memory = cells[12].isEmpty() ? QString{} :
-        (cells[13].isEmpty() ? "—" : QString::number(cells[13].toDouble(), 'f', 0)) + " / " + QString::number(cells[12].toDouble(), 'f', 0);
-    QString runtime;
-    if (row.uptimeSeconds) {
-        const auto seconds = *row.uptimeSeconds;
-        runtime = QString("%1天 %2:%3:%4").arg(seconds / 86400)
-            .arg(seconds / 3600 % 24, 2, 10, QChar('0')).arg(seconds / 60 % 60, 2, 10, QChar('0')).arg(seconds % 60, 2, 10, QChar('0'));
+    QStringList visible;
+    if (row.task == InspectionTask::ClearApplicationData) {
+        visible = QStringList{row.target.endpoint(), cells[2], cells[3], cells[4], cells[5], cells[6], cells[7]};
+    } else {
+        const QString memory = cells[12].isEmpty() ? QString{} :
+            (cells[13].isEmpty() ? "—" : QString::number(cells[13].toDouble(), 'f', 0)) + " / " + QString::number(cells[12].toDouble(), 'f', 0);
+        QString runtime;
+        if (row.uptimeSeconds) {
+            const auto seconds = *row.uptimeSeconds;
+            runtime = QString("%1天 %2:%3:%4").arg(seconds / 86400)
+                .arg(seconds / 3600 % 24, 2, 10, QChar('0')).arg(seconds / 60 % 60, 2, 10, QChar('0')).arg(seconds % 60, 2, 10, QChar('0'));
+        }
+        QString mac = cells[5];
+        for (const auto& net : row.networks) {
+            if (net.ips.contains(row.target.ip) && !net.mac.isEmpty()) { mac = net.mac; break; }
+        }
+        visible = QStringList{row.target.endpoint(), cells[2], runtime, mac, memory,
+            cells[15].isEmpty() ? QString{} : cells[15] + "%",
+            row.model, row.systemVersion, cells[20], row.notes};
     }
-    QString mac = cells[5];
-    for (const auto& net : row.networks) {
-        if (net.ips.contains(row.target.ip) && !net.mac.isEmpty()) { mac = net.mac; break; }
-    }
-    const QStringList visible{row.target.endpoint(), cells[2], runtime, mac, memory,
-        cells[15].isEmpty() ? QString{} : cells[15] + "%",
-        row.model, row.systemVersion, cells[20], row.notes};
     for (int column = 0; column < visible.size(); ++column) {
         auto* item = m_table->item(index, column);
         if (!item) {
@@ -267,9 +377,11 @@ void InspectionPage::updateRow(int index) {
         }
         item->setText(visible[column]);
         item->setToolTip(visible[column]);
-        if (column == 2) item->setToolTip(cells[3]);
-        if (column == 3) item->setToolTip(cells[5]);
-        if (column == 4 || column == 5) item->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        if (row.task == InspectionTask::Inspect) {
+            if (column == 2) item->setToolTip(cells[3]);
+            if (column == 3) item->setToolTip(cells[5]);
+            if (column == 4 || column == 5) item->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        }
         if (column == 1) {
             const char* color = row.status == InspectionStatus::Succeeded ? "#4b6585" :
                 row.status == InspectionStatus::Failed ? "#c63d48" :
@@ -280,15 +392,18 @@ void InspectionPage::updateRow(int index) {
 }
 
 void InspectionPage::updateSummary(bool stopped) {
-    int succeeded = 0, partial = 0, failed = 0, cancelled = 0;
+    int succeeded = 0, partial = 0, failed = 0, cancelled = 0, skipped = 0;
     for (const auto& row : m_runner->results()) {
         if (row.status == InspectionStatus::Succeeded) ++succeeded;
         else if (row.status == InspectionStatus::Partial) ++partial;
         else if (row.status == InspectionStatus::Failed) ++failed;
         else if (row.status == InspectionStatus::Cancelled) ++cancelled;
+        else if (row.status == InspectionStatus::Skipped) ++skipped;
     }
-    m_activity->setText(stopped ? "巡检已停止，可导出当前结果" : "巡检结束，可导出表格");
-    m_summary->setText(QString("完成 %1 · 部分完成 %2 · 失败 %3 · 已停止 %4").arg(succeeded).arg(partial).arg(failed).arg(cancelled));
+    const auto name = m_results_task == InspectionTask::ClearApplicationData ? QStringLiteral("清理") : QStringLiteral("巡检");
+    m_activity->setText(name + (stopped ? "已停止，可导出当前结果" : "结束，可导出表格"));
+    m_summary->setText(QString("完成 %1 · 部分完成 %2 · 失败 %3 · 已停止 %4").arg(succeeded).arg(partial).arg(failed).arg(cancelled) +
+        (m_results_task == InspectionTask::ClearApplicationData ? QString(" · 无匹配应用 %1").arg(skipped) : QString{}));
 }
 
 } // namespace harmonycast

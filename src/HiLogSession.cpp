@@ -19,6 +19,8 @@ HiLogSession::HiLogSession(std::string hdc_path,
       m_serial(std::move(serial)),
       m_bundle(std::move(bundle)),
       m_category(std::move(category)) {
+    m_pid_timer.setInterval(5000);
+    connect(&m_pid_timer, &QTimer::timeout, this, &HiLogSession::refreshAndroidPackages);
 }
 
 HiLogSession::~HiLogSession() {
@@ -46,8 +48,8 @@ void HiLogSession::start() {
         if (process != m_process || error != QProcess::FailedToStart || m_finished_emitted) return;
         m_finished_emitted = true;
         const QPointer<HiLogSession> alive(this);
-        emit errorOccurred(QString("HDC 日志采集启动失败：%1\n程序：%2")
-            .arg(process->errorString(), QString::fromStdString(m_hdc_path)));
+        emit errorOccurred(QString("%1 日志采集启动失败：%2\n程序：%3")
+            .arg(isAndroidDevice(m_serial) ? "ADB" : "HDC", process->errorString(), QString::fromStdString(m_hdc_path)));
         // FailedToStart does not emit QProcess::finished(). Keep the session
         // completion signal consistent without reporting it twice.
         if (alive && alive->m_process == process) emit finished(-1);
@@ -55,15 +57,48 @@ void HiLogSession::start() {
 
     QStringList args;
     if (!m_serial.empty()) {
-        args << "-t" << QString::fromStdString(m_serial);
+        args << (isAndroidDevice(m_serial) ? "-s" : "-t") << QString::fromStdString(deviceSerial(m_serial));
     }
-    args << "shell" << "hilog";
+    if (isAndroidDevice(m_serial)) args << "logcat" << "-v" << "threadtime";
+    else args << "shell" << "hilog";
 
     m_process->start(QString::fromStdString(m_hdc_path), args);
+    if (isAndroidDevice(m_serial)) { refreshAndroidPackages(); m_pid_timer.start(); }
+}
+
+void HiLogSession::refreshAndroidPackages() {
+    if (m_pid_process || !isActive()) return;
+    auto* process = new QProcess(this); m_pid_process = process;
+    HdcClient::configureProcess(*process, m_hdc_path);
+    auto* timeout = new QTimer(process); timeout->setSingleShot(true);
+    connect(timeout, &QTimer::timeout, process, &QProcess::kill);
+    connect(process, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
+        [this, process, timeout](int code, QProcess::ExitStatus status) {
+            timeout->stop();
+            if (m_pid_process != process) return;
+            if (code == 0 && status == QProcess::NormalExit) {
+                std::map<int, std::string> packages;
+                for (const auto& line : QString::fromUtf8(process->readAllStandardOutput()).split('\n')) {
+                    const auto columns = line.simplified().split(' ');
+                    bool valid = false;
+                    const int pid = columns.value(0).toInt(&valid);
+                    if (valid && columns.size() == 2 && columns[1].contains('.')) packages[pid] = columns[1].section(':', 0, 0).toStdString();
+                }
+                m_pid_packages = std::move(packages);
+            }
+            m_pid_process = nullptr; process->deleteLater();
+        });
+    connect(process, &QProcess::errorOccurred, this, [this, process](QProcess::ProcessError error) {
+        if (error == QProcess::FailedToStart && m_pid_process == process) { m_pid_process = nullptr; process->deleteLater(); }
+    });
+    process->start(QString::fromStdString(m_hdc_path), {"-s", QString::fromStdString(deviceSerial(m_serial)), "shell", "ps -A -o PID,NAME"});
+    timeout->start(3000);
 }
 
 void HiLogSession::stop() {
-    if (auto* process = std::exchange(m_process, nullptr)) {
+    m_pid_timer.stop();
+    for (auto* process : {std::exchange(m_process, nullptr), std::exchange(m_pid_process, nullptr)}) {
+        if (!process) continue;
         disconnect(process, nullptr, this, nullptr);
         if (process->state() == QProcess::NotRunning) {
             delete process;
@@ -81,6 +116,7 @@ void HiLogSession::stop() {
     m_line_buffer.clear();
     m_stderr_tail.clear();
     m_stdout_tail.clear();
+    m_pid_packages.clear();
 }
 
 bool HiLogSession::isRunning() const {
@@ -107,9 +143,14 @@ void HiLogSession::onReadyRead() {
 
         if (line.endsWith('\r')) line.chop(1);
         if (line.isEmpty()) continue;
+        if (isAndroidDevice(m_serial) && line.startsWith("---------")) continue;
 
         std::string raw_str = line.toStdString();
         HiLogEntry entry = m_parser.parseLine(raw_str, m_bundle);
+        if (isAndroidDevice(m_serial)) {
+            const auto package = m_pid_packages.find(entry.pid);
+            if (package != m_pid_packages.end()) { entry.bundle = package->second; entry.category = "app"; }
+        }
 
         if (m_retain_entries) {
             std::lock_guard<std::mutex> lock(m_mutex);
@@ -142,8 +183,8 @@ void HiLogSession::onProcessFinished(int exitCode, QProcess::ExitStatus status) 
         QString detail = QString::fromUtf8(m_stderr_tail).trimmed();
         if (detail.isEmpty()) detail = QString::fromUtf8(m_stdout_tail).trimmed();
         if (detail.isEmpty() && status == QProcess::CrashExit) detail = process->errorString();
-        QString error = QString("HDC 日志采集%1（退出码 %2）")
-            .arg(status == QProcess::CrashExit ? "异常退出" : "退出失败").arg(exitCode);
+        QString error = QString("%1 日志采集%2（退出码 %3）")
+            .arg(isAndroidDevice(m_serial) ? "ADB" : "HDC", status == QProcess::CrashExit ? "异常退出" : "退出失败").arg(exitCode);
         if (!detail.isEmpty()) error += "：" + detail.left(1500);
         emit errorOccurred(error);
     }

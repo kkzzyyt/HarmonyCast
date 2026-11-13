@@ -34,6 +34,7 @@
 #include <QScreen>
 #include <QAbstractScrollArea>
 #include <QSignalBlocker>
+#include <QTcpServer>
 #include <iostream>
 
 namespace harmonycast {
@@ -43,10 +44,12 @@ static const QString DEBUG_AUTHORIZATION_MESSAGE = QStringLiteral(
     "设备未授权：请在设备屏幕上允许调试，选择“信任”或“始终信任”\n"
     "未出现弹窗时，请重新开启设备的 USB / 无线调试开关后重试");
 
-MainWindow::MainWindow(QWidget* parent, bool startBackgroundServices, std::string hdcPath)
+MainWindow::MainWindow(QWidget* parent, bool startBackgroundServices, std::string hdcPath, std::string adbPath)
     : QMainWindow(parent),
       m_hdc(std::make_shared<HdcClient>(std::move(hdcPath), this)),
-      m_dev_mgr(std::make_shared<DeviceManager>(m_hdc, this)),
+      m_adb(std::make_shared<AdbClient>(std::move(adbPath), this)),
+      m_delivery(new QObject, [](QObject* context) { context->deleteLater(); }),
+      m_dev_mgr(std::make_shared<DeviceManager>(m_hdc, this, m_adb)),
       m_webview(std::make_unique<WebViewDebugger>(m_hdc, this)),
       m_updater(std::make_unique<UpdateChecker>(this)),
       m_settings(std::make_unique<QSettings>("HarmonyCast", "HarmonyCast")) {
@@ -70,7 +73,7 @@ MainWindow::MainWindow(QWidget* parent, bool startBackgroundServices, std::strin
     m_keep_awake_timer->setInterval(25000);
     connect(m_keep_awake_timer, &QTimer::timeout, this, [this]() {
         if (m_projecting && !currentSerial().empty() && m_hdc) {
-            m_hdc->wakeupAsync(currentSerial());
+            currentClient()->wakeupAsync(currentSerial());
         }
     });
 
@@ -344,7 +347,7 @@ void MainWindow::setupUi() {
     m_pages->addWidget(buildInfoPanel());      // 0: 设备信息
     m_pages->addWidget(buildWorkspacePage());  // 1: 投屏工作台
     m_pages->addWidget(buildHdcPanel());        // 2: 常用命令
-    m_inspection_page = new InspectionPage(m_hdc);
+    m_inspection_page = new InspectionPage(m_hdc, nullptr, m_adb);
     m_pages->addWidget(m_inspection_page);      // 3: 独立批量巡检
     connect(m_inspection_page, &InspectionPage::runningChanged, this, [this](bool running) {
         for (auto* navigation : {m_info_nav, m_mirror_nav, m_hdc_nav}) navigation->setEnabled(!running);
@@ -464,6 +467,54 @@ std::string MainWindow::currentSerial() const {
 
 void MainWindow::showToast(const QString& msg) {
     statusBar()->showMessage(msg, 3500);
+}
+
+std::shared_ptr<DeviceClient> MainWindow::currentClient() const {
+    return isAndroidDevice(currentSerial()) ? m_adb : m_hdc;
+}
+
+void MainWindow::updatePlatformControls() {
+    const bool android = isAndroidDevice(currentSerial());
+    if (m_hdc_target_prefix) m_hdc_target_prefix->setText(currentSerial().empty() ? QString{} :
+        QString("%1 %2").arg(android ? "-s" : "-t", QString::fromStdString(deviceSerial(currentSerial()))));
+    if (m_hdc_mode_combo) {
+        m_hdc_mode_combo->setItemText(1, android ? "ADB 命令" : "HDC 命令");
+        m_hdc_mode_combo->setToolTip(android ? "默认按 adb shell 执行；安装和文件传输使用 ADB 命令模式" :
+            "默认按 hdc shell 执行；文件传输、安装等主机指令使用 HDC 命令模式");
+    }
+    if (m_webview && m_webview_device != currentSerial()) {
+        m_webview_device = currentSerial(); ++m_webview_scan_generation;
+        ++m_info_generation; m_info_loading = false; m_cached_info = DeviceInfo{};
+        if (m_card_empty) renderEmptyInfo("正在等待当前设备信息");
+        m_webview->disconnectPage(); m_webview->releaseForward(); m_webview->clearRequests();
+        m_wv_requests.clear();
+        if (m_wv_console_view) m_wv_console_view->clear();
+        if (m_wv_network_table) m_wv_network_table->setRowCount(0);
+    }
+    if (m_webview) m_webview->setClient(currentClient());
+    if (m_hdc_preset_combo && m_hdc_preset_combo->property("android").toBool() != android) {
+        const QSignalBlocker blocker(m_hdc_preset_combo);
+        m_hdc_preset_combo->setProperty("android", android);
+        m_hdc_preset_combo->clear();
+        if (android) {
+            m_hdc_preset_combo->addItems({"选择常用命令", "devices -l", "getprop", "ip addr", "pm list packages",
+                "dumpsys activity activities", "ps -A", "logcat -d -v threadtime", "tcpip 5555", "reboot"});
+            for (int i = 1; i < m_hdc_preset_combo->count(); ++i)
+                m_hdc_preset_combo->setItemData(i, i != 1 && i != 7 && i != 8 && i != 9);
+        } else {
+            m_hdc_preset_combo->addItems({"选择常用命令", "target mount", "ifconfig",
+                "cat /sys/class/ICU/version/StopWatchDog", "echo -n 1 > /sys/class/ICU/version/StopWatchDog",
+                "echo -n 0 > /sys/class/ICU/version/StopWatchDog", "echo -n 1 > /sys/class/ICU/version/FeedWatchdog",
+                "ls -l /data/app/el2/100/base/com.yarward.*/haps/*/files/log/", "param get", "bm dump -a", "ps -A", "reboot", "list targets"});
+            for (int i = 1; i < m_hdc_preset_combo->count(); ++i)
+                m_hdc_preset_combo->setItemData(i, i != 1 && i != m_hdc_preset_combo->count() - 1);
+        }
+        if (m_hdc_input) m_hdc_input->clear();
+    }
+    for (auto* button : findChildren<QPushButton*>()) {
+        if (button->property("requiresIcu").toBool()) button->setEnabled(!android);
+        if (button->objectName() == "ClearAppData") button->setText(android ? "清除应用数据..." : "清除缓存...");
+    }
 }
 
 void MainWindow::noteUserActivity() {
@@ -692,7 +743,7 @@ void MainWindow::renderEmptyInfo(const QString& hint) {
     hdr->setSpacing(6);
     auto* title = IconManager::label("未检测到已连接的设备", "CardTitleWarn");
     title->setStyleSheet("font-size: 17px; font-weight: 600; color: #8b6717;");
-    auto* sub = IconManager::label("当前没有处于在线调试状态的 OpenHarmony / 鸿蒙设备。请先连接设备以查看硬件详情与应用信息。", "Muted");
+    auto* sub = IconManager::label("连接 OpenHarmony / 鸿蒙或 Android 设备后，可查看硬件详情与应用信息。", "Muted");
     sub->setStyleSheet("font-size: 13px; color: #5b697d;");
     hdr->addWidget(title);
     hdr->addWidget(sub);
@@ -729,9 +780,9 @@ void MainWindow::renderEmptyInfo(const QString& hint) {
     n_title->setStyleSheet("font-size: 14px; font-weight: bold; color: #62666d;");
     n_layout->addWidget(n_title);
     QString n_steps = "1. 确保设备与电脑接入同一局域网或直连网口\n"
-                      "2. 确认设备的固定 IP 地址（默认调试端口 8710）\n"
+                      "2. 确认设备 IP 和调试端口（鸿蒙 8710，Android 5555）\n"
                       "3. 点击右上角或下方「设备中心」\n"
-                      "4. 输入目标 IP 点击连接即可自动同步";
+                      "4. 选择设备平台，输入 IP 和端口后连接";
     auto* n_desc = IconManager::label(n_steps, "Muted");
     n_desc->setStyleSheet("line-height: 160%; color: #64686f; font-size: 12px;");
     n_layout->addWidget(n_desc);
@@ -768,10 +819,11 @@ void MainWindow::refreshDeviceInfo() {
     m_btn_refresh_info->setEnabled(false);
     showToast("正在获取设备基本信息及应用版本…");
 
-    m_dev_mgr->queryDeviceInfoAsync(serial, [this, serial](DeviceInfo info) {
+    const auto generation = ++m_info_generation;
+    m_dev_mgr->queryDeviceInfoAsync(serial, [this, serial, generation](DeviceInfo info) {
+        if (generation != m_info_generation || currentSerial() != serial) return;
         m_info_loading = false;
         m_btn_refresh_info->setEnabled(true);
-        if (currentSerial() != serial) return;
         m_cached_info = info;
         renderDeviceInfo(info);
         showToast(QString("设备信息已更新 (%1)").arg(QString::fromStdString(serial).right(6)));
@@ -1235,8 +1287,13 @@ void MainWindow::copyToClipboard(const QString& text, const QString& hint) {
 void MainWindow::startYarwardApp(const QString& bundle, const QString& ability) {
     std::string s = currentSerial();
     if (s.empty()) return;
+    if (isAndroidDevice(s) && !QRegularExpression(R"(^[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)+$)").match(bundle).hasMatch()) {
+        showToast("请输入完整的 Android 应用包名"); return;
+    }
     showToast(QString("正在启动应用 %1…").arg(bundle));
-    m_hdc->executeAsync({"shell", "aa", "start", "-b", bundle.toStdString(), "-a", ability.isEmpty() ? "EntryAbility" : ability.toStdString()}, s, [this, bundle](const CommandResult& r){
+    currentClient()->executeAsync(isAndroidDevice(s) ?
+        std::vector<std::string>{"shell", "monkey", "-p", bundle.toStdString(), "-c", "android.intent.category.LAUNCHER", "1"} :
+        std::vector<std::string>{"shell", "aa", "start", "-b", bundle.toStdString(), "-a", ability.isEmpty() ? "EntryAbility" : ability.toStdString()}, s, [this, bundle](const CommandResult& r){
         if (r.success()) {
             showToast(QString("应用已启动: %1").arg(bundle));
             QTimer::singleShot(1000, this, &MainWindow::refreshDeviceInfo);
@@ -1249,8 +1306,12 @@ void MainWindow::startYarwardApp(const QString& bundle, const QString& ability) 
 void MainWindow::stopYarwardApp(const QString& bundle) {
     std::string s = currentSerial();
     if (s.empty()) return;
+    if (isAndroidDevice(s) && !QRegularExpression(R"(^[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)+$)").match(bundle).hasMatch()) {
+        showToast("请输入完整的 Android 应用包名"); return;
+    }
     showToast(QString("正在停止应用 %1…").arg(bundle));
-    m_hdc->executeAsync({"shell", "aa", "force-stop", bundle.toStdString()}, s, [this, bundle](const CommandResult& r){
+    currentClient()->executeAsync(isAndroidDevice(s) ? std::vector<std::string>{"shell", "am", "force-stop", bundle.toStdString()} :
+        std::vector<std::string>{"shell", "aa", "force-stop", bundle.toStdString()}, s, [this, bundle](const CommandResult& r){
         if (r.success()) {
             showToast(QString("应用已停止: %1").arg(bundle));
             QTimer::singleShot(500, this, &MainWindow::refreshDeviceInfo);
@@ -1291,6 +1352,29 @@ void MainWindow::fetchAppLogsAction(const QString& bundle) {
     QString destDir = QFileDialog::getExistingDirectory(this, "选择保存应用日志的本地目录", QDir::homePath() + "/Downloads");
     if (destDir.isEmpty()) return;
 
+    if (isAndroidDevice(s)) {
+        if (!QRegularExpression(R"(^[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)+$)").match(realBundle).hasMatch()) {
+            showToast("请输入完整的 Android 应用包名"); return;
+        }
+        auto client = currentClient();
+        client->executeAsync({"shell", "pidof", realBundle.toStdString()}, s,
+            [this, client, s, realBundle, destDir](const CommandResult& pidResult) {
+                const auto pid = QString::fromStdString(pidResult.out).trimmed().section(' ', 0, 0);
+                if (!pidResult.success() || !QRegularExpression("^[0-9]+$").match(pid).hasMatch()) {
+                    showToast("应用尚未运行，无法导出该进程的 Logcat 日志"); return;
+                }
+                client->executeAsync({"logcat", "-d", "-v", "threadtime", "--pid=" + pid.toStdString()}, s,
+                    [this, realBundle, destDir](const CommandResult& result) {
+                        QFile output(destDir + "/" + realBundle + "_logcat.txt");
+                        const QByteArray data = QByteArray::fromStdString(result.out);
+                        if (!result.success() || !output.open(QIODevice::WriteOnly) || output.write(data) != data.size())
+                            showToast("Logcat 日志导出失败，请检查调试授权与保存目录");
+                        else showToast("应用 Logcat 日志已保存至 " + output.fileName());
+                    });
+            });
+        return;
+    }
+
     showToast(QString("正在拉取应用数据与日志: %1…").arg(realBundle));
     std::string remote_dir = "/data/app/el2/100/base/" + realBundle.toStdString() + "/";
     m_hdc->executeAsync({"file", "recv", remote_dir, destDir.toStdString()}, s, [this, destDir, realBundle](const CommandResult& r){
@@ -1308,6 +1392,7 @@ void MainWindow::fetchAppLogsAction(const QString& bundle) {
 void MainWindow::setWatchdogStatusAction(bool stop) {
     std::string s = currentSerial();
     if (s.empty()) return;
+    if (isAndroidDevice(s)) { showToast("当前 Android 设备未提供已适配的 ICU 看门狗接口"); return; }
     QString cmd = QString(
         "if [ -e /sys/class/ICU/version/StopWatchDog ]; then echo -n %1 > /sys/class/ICU/version/StopWatchDog; "
         "elif [ -e /sys/class/icu/version/StopWatchDog ]; then echo -n %1 > /sys/class/icu/version/StopWatchDog; "
@@ -1327,6 +1412,7 @@ void MainWindow::setWatchdogStatusAction(bool stop) {
 void MainWindow::feedWatchdogAction() {
     std::string s = currentSerial();
     if (s.empty()) return;
+    if (isAndroidDevice(s)) { showToast("当前 Android 设备未提供已适配的 ICU 看门狗接口"); return; }
     std::string cmd =
         "if [ -e /sys/class/ICU/version/FeedWatchdog ]; then echo -n 1 > /sys/class/ICU/version/FeedWatchdog; "
         "elif [ -e /sys/class/icu/version/FeedWatchdog ]; then echo -n 1 > /sys/class/icu/version/FeedWatchdog; "
@@ -2093,7 +2179,7 @@ QWidget* MainWindow::buildHdcPanel() {
 
     auto* btn_mount = IconManager::button("挂载读写", "");
     connect(btn_mount, &QPushButton::clicked, this, [this]{
-        setHdcInput("target mount", false);
+        setHdcInput(isAndroidDevice(currentSerial()) ? "remount" : "target mount", false);
         executeCustomHdc();
     });
 
@@ -2115,6 +2201,10 @@ QWidget* MainWindow::buildHdcPanel() {
     connect(btn_start_wd, &QPushButton::clicked, this, [this]{ setWatchdogStatusAction(false); });
     auto* btn_feed_wd = IconManager::button("手动喂狗", "");
     connect(btn_feed_wd, &QPushButton::clicked, this, &MainWindow::feedWatchdogAction);
+    for (auto* button : {btn_stop_wd, btn_start_wd, btn_feed_wd}) {
+        button->setProperty("requiresIcu", true);
+        button->setToolTip("适用于已适配 ICU 模块的鸿蒙终端");
+    }
 
     btn_grid_sys->addWidget(btn_home, 0, 0);
     btn_grid_sys->addWidget(btn_back, 0, 1);
@@ -2141,9 +2231,11 @@ QWidget* MainWindow::buildHdcPanel() {
 
     auto* btn_install = IconManager::button("安装应用...", "");
     connect(btn_install, &QPushButton::clicked, this, [this]{
-        QString path = QFileDialog::getOpenFileName(this, "选择 HAP 安装包", QDir::homePath(), "OpenHarmony Package (*.hap)");
+        const bool android = isAndroidDevice(currentSerial());
+        QString path = QFileDialog::getOpenFileName(this, android ? "选择 APK 安装包" : "选择 HAP 安装包", QDir::homePath(),
+            android ? "Android Package (*.apk)" : "OpenHarmony Package (*.hap)");
         if (!path.isEmpty()) {
-            setHdcInput(QString("app install -r \"%1\"").arg(path), false);
+            setHdcInput(QString(android ? "install -r \"%1\"" : "app install -r \"%1\"").arg(path), false);
             executeCustomHdc();
         }
     });
@@ -2153,17 +2245,20 @@ QWidget* MainWindow::buildHdcPanel() {
         bool ok = false;
         QString bundle = QInputDialog::getText(this, "卸载应用", "请输入要卸载的 Bundle 名称:", QLineEdit::Normal, DEFAULT_PACKAGE_FILTER, &ok);
         if (ok && !bundle.isEmpty()) {
-            setHdcInput(QString("app uninstall %1").arg(bundle), false);
+            setHdcInput(QString(isAndroidDevice(currentSerial()) ? "uninstall %1" : "app uninstall %1").arg(bundle), false);
             executeCustomHdc();
         }
     });
 
     auto* btn_clean = IconManager::button("清除缓存...", "");
+    btn_clean->setObjectName("ClearAppData");
     connect(btn_clean, &QPushButton::clicked, this, [this]{
         bool ok = false;
         QString bundle = QInputDialog::getText(this, "清除缓存", "请输入 Bundle 名称:", QLineEdit::Normal, DEFAULT_PACKAGE_FILTER, &ok);
         if (ok && !bundle.isEmpty()) {
-            setHdcInput(QString("bm clean -c -b %1").arg(bundle));
+            if (isAndroidDevice(currentSerial()) && QMessageBox::warning(this, "清除应用数据",
+                "这会删除该应用的本地数据和登录信息，是否继续？", QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes) return;
+            setHdcInput(QString(isAndroidDevice(currentSerial()) ? "pm clear %1" : "bm clean -c -b %1").arg(bundle));
             executeCustomHdc();
         }
     });
@@ -2172,7 +2267,8 @@ QWidget* MainWindow::buildHdcPanel() {
     connect(btn_send, &QPushButton::clicked, this, [this]{
         QString path = QFileDialog::getOpenFileName(this, "选择推送的本地文件", QDir::homePath());
         if (!path.isEmpty()) {
-            setHdcInput(QString("file send \"%1\" /data/local/tmp/").arg(path), false);
+            setHdcInput(QString(isAndroidDevice(currentSerial()) ? "push \"%1\" /data/local/tmp/" :
+                "file send \"%1\" /data/local/tmp/").arg(path), false);
             executeCustomHdc();
         }
     });
@@ -2182,14 +2278,15 @@ QWidget* MainWindow::buildHdcPanel() {
         bool ok = false;
         QString remote = QInputDialog::getText(this, "拉取文件", "设备端文件完整路径:", QLineEdit::Normal, "/data/local/tmp/", &ok);
         if (ok && !remote.isEmpty()) {
-            setHdcInput(QString("file recv \"%1\" \"%2/Downloads/\"").arg(remote, QDir::homePath()), false);
+            setHdcInput(QString(isAndroidDevice(currentSerial()) ? "pull \"%1\" \"%2/Downloads/\"" :
+                "file recv \"%1\" \"%2/Downloads/\"").arg(remote, QDir::homePath()), false);
             executeCustomHdc();
         }
     });
 
     auto* btn_net = IconManager::button("网络配置...", "");
     connect(btn_net, &QPushButton::clicked, this, [this]{
-        setHdcInput("ifconfig");
+        setHdcInput(isAndroidDevice(currentSerial()) ? "ip addr" : "ifconfig");
         executeCustomHdc();
     });
 
@@ -2427,50 +2524,42 @@ void MainWindow::autoConnectWebView() {
     }
     statusBar()->showMessage("正在检测设备中的 WebView 实例…", 3000);
 
-    std::thread([this, s]() {
-        // 1. 先确保设备开启了 ArkWeb DevTools 系统参数
-        {
-            std::string ignored;
-            m_hdc->run({"shell", "param set web.debug.devtools true 2>/dev/null"}, s, 2000);
-        }
-
-        // 2. 扫描 /proc/net/unix 中的 WebView unix socket 实例
-        auto instances = m_webview->scanInstances(s);
-
-        // 3. 构建候选目标列表：unix socket 优先，tcp:9222 兜底
+    auto client = currentClient();
+    const auto generation = ++m_webview_scan_generation;
+    QTcpServer probe;
+    if (!probe.listen(QHostAddress::LocalHost, 0)) {
+        showToast("无法分配 WebView 调试端口"); return;
+    }
+    const int localPort = probe.serverPort(); probe.close();
+    const QPointer<MainWindow> weak(this);
+    std::thread([weak, delivery = m_delivery, client, s, generation, localPort] {
+        if (client->platform() == DevicePlatform::OpenHarmony)
+            client->run({"shell", "param set web.debug.devtools true 2>/dev/null"}, s, 2000);
+        const auto result = client->run({"shell", "cat /proc/net/unix 2>/dev/null"}, s, 4000);
+        const auto instances = WebViewDebugger::parseInstances(result.out);
         std::vector<std::string> candidates;
-        for (const auto& inst : instances) {
-            candidates.push_back(inst.target);
-        }
-        // OpenHarmony ArkWeb 默认监听 tcp:9222
-        bool hasTcp9222 = false;
-        for (const auto& c : candidates) {
-            if (c == "tcp:9222") { hasTcp9222 = true; break; }
-        }
-        if (!hasTcp9222) candidates.push_back("tcp:9222");
-
-        int localPort = 9222;
+        for (const auto& instance : instances) candidates.push_back(instance.target);
+        if (client->platform() == DevicePlatform::OpenHarmony) candidates.push_back("tcp:9222");
         bool forwarded = false;
-
+        std::string forwardedTarget;
         for (const auto& target : candidates) {
-            if (m_webview->forwardTarget(s, target, localPort)) {
-                forwarded = true;
-                break;
-            }
+            const auto forward = client->run({client->platform() == DevicePlatform::Android ? "forward" : "fport",
+                "tcp:" + std::to_string(localPort), target}, s, 4000);
+            if (forward.success()) { forwarded = true; forwardedTarget = target; break; }
         }
-
-        QMetaObject::invokeMethod(this, [this, forwarded, localPort]() {
-            if (!forwarded) {
-                showToast("当前设备未检测到运行中的 WebView 界面");
-                statusBar()->showMessage("未检测到运行中的 WebView 界面，请确认应用已启动并在前台加载网页", 5000);
-                if (m_wv_net_status_label) {
-                    m_wv_net_status_label->setText("未检测到 WebView 界面 · 请在设备上打开 Web 界面后点击「重新检测」");
-                }
+        QMetaObject::invokeMethod(delivery.get(), [weak, client, s, generation, localPort, forwarded, forwardedTarget] {
+            if (!weak || generation != weak->m_webview_scan_generation || weak->currentSerial() != s) {
+                if (forwarded) std::thread([client, s, localPort, forwardedTarget] { client->removeSocketForward(s, localPort, forwardedTarget); }).detach();
                 return;
             }
-
-            m_webview->fetchPages(localPort);
-        });
+            if (!forwarded) {
+                weak->showToast("未检测到可调试的 WebView，请确认应用已开启网页调试");
+                if (weak->m_wv_net_status_label) weak->m_wv_net_status_label->setText("未检测到可调试的 WebView");
+                return;
+            }
+            weak->m_webview->adoptForward(s, localPort, forwardedTarget);
+            weak->m_webview->fetchPages(localPort);
+        }, Qt::QueuedConnection);
     }).detach();
 }
 
@@ -2498,13 +2587,13 @@ void MainWindow::setWebViewSubtab(int index) {
 // Device Discovery & Status Events
 // ==========================================
 void MainWindow::onDeviceConnected(const Device& device) {
-    std::string s = device.serial;
+    std::string s = device.id();
     HC_LOG_INFO(QString("Device connected event: %1").arg(QString::fromStdString(s)));
     statusBar()->showMessage(QString("检测到新设备接入: %1").arg(QString::fromStdString(s)), 4000);
 }
 
 void MainWindow::onDeviceDisconnected(const Device& device) {
-    std::string s = device.serial;
+    std::string s = device.id();
     HC_LOG_WARN(QString("Device disconnected event: %1").arg(QString::fromStdString(s)));
 
     bool is_current = isSameDevice(s, m_active_device_serial) || isSameDevice(s, currentSerial());
@@ -2545,11 +2634,13 @@ void MainWindow::onDevicesUpdated(const std::vector<Device>& devices) {
     if (preferred.isEmpty()) preferred = QString::fromStdString(m_active_device_serial);
     static_cast<DeviceSelector*>(m_device_combo)->setEntries(entries, preferred);
 
+    updatePlatformControls();
+
     // Check for offline transitions of connected devices
     for (const auto& dev : devices) {
-        auto it = m_previous_device_states.find(dev.serial);
+        auto it = m_previous_device_states.find(dev.id());
         if (it != m_previous_device_states.end() && it->second == DeviceState::Connected && dev.state == DeviceState::Offline) {
-            bool is_curr = isSameDevice(dev.serial, m_active_device_serial) || isSameDevice(dev.serial, currentSel.toStdString());
+            bool is_curr = isSameDevice(dev.id(), m_active_device_serial) || isSameDevice(dev.id(), currentSel.toStdString());
             if (is_curr) {
                 showToast(QString("设备 [%1] 状态异常：已离线").arg(QString::fromStdString(dev.serial)));
                 statusBar()->showMessage(QString("当前设备 %1 进入离线状态，长连接已中断").arg(QString::fromStdString(dev.serial)), 8000);
@@ -2561,7 +2652,7 @@ void MainWindow::onDevicesUpdated(const std::vector<Device>& devices) {
                 statusBar()->showMessage(QString("设备 %1 已离线").arg(QString::fromStdString(dev.serial)), 4000);
             }
         }
-        m_previous_device_states[dev.serial] = dev.state;
+        m_previous_device_states[dev.id()] = dev.state;
     }
 
     m_device_combo->blockSignals(false);
@@ -2594,7 +2685,7 @@ void MainWindow::onDevicesUpdated(const std::vector<Device>& devices) {
         std::string s = currentSerial();
         if (!s.empty()) {
             m_hdc_target_badge->setText(QString("目标: %1").arg(QString::fromStdString(s)));
-            m_hdc_target_prefix->setText(QString("-t %1").arg(QString::fromStdString(s)));
+            updatePlatformControls();
             const Device* matched = findMatchingDevice(m_cached_devices, s);
             bool is_conn = (matched && matched->state == DeviceState::Connected);
             m_device_combo->setToolTip(
@@ -2659,11 +2750,12 @@ void MainWindow::onDeviceSelected(int index) {
     }
 
     if (m_updating_device_combo) return;
+    updatePlatformControls();
     m_hilog_suspended_target.clear();
     m_connection_error.clear();
 
     m_hdc_target_badge->setText(QString("目标: %1").arg(QString::fromStdString(s)));
-    m_hdc_target_prefix->setText(QString("-t %1").arg(QString::fromStdString(s)));
+    updatePlatformControls();
 
     const Device* matched = findMatchingDevice(m_cached_devices, s);
     bool is_net = matched ? matched->is_network : (s.find(':') != std::string::npos || s.find('.') != std::string::npos);
@@ -2760,18 +2852,28 @@ void MainWindow::switchToSingleDevice(const std::string& endpoint) {
     m_hdc_target_badge->setText(QString("目标: %1 (连接中…)").arg(QString::fromStdString(target)));
 
     // Execute in background worker thread
-    auto hdc = m_hdc;
+    std::shared_ptr<DeviceClient> hdc = isAndroidDevice(target) ? m_adb : m_hdc;
+    auto delivery = m_delivery;
     QPointer<MainWindow> weak_window(this);
-    std::thread([weak_window, hdc, cancelled, target, gen, networkTarget]() {
+    std::thread([weak_window, delivery, hdc, cancelled, target, gen, networkTarget]() {
         if (cancelled->load()) return;
+        const bool android = hdc->platform() == DevicePlatform::Android;
+        const auto connectTarget = [hdc, android](const std::string& id, int timeout) {
+            return hdc->run(android ? std::vector<std::string>{"connect", deviceSerial(id)} :
+                std::vector<std::string>{"tconn", id}, "", timeout);
+        };
+        const auto disconnectTarget = [hdc, android](const std::string& id) {
+            hdc->run(android ? std::vector<std::string>{"disconnect", deviceSerial(id)} :
+                std::vector<std::string>{"tconn", id, "-remove"}, "", 2000);
+        };
 
         // Disconnect other network devices (single device exclusive policy)
         auto current_devs = hdc->listDevices();
         for (const auto& d : current_devs) {
             if (cancelled->load()) return;
             if (d.is_network && d.state == DeviceState::Connected) {
-                if (!isSameDevice(d.serial, target)) {
-                    hdc->run({"tconn", d.serial, "-remove"}, "", 2000);
+                if (!isSameDevice(d.id(), target)) {
+                    disconnectTarget(d.id());
                 }
             }
         }
@@ -2783,14 +2885,14 @@ void MainWindow::switchToSingleDevice(const std::string& endpoint) {
         if (networkTarget) {
             // If target was already offline or stuck in HDC, remove first to reset socket state
             for (const auto& d : current_devs) {
-                if (isSameDevice(d.serial, target) && d.state == DeviceState::Offline) {
-                    hdc->run({"tconn", target, "-remove"}, "", 2000);
+                if (isSameDevice(d.id(), target) && d.state == DeviceState::Offline) {
+                    disconnectTarget(target);
                     std::this_thread::sleep_for(std::chrono::milliseconds(200));
                     break;
                 }
             }
             if (cancelled->load()) return;
-            connection_result = hdc->run({"tconn", target}, "", 5000);
+            connection_result = connectTarget(target, 5000);
             NetworkDeviceDialog::saveDevice(target);
         }
 
@@ -2806,7 +2908,7 @@ void MainWindow::switchToSingleDevice(const std::string& endpoint) {
             if (cancelled->load()) return;
             fresh_devs = hdc->listDevices();
             for (const auto& d : fresh_devs) {
-                if (isSameDevice(d.serial, target)) {
+                if (isSameDevice(d.id(), target)) {
                     dev_state = d.state;
                     if (d.state == DeviceState::Connected) {
                         is_online = true;
@@ -2819,7 +2921,7 @@ void MainWindow::switchToSingleDevice(const std::string& endpoint) {
             }
             // Retry tconn once after ~1.5s if not yet seen in HDC target list
             if (attempt == 6 && !is_online && networkTarget) {
-                auto retry = hdc->run({"tconn", target}, "", 3000);
+                auto retry = connectTarget(target, 3000);
                 if (!retry.out.empty() || !retry.err.empty()) connection_result = std::move(retry);
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(250));
@@ -2832,9 +2934,7 @@ void MainWindow::switchToSingleDevice(const std::string& endpoint) {
                 .arg(QString::fromStdString(target)).arg(static_cast<int>(dev_state))
                 .arg(connection_result.exit_code).arg(detail));
         }
-        auto* receiver = weak_window.data();
-        if (!receiver) return;
-        QMetaObject::invokeMethod(receiver, [weak_window, cancelled, target, fresh_devs, gen, is_online, dev_state, detail]() {
+        QMetaObject::invokeMethod(delivery.get(), [weak_window, cancelled, target, fresh_devs, gen, is_online, dev_state, detail]() mutable {
             if (!weak_window || cancelled->load() || gen != weak_window->m_switch_generation) return;
             auto* self = weak_window.data();
 
@@ -2842,6 +2942,9 @@ void MainWindow::switchToSingleDevice(const std::string& endpoint) {
             self->m_state_badge->setStyleSheet("");
             self->m_user_stopped_mirror = false;
             self->m_pending_auto_start_serial = is_online ? target : std::string{};
+            for (const auto& device : self->m_cached_devices) {
+                if ((device.platform == DevicePlatform::Android) != isAndroidDevice(target)) fresh_devs.push_back(device);
+            }
             // Refresh first so an empty target list cannot overwrite the failure reason.
             self->onDevicesUpdated(fresh_devs);
 
@@ -2851,7 +2954,7 @@ void MainWindow::switchToSingleDevice(const std::string& endpoint) {
                 self->statusBar()->showMessage("设备未授权：请在设备屏幕上允许调试", 5000);
                 self->showToast("设备未授权：请在设备屏幕上允许调试");
             } else if (!is_online) {
-                self->m_connection_error = QString("连接失败：无法连接至 %1\n请检查设备 IP、HDC 端口和网络连接，并确认设备已开启调试")
+                self->m_connection_error = QString("连接失败：无法连接至 %1\n请检查设备 IP、调试端口和网络连接，并确认设备已开启调试")
                     .arg(QString::fromStdString(target));
                 self->m_state_badge->setText("连接失败");
                 self->statusBar()->showMessage(QString("连接设备 %1 失败，请检查 IP 及无线调试端口").arg(QString::fromStdString(target)), 5000);
@@ -2886,7 +2989,8 @@ void MainWindow::disconnectCurrentDevice() {
     m_active_device_serial.clear();
     stopMirror(true);
     updateHiLogCollection();
-    m_hdc->executeAsync({"tconn", s, "-remove"}, "", [this, s](const CommandResult&){
+    currentClient()->executeAsync(isAndroidDevice(s) ? std::vector<std::string>{"disconnect", deviceSerial(s)} :
+        std::vector<std::string>{"tconn", s, "-remove"}, "", [this, s](const CommandResult&){
         refreshDevices();
         showToast(QString("已断开设备: %1").arg(QString::fromStdString(s)));
     });
@@ -2895,11 +2999,11 @@ void MainWindow::disconnectCurrentDevice() {
 void MainWindow::openDeviceCenter() {
     std::vector<std::string> connected_serials;
     for (const auto& d : m_cached_devices) {
-        if (d.state == DeviceState::Connected && d.is_network) connected_serials.push_back(d.serial);
+        if (d.state == DeviceState::Connected && d.is_network) connected_serials.push_back(d.id());
     }
     std::string cur = currentSerial();
 
-    auto* dlg = new NetworkDeviceDialog(this, m_hdc, connected_serials, cur);
+    auto* dlg = new NetworkDeviceDialog(this, m_hdc, connected_serials, cur, m_adb);
     dlg->setDevices(m_cached_devices, cur);
     connect(m_dev_mgr.get(), &DeviceManager::devicesUpdated, dlg, [this, dlg](const std::vector<Device>& devices) {
         dlg->setDevices(devices, currentSerial());
@@ -2922,7 +3026,9 @@ void MainWindow::openDeviceCenter() {
             m_active_device_serial.clear();
             stopMirror(true);
         }
-        m_hdc->executeAsync({"tconn", ep, "-remove"}, "", [this](const CommandResult&) {
+        const std::shared_ptr<DeviceClient> client = isAndroidDevice(ep) ? m_adb : m_hdc;
+        client->executeAsync(isAndroidDevice(ep) ? std::vector<std::string>{"disconnect", deviceSerial(ep)} :
+            std::vector<std::string>{"tconn", ep, "-remove"}, "", [this](const CommandResult&) {
             refreshDevices();
         });
     });
@@ -2972,7 +3078,7 @@ void MainWindow::startMirror() {
     m_screen->setActive(true);
 
     // Wake up device screen asynchronously and start periodic keep-awake
-    m_hdc->wakeupAsync(s);
+    currentClient()->wakeupAsync(s);
     if (m_keep_awake_timer) m_keep_awake_timer->start();
 
     int bitrates[] = {20000000, 12000000, 6000000, 2500000};
@@ -2986,22 +3092,28 @@ void MainWindow::startMirror() {
         dev.is_network = is_net;
     }
 
-    m_stream = std::make_unique<StreamSession>(m_hdc, dev, 60, br, 0, this);
+    if (dev.platform == DevicePlatform::Android)
+        m_stream = std::make_unique<AndroidStreamSession>(m_adb, dev, br, this);
+    else m_stream = std::make_unique<StreamSession>(m_hdc, dev, 60, br, 0, this);
     m_stream->setQuality(m_bitrate_idx, br);
     m_stream->setPresentation(m_screen->isVisible() ? m_screen->size() : QSize{}, m_user_rotation, m_screen->devicePixelRatioF());
 
-    connect(m_stream.get(), &StreamSession::frameReady, this, [this](const DecodedFrame& f){
+    const QPointer<MirrorSession> currentStream(m_stream.get());
+    connect(m_stream.get(), &MirrorSession::frameReady, this, [this, currentStream](const DecodedFrame& f){
+        if (!currentStream || currentStream.data() != m_stream.get()) return;
         m_screen->updateFrame(f);
         updateStreamStatusBadge(f.width, f.height);
     });
 
-    connect(m_stream.get(), &StreamSession::statusChanged, this, [this](const QString& status){
+    connect(m_stream.get(), &MirrorSession::statusChanged, this, [this, currentStream](const QString& status){
+        if (!currentStream || currentStream.data() != m_stream.get()) return;
         HC_LOG_INFO("Mirroring status: " + status);
         statusBar()->showMessage(status, 4000);
         if (m_screen->image().isNull()) m_screen->setStatusMessage(status);
     });
 
-    connect(m_stream.get(), &StreamSession::streamFinished, this, [this](const QString& error){
+    connect(m_stream.get(), &MirrorSession::streamFinished, this, [this, currentStream](const QString& error){
+        if (!currentStream || currentStream.data() != m_stream.get()) return;
         if (m_projecting) {
             showToast("投屏已停止，详细原因见画面提示");
             statusBar()->showMessage(QString("投屏已停止：%1").arg(error), 6000);
@@ -3019,7 +3131,12 @@ void MainWindow::startMirror() {
         if (act == TouchAction::Down) {
             down_pt = QPoint(x, y);
             down_time = QDateTime::currentMSecsSinceEpoch();
-        } else if (act == TouchAction::Up) {
+        }
+        if (isAndroidDevice(s) && m_stream && m_stream->controlChannel()->isConnected()) {
+            m_stream->controlChannel()->sendTouch(act, x, y, dw, dh);
+            return;
+        }
+        if (act == TouchAction::Up) {
             int64_t dur = std::max(50LL, QDateTime::currentMSecsSinceEpoch() - down_time);
             int dx = std::abs(x - down_pt.x());
             int dy = std::abs(y - down_pt.y());
@@ -3039,13 +3156,19 @@ void MainWindow::startMirror() {
 
             if (dx < 10 && dy < 10) {
                 // Single touch click
-                m_hdc->executeAsync({"shell", "uinput", "-T", "-c", std::to_string(x), std::to_string(y)}, s, nullptr);
+                currentClient()->executeAsync(isAndroidDevice(s) ?
+                    std::vector<std::string>{"shell", "input", "tap", std::to_string(x), std::to_string(y)} :
+                    std::vector<std::string>{"shell", "uinput", "-T", "-c", std::to_string(x), std::to_string(y)}, s, nullptr);
             } else {
                 // Drag or swipe gesture
-                m_hdc->executeAsync({"shell", "uinput", "-T", "-m",
+                auto command = isAndroidDevice(s) ? std::vector<std::string>{"shell", "input", "swipe"} :
+                    std::vector<std::string>{"shell", "uinput", "-T", "-m"};
+                const std::vector<std::string> coordinates{
                     std::to_string(down_pt.x()), std::to_string(down_pt.y()),
                     std::to_string(x), std::to_string(y),
-                    std::to_string(std::clamp(static_cast<int>(dur), 100, 800))}, s, nullptr);
+                    std::to_string(std::clamp(static_cast<int>(dur), 100, 800))};
+                command.insert(command.end(), coordinates.begin(), coordinates.end());
+                currentClient()->executeAsync(command, s, nullptr);
             }
         }
     });
@@ -3276,6 +3399,15 @@ void MainWindow::saveScreenshot() {
         }
     }
 
+    if (isAndroidDevice(s)) {
+        m_adb->executeAsync({"exec-out", "screencap", "-p"}, s, [this, dest, onSaveSuccess](const CommandResult& result) {
+            const auto image = AdbClient::screenshotImage(result);
+            if (result.success() && !image.isNull() && image.save(dest, "PNG")) onSaveSuccess();
+            else showToast("Android 截图失败，请检查截图权限与 ADB 连接");
+        });
+        return;
+    }
+
     // Fallback: capture directly via device snapshot_display (OpenHarmony requires .jpeg extension)
     std::string remote_jpeg = "/data/local/tmp/harmonycast_snap.jpeg";
     QString local_temp = QDir::tempPath() + QString("/snap_%1.jpeg").arg(QDateTime::currentMSecsSinceEpoch());
@@ -3319,9 +3451,10 @@ void MainWindow::sendKey(const QString& key) {
     std::string s = currentSerial();
     if (s.empty()) return;
     int keyCode = 0;
-    if (key == "back") keyCode = 2;
-    else if (key == "home") keyCode = 1;
-    else if (key == "power") keyCode = 18;
+    const bool android = isAndroidDevice(s);
+    if (key == "back") keyCode = android ? 4 : 2;
+    else if (key == "home") keyCode = android ? 3 : 1;
+    else if (key == "power") keyCode = android ? 26 : 18;
 
     if (keyCode > 0) {
         if (m_stream && m_stream->controlChannel() && m_stream->controlChannel()->isConnected()) {
@@ -3329,7 +3462,8 @@ void MainWindow::sendKey(const QString& key) {
             m_stream->controlChannel()->sendKey(KeyAction::Up, keyCode);
             return;
         }
-        m_hdc->executeAsync({"shell", "uinput", "-K", "-d", std::to_string(keyCode), "-u", std::to_string(keyCode)}, s, [](const CommandResult&){});
+        currentClient()->executeAsync(android ? std::vector<std::string>{"shell", "input", "keyevent", std::to_string(keyCode)} :
+            std::vector<std::string>{"shell", "uinput", "-K", "-d", std::to_string(keyCode), "-u", std::to_string(keyCode)}, s, [](const CommandResult&){});
     }
 }
 
@@ -3646,7 +3780,7 @@ void MainWindow::updateHiLogCollection() {
     if (m_hilog && m_hilog->isActive()) return;
     if (!m_log_panel->isVisible() || !m_hdc) return;
     stopHiLogCollection();
-    m_hilog = std::make_unique<HiLogSession>(m_hdc->path(), serial, "", "all", this);
+    m_hilog = std::make_unique<HiLogSession>(currentClient()->path(), serial, "", "all", this);
     const QPointer<HiLogSession> session(m_hilog.get());
     connect(m_hilog.get(), &HiLogSession::entriesReady, this, [this, session](const std::vector<HiLogEntry>& entries) {
         if (session && session.data() == m_hilog.get()) onHiLogEntries(entries);
@@ -4550,7 +4684,9 @@ void MainWindow::setHdcInput(const QString& command, bool shellMode) {
 
 void MainWindow::executeCustomHdc() {
     QString input = m_hdc_input->text().trimmed();
-    const auto args = HdcClient::commandArguments(input, m_hdc_mode_combo->currentData().toBool());
+    const bool android = isAndroidDevice(currentSerial());
+    const auto args = android ? AdbClient::commandArguments(input, m_hdc_mode_combo->currentData().toBool()) :
+        HdcClient::commandArguments(input, m_hdc_mode_combo->currentData().toBool());
     if (args.empty()) return;
 
     std::string s = currentSerial();
@@ -4560,9 +4696,10 @@ void MainWindow::executeCustomHdc() {
 
     QStringList displayed;
     for (const auto& arg : args) displayed << QString::fromStdString(arg);
-    appendHdcOutput(QString("\n$ hdc %1 %2").arg(s.empty() ? "" : QString("-t %1").arg(QString::fromStdString(s)), displayed.join(' ')));
+    appendHdcOutput(QString("\n$ %1 %2 %3").arg(android ? "adb" : "hdc",
+        s.empty() ? QString{} : QString("%1 %2").arg(android ? "-s" : "-t", QString::fromStdString(deviceSerial(s))), displayed.join(' ')));
 
-    m_hdc->executeAsync(args, s, [this](const CommandResult& r){
+    currentClient()->executeAsync(args, s, [this](const CommandResult& r){
         m_btn_run_hdc->setEnabled(true);
         m_btn_kill_hdc->setEnabled(false);
         m_hdc_status_label->setText("就绪");

@@ -18,14 +18,17 @@ enum ControlMsgType : uint8_t {
     TYPE_ROTATE_DEVICE = 10,
 };
 
-ControlChannel::ControlChannel(QObject* parent)
-    : QObject(parent), m_socket(new QTcpSocket(this)) {
+ControlChannel::ControlChannel(QObject* parent, DevicePlatform platform)
+    : QObject(parent), m_socket(new QTcpSocket(this)), m_platform(platform) {
     m_socket->setProxy(QNetworkProxy(QNetworkProxy::NoProxy));
     connect(m_socket, &QTcpSocket::connected, this, &ControlChannel::connected);
     connect(m_socket, &QTcpSocket::disconnected, this, &ControlChannel::disconnected);
     connect(m_socket, &QTcpSocket::errorOccurred, this, [this](QAbstractSocket::SocketError) {
         emit errorOccurred(m_socket->errorString());
     });
+    // Drain server-to-client messages even when clipboard synchronization is disabled.
+    m_socket->setReadBufferSize(256 * 1024);
+    connect(m_socket, &QTcpSocket::readyRead, this, [this] { m_socket->readAll(); });
 }
 
 ControlChannel::~ControlChannel() {
@@ -38,6 +41,11 @@ bool ControlChannel::connectToHost(const QString& host, quint16 port) {
     }
     m_socket->connectToHost(host, port);
     return m_socket->waitForConnected(3000);
+}
+
+void ControlChannel::connectToHostAsync(const QString& host, quint16 port) {
+    m_socket->abort();
+    m_socket->connectToHost(host, port);
 }
 
 void ControlChannel::disconnectFromHost() {
@@ -60,15 +68,18 @@ bool ControlChannel::sendTouch(TouchAction action, int x, int y, int screen_w, i
     stream.setByteOrder(QDataStream::BigEndian);
 
     stream << static_cast<quint8>(TYPE_INJECT_TOUCH_EVENT);
-    stream << static_cast<quint8>(action);
+    const auto wireAction = m_platform == DevicePlatform::Android
+        ? (action == TouchAction::Move ? 2 : action == TouchAction::Up ? 1 : 0) : int(action);
+    stream << static_cast<quint8>(wireAction);
     stream << static_cast<quint64>(pointer_id);
     stream << static_cast<quint32>(x);
     stream << static_cast<quint32>(y);
     stream << static_cast<quint16>(screen_w);
     stream << static_cast<quint16>(screen_h);
-    stream << static_cast<quint16>(0xFFFF); // Pressure (1.0f)
-    stream << static_cast<quint32>(1);      // AMOTION_EVENT_BUTTON_PRIMARY
-    stream << static_cast<quint32>(1);      // Buttons
+    const bool android = m_platform == DevicePlatform::Android;
+    stream << static_cast<quint16>(android && action == TouchAction::Up ? 0 : 0xFFFF);
+    stream << static_cast<quint32>(android ? 0 : 1);
+    stream << static_cast<quint32>(android ? 0 : 1);
 
     qint64 written = m_socket->write(packet);
     m_socket->flush();

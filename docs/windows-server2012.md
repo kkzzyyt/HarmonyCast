@@ -52,3 +52,5 @@ python scripts/windows/check_server2012_runtime.py build-server2012/Release
 必须完整部署 Qt 插件、FFmpeg、v142 CRT 和 UCRT，不能仅替换普通包中的 `HarmonyCast.exe`。运行库脚本固定选择 14.29 CRT，避免构建机的新运行库被误带入旧系统包。
 
 打包检查递归检查 EXE/DLL 的架构、子系统版本、Qt6 / D3D12 依赖及若干已知 Windows 10 导入函数，并检查必要运行库是否齐全。这能阻止已知启动问题进入发行包，但不是完整的 Windows API 兼容性认证。
+
+Android 接入使用独立 ADB。兼容包不携带标准包中的当前 Google ADB，需自行安装适用于该主机的版本，并通过 PATH 或 `HARMONYCAST_ADB` 指定；Android 在 Server 2012 上尚未运行验收。鸿蒙功能继续使用原有 HDC。

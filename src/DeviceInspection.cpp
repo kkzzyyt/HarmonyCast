@@ -1,5 +1,6 @@
 #include "harmonycast/DeviceInspection.h"
 #include "harmonycast/DeviceManager.h"
+#include "harmonycast/AdbClient.h"
 #include <QFileInfo>
 #include <QDir>
 #include <QMap>
@@ -67,7 +68,7 @@ QByteArray csvLine(const QStringList& values) {
 
 } // namespace
 
-InspectionImport InspectionReport::parseTargets(const QString& text) {
+InspectionImport InspectionReport::parseTargets(const QString& text, DevicePlatform platform) {
     InspectionImport result;
     QSet<QString> seen;
     static const QRegularExpression targetPattern(R"(^((?:\d{1,3}\.){3}\d{1,3})(?::(\d{1,5}))?$)");
@@ -86,13 +87,13 @@ InspectionImport InspectionReport::parseTargets(const QString& text) {
             for (const auto& octet : ip.split('.')) {
                 if (octet.isEmpty() || octet.toInt() > 255 || (octet.size() > 1 && octet.startsWith('0'))) valid = false;
             }
-            const int port = match.captured(2).isEmpty() ? 8710 : match.captured(2).toInt();
+            const int port = match.captured(2).isEmpty() ? defaultDevicePort(platform) : match.captured(2).toInt();
             if (port <= 0 || port > 65535) valid = false;
             if (!valid) {
                 result.errors << QString("第 %1 行：%2").arg(i + 1).arg(token.left(80));
                 continue;
             }
-            InspectionTarget target{ip, port};
+            InspectionTarget target{ip, port, platform};
             if (seen.contains(target.endpoint())) {
                 ++result.duplicates;
             } else if (result.targets.size() < MaxTargets) {
@@ -107,9 +108,9 @@ InspectionImport InspectionReport::parseTargets(const QString& text) {
     return result;
 }
 
-QString InspectionReport::collectionScript() {
+QString InspectionReport::collectionScript(DevicePlatform platform) {
     // Fixed, read-only script: imported addresses are passed only as HDC arguments.
-    return QStringLiteral(
+    QString script = QStringLiteral(
         "echo '<<<HC_INSPECTION:BEGIN>>>'; "
         "echo '<<<HC_INSPECTION:ICU>>>'; "
         "for dir in /sys/class/ICU/version /sys/class/icu/version /sys/class/ICU /sys/class/icu; do "
@@ -131,6 +132,13 @@ QString InspectionReport::collectionScript() {
         "echo '<<<HC_INSPECTION:LOAD>>>'; cat /proc/loadavg 2>/dev/null; "
         "echo '<<<HC_INSPECTION:TIME>>>'; date '+%Y-%m-%d %H:%M:%S %z' 2>/dev/null; "
         "echo '<<<HC_INSPECTION:END>>>'");
+    if (platform == DevicePlatform::Android) {
+        script.replace("param get ohos.boot.sn", "getprop ro.serialno");
+        script.replace("param get const.ohos.fullname", "echo Android $(getprop ro.build.version.release)");
+        script.replace("param get const.ohos.apiversion", "getprop ro.build.version.sdk");
+        script.replace("echo '<<<HC_INSPECTION:ICU>>>';", "echo '<<<HC_INSPECTION:ICU>>>'; echo model: $(getprop ro.product.model);");
+    }
+    return script;
 }
 
 InspectionResult InspectionReport::parseSnapshot(const InspectionTarget& target, const QString& output) {
@@ -251,7 +259,7 @@ InspectionResult InspectionReport::parseSnapshot(const InspectionTarget& target,
     if (!row.memoryAvailableKiB) missing << "可用内存";
     if (macs(row).isEmpty()) missing << "MAC 地址";
     if (!row.storageTotalKiB || !row.storageAvailableKiB) missing << "/data 容量";
-    if (row.model.isEmpty()) missing << "看门狗硬件型号";
+    if (row.model.isEmpty()) missing << (target.platform == DevicePlatform::Android ? "设备型号" : "看门狗硬件型号");
     if (row.systemVersion.isEmpty()) missing << "系统版本";
     if (row.architecture.isEmpty()) missing << "CPU 架构";
     if (row.cpuLoad.isEmpty()) missing << "CPU 负载";
@@ -274,6 +282,8 @@ QString InspectionReport::statusText(InspectionStatus status) {
     case InspectionStatus::Partial: return "部分完成";
     case InspectionStatus::Failed: return "失败";
     case InspectionStatus::Cancelled: return "已停止";
+    case InspectionStatus::Cleaning: return "清理中";
+    case InspectionStatus::Skipped: return "无匹配应用";
     }
     return {};
 }
@@ -297,7 +307,29 @@ QString InspectionReport::macs(const InspectionResult& row) {
     return values.join("; ");
 }
 
-QStringList InspectionReport::headers() {
+QStringList InspectionReport::cleanupPackages() {
+    return {"com.yarward.etnbedsideoh", "com.yarward.etnroomoh", "com.yarward.etndoorcontrol_a33"};
+}
+
+QString InspectionReport::applicationCleanupText(const ApplicationCleanupResult& result) {
+    switch (result.status) {
+    case ApplicationCleanupStatus::Pending: return "未执行";
+    case ApplicationCleanupStatus::Running: return "清理中";
+    case ApplicationCleanupStatus::Succeeded: return "已清理";
+    case ApplicationCleanupStatus::NotInstalled: return "未安装（跳过）";
+    case ApplicationCleanupStatus::Failed: return "失败：" + result.detail;
+    case ApplicationCleanupStatus::Cancelled: return "已停止：" + result.detail;
+    }
+    return {};
+}
+
+QStringList InspectionReport::headers(InspectionTask task) {
+    if (task == InspectionTask::ClearApplicationData) {
+        QStringList columns{"目标 IP", "HDC 端口", "清理结果", "执行时间"};
+        columns << cleanupPackages();
+        columns << "备注";
+        return columns;
+    }
     return {"目标 IP", "HDC 端口", "巡检结果", "运行时间", "运行秒数", "MAC 地址", "设备型号",
             "序列号", "系统版本", "API 版本", "CPU 架构", "CPU 负载（1/5/15 分钟）", "总内存（MiB）",
             "已用内存（MiB）", "可用内存（MiB）", "内存使用率（%）", "/data 总容量（GiB）",
@@ -305,6 +337,17 @@ QStringList InspectionReport::headers() {
 }
 
 QStringList InspectionReport::cells(const InspectionResult& row) {
+    if (row.task == InspectionTask::ClearApplicationData) {
+        QStringList columns{row.target.ip, QString::number(row.target.port), statusText(row.status),
+            row.inspectedAt.toString("yyyy-MM-dd HH:mm:ss")};
+        for (const auto& package : cleanupPackages()) {
+            const auto found = std::find_if(row.applications.begin(), row.applications.end(),
+                [&package](const ApplicationCleanupResult& app) { return app.package == package; });
+            columns << (found == row.applications.end() ? QString{} : applicationCleanupText(*found));
+        }
+        columns << row.notes;
+        return columns;
+    }
     std::optional<quint64> used;
     if (row.memoryTotalKiB && row.memoryAvailableKiB && *row.memoryAvailableKiB <= *row.memoryTotalKiB)
         used = *row.memoryTotalKiB - *row.memoryAvailableKiB;
@@ -325,7 +368,8 @@ bool InspectionReport::writeCsv(const QString& path, const std::vector<Inspectio
         return false;
     }
     auto write = [&](const QByteArray& bytes) { return file.write(bytes) == bytes.size(); };
-    bool ok = write(QByteArray::fromHex("efbbbf")) && write(csvLine(headers()));
+    const auto task = results.empty() ? InspectionTask::Inspect : results.front().task;
+    bool ok = write(QByteArray::fromHex("efbbbf")) && write(csvLine(headers(task)));
     for (const auto& row : results) if (ok) ok = write(csvLine(cells(row)));
     if (!ok || !file.commit()) {
         if (error) *error = file.errorString();
@@ -334,7 +378,7 @@ bool InspectionReport::writeCsv(const QString& path, const std::vector<Inspectio
     return true;
 }
 
-InspectionRunner::InspectionRunner(std::shared_ptr<HdcClient> hdc, QObject* parent, int commandTimeoutMs)
+InspectionRunner::InspectionRunner(std::shared_ptr<DeviceClient> hdc, QObject* parent, int commandTimeoutMs)
     : QObject(parent), m_hdc(std::move(hdc)), m_command_timeout_ms(std::max(100, commandTimeoutMs)) {}
 
 InspectionRunner::~InspectionRunner() {
@@ -344,20 +388,41 @@ InspectionRunner::~InspectionRunner() {
         m_process->waitForFinished(1000);
     }
     if (m_running && m_connection_attempted && m_index < static_cast<int>(m_results.size())) {
-        HdcClient::runProcess(m_hdc_path, {"tconn", m_results[m_index].target.endpoint().toStdString(), "-remove"}, "", 2000);
+        const auto endpoint = m_results[m_index].target.endpoint().toStdString();
+        if (m_hdc->platform() == DevicePlatform::Android) AdbClient::runProcess(m_hdc_path, {"disconnect", endpoint}, "", 2000);
+        else HdcClient::runProcess(m_hdc_path, {"tconn", endpoint, "-remove"}, "", 2000);
     }
 }
 
 bool InspectionRunner::start(const std::vector<InspectionTarget>& targets) {
+    return startBatch(targets, InspectionTask::Inspect, {});
+}
+
+bool InspectionRunner::startApplicationCleanup(const std::vector<InspectionTarget>& targets, const QStringList& packages) {
+    if (!m_hdc || m_hdc->platform() != DevicePlatform::OpenHarmony || packages.isEmpty()) return false;
+    const auto allowed = InspectionReport::cleanupPackages();
+    QStringList selected;
+    for (const auto& package : packages) {
+        if (!allowed.contains(package)) return false;
+        if (!selected.contains(package)) selected << package;
+    }
+    return startBatch(targets, InspectionTask::ClearApplicationData, selected);
+}
+
+bool InspectionRunner::startBatch(const std::vector<InspectionTarget>& targets, InspectionTask task, const QStringList& packages) {
     if (m_running || !m_hdc || targets.empty() || targets.size() > InspectionReport::MaxTargets) return false;
     for (const auto& target : targets) {
-        const auto parsed = InspectionReport::parseTargets(target.endpoint());
+        if (target.platform != m_hdc->platform()) return false;
+        const auto parsed = InspectionReport::parseTargets(target.endpoint(), target.platform);
         if (!parsed.errors.isEmpty() || parsed.targets.size() != 1 || parsed.targets.front().endpoint() != target.endpoint()) return false;
     }
     m_results.clear();
+    m_task = task;
     for (const auto& target : targets) {
         InspectionResult row;
         row.target = target;
+        row.task = task;
+        for (const auto& package : packages) row.applications.push_back({package, ApplicationCleanupStatus::Pending, {}});
         m_results.push_back(std::move(row));
     }
     m_hdc_path = m_hdc->path();
@@ -387,17 +452,19 @@ void InspectionRunner::nextTarget() {
     auto& row = m_results[m_index];
     row.status = InspectionStatus::Connecting;
     row.inspectedAt = QDateTime::currentDateTime();
-    m_connection_attempted = true;
     emit targetChanged(m_index);
     emit activityChanged("正在连接 " + row.target.endpoint());
-    runCommand({"tconn", row.target.endpoint().toStdString()}, "", std::min(10000, m_command_timeout_ms), [this](CommandResult result) {
+    if (m_stopping) { finishBatch(); return; }
+    m_connection_attempted = true;
+    runCommand({m_hdc->platform() == DevicePlatform::Android ? "connect" : "tconn", row.target.endpoint().toStdString()}, "", std::min(10000, m_command_timeout_ms), [this](CommandResult result) {
         auto& row = m_results[m_index];
         if (m_stopping || commandFailed(result)) {
             row.status = m_stopping ? InspectionStatus::Cancelled : InspectionStatus::Failed;
             row.notes = m_stopping ? "用户停止" : "连接失败：" + commandDetail(result);
             disconnectCurrent();
         } else {
-            collectCurrent();
+            if (m_task == InspectionTask::ClearApplicationData) queryCleanupApplications();
+            else collectCurrent();
         }
     });
 }
@@ -407,7 +474,7 @@ void InspectionRunner::collectCurrent() {
     row.status = InspectionStatus::Collecting;
     emit targetChanged(m_index);
     emit activityChanged("正在读取 " + row.target.endpoint());
-    runCommand({"shell", InspectionReport::collectionScript().toStdString()}, row.target.endpoint(), m_command_timeout_ms,
+    runCommand({"shell", InspectionReport::collectionScript(row.target.platform).toStdString()}, row.target.endpoint(), m_command_timeout_ms,
                [this](CommandResult result) {
         auto& row = m_results[m_index];
         if (m_stopping) {
@@ -428,10 +495,94 @@ void InspectionRunner::collectCurrent() {
     });
 }
 
+void InspectionRunner::queryCleanupApplications() {
+    auto& row = m_results[m_index];
+    row.status = InspectionStatus::Cleaning;
+    emit targetChanged(m_index);
+    emit activityChanged("正在查询已安装应用 " + row.target.endpoint());
+    if (m_stopping) { finishApplicationCleanup(); return; }
+    runCommand({"shell", "bm", "dump", "-a"}, row.target.endpoint(), m_command_timeout_ms, [this](CommandResult result) {
+        auto& row = m_results[m_index];
+        const CommandResult transport{result.exit_code, {}, result.err};
+        static const QRegularExpression failedLine(
+            R"((?im)^\s*(?:\[(?:Fail|E[0-9a-f]+)\]|error\b|failed\b|permission denied\b|[^\n]*\bbm\b[^\n]*(?:not found|inaccessible)))");
+        if (m_stopping || commandFailed(transport) || failedLine.match(QString::fromStdString(result.out)).hasMatch()) {
+            row.status = m_stopping ? InspectionStatus::Cancelled : InspectionStatus::Failed;
+            row.notes = m_stopping ? "用户停止，未执行应用清理" : "查询应用失败：" + commandDetail(result);
+            disconnectCurrent();
+            return;
+        }
+        const auto installed = QString::fromStdString(result.out);
+        for (auto& app : row.applications) {
+            const QRegularExpression exactPackage("(?<![A-Za-z0-9_.])" + QRegularExpression::escape(app.package) + "(?![A-Za-z0-9_.])");
+            if (!exactPackage.match(installed).hasMatch()) app.status = ApplicationCleanupStatus::NotInstalled;
+        }
+        m_application_index = 0;
+        cleanNextApplication();
+    });
+}
+
+void InspectionRunner::cleanNextApplication() {
+    auto& row = m_results[m_index];
+    if (m_stopping) { finishApplicationCleanup(); return; }
+    while (m_application_index < row.applications.size() &&
+           row.applications[m_application_index].status != ApplicationCleanupStatus::Pending) ++m_application_index;
+    if (m_application_index == row.applications.size()) { finishApplicationCleanup(); return; }
+    auto& app = row.applications[m_application_index];
+    app.status = ApplicationCleanupStatus::Running;
+    emit targetChanged(m_index);
+    emit activityChanged(QString("正在清理 %1 · %2").arg(row.target.endpoint(), app.package));
+    if (m_stopping) {
+        app.status = ApplicationCleanupStatus::Cancelled; app.detail = "用户停止，未执行";
+        finishApplicationCleanup(); return;
+    }
+    runCommand({"shell", "bm", "clean", "-d", "-n", app.package.toStdString()}, row.target.endpoint(),
+        m_command_timeout_ms, [this](CommandResult result) {
+            auto& app = m_results[m_index].applications[m_application_index];
+            static const QRegularExpression success(R"(clean\s+bundle\s+data\s+files\s+successfully)",
+                QRegularExpression::CaseInsensitiveOption);
+            if (m_stopping) {
+                app.status = ApplicationCleanupStatus::Cancelled;
+                app.detail = "已停止等待，设备端结果未确认";
+            } else if (commandFailed(result) || !success.match(QString::fromStdString(result.out)).hasMatch()) {
+                app.status = ApplicationCleanupStatus::Failed;
+                app.detail = commandDetail(result);
+                if (app.detail.contains("超时")) app.detail += "（设备端结果未确认）";
+                if (result.success() && !commandFailed(result)) app.detail = "未收到清理成功确认：" + app.detail;
+            } else {
+                app.status = ApplicationCleanupStatus::Succeeded;
+                app.detail = QString::fromStdString(result.out).trimmed().left(1024);
+            }
+            emit targetChanged(m_index);
+            ++m_application_index;
+            QTimer::singleShot(0, this, &InspectionRunner::cleanNextApplication);
+        });
+}
+
+void InspectionRunner::finishApplicationCleanup() {
+    auto& row = m_results[m_index];
+    int succeeded = 0, failed = 0;
+    for (auto& app : row.applications) {
+        if (app.status == ApplicationCleanupStatus::Succeeded) ++succeeded;
+        else if (app.status == ApplicationCleanupStatus::Failed) ++failed;
+        else if (m_stopping && app.status == ApplicationCleanupStatus::Pending) {
+            app.status = ApplicationCleanupStatus::Cancelled; app.detail = "用户停止，未执行";
+        }
+    }
+    row.status = m_stopping ? InspectionStatus::Cancelled : failed ?
+        (succeeded ? InspectionStatus::Partial : InspectionStatus::Failed) :
+        succeeded ? InspectionStatus::Succeeded : InspectionStatus::Skipped;
+    if (m_stopping) appendNote(row, "用户停止，已完成的清理不会撤销");
+    emit targetChanged(m_index);
+    disconnectCurrent();
+}
+
 void InspectionRunner::disconnectCurrent() {
     m_disconnecting = true;
     emit activityChanged("正在断开 " + m_results[m_index].target.endpoint());
-    runCommand({"tconn", m_results[m_index].target.endpoint().toStdString(), "-remove"}, "", std::min(5000, m_command_timeout_ms),
+    const auto endpoint = m_results[m_index].target.endpoint().toStdString();
+    runCommand(m_hdc->platform() == DevicePlatform::Android ? std::vector<std::string>{"disconnect", endpoint} :
+               std::vector<std::string>{"tconn", endpoint, "-remove"}, "", std::min(5000, m_command_timeout_ms),
                [this](CommandResult result) {
         auto& row = m_results[m_index];
         if (commandFailed(result)) {
@@ -451,6 +602,9 @@ void InspectionRunner::finishBatch() {
     for (int i = m_index; i < static_cast<int>(m_results.size()); ++i) {
         m_results[i].status = InspectionStatus::Cancelled;
         m_results[i].notes = "用户停止，未执行";
+        for (auto& app : m_results[i].applications) {
+            app.status = ApplicationCleanupStatus::Cancelled; app.detail = "用户停止，未执行";
+        }
         emit targetChanged(i);
     }
     m_running = false;
@@ -467,7 +621,7 @@ void InspectionRunner::runCommand(const std::vector<std::string>& args, const QS
     m_errors.clear();
     m_command_error.clear();
     QStringList arguments;
-    if (!serial.isEmpty()) arguments << "-t" << serial;
+    if (!serial.isEmpty()) arguments << (m_hdc->platform() == DevicePlatform::Android ? "-s" : "-t") << serial;
     for (const auto& arg : args) arguments << QString::fromStdString(arg);
     HdcClient::configureProcess(*process, m_hdc_path);
     auto* timeout = new QTimer(process);
@@ -484,7 +638,7 @@ void InspectionRunner::runCommand(const std::vector<std::string>& args, const QS
         completeCommand(process, status == QProcess::NormalExit ? code : -1);
     });
     connect(process, &QProcess::errorOccurred, this, [this, process](QProcess::ProcessError error) {
-        if (error == QProcess::FailedToStart) completeCommand(process, -1, "无法启动 HDC：" + process->errorString());
+        if (error == QProcess::FailedToStart) completeCommand(process, -1, "无法启动设备调试工具：" + process->errorString());
     });
     timeout->start(timeoutMs);
     process->start(QString::fromStdString(m_hdc_path), arguments);
@@ -496,7 +650,7 @@ void InspectionRunner::readOutput(QProcess* process) {
     const auto out = process->readAllStandardOutput();
     const auto err = process->readAllStandardError();
     if (m_output.size() + m_errors.size() + out.size() + err.size() > limit) {
-        m_command_error = "HDC 返回内容超过 2 MiB";
+        m_command_error = "设备调试工具返回内容超过 2 MiB";
         process->kill();
         return;
     }

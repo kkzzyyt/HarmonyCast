@@ -7,6 +7,7 @@
 #include "ControlChannel.h"
 #include "FrameMailbox.h"
 #include "VideoPipeline.h"
+#include "MirrorSession.h"
 #include <QObject>
 #include <QTcpSocket>
 #include <QTimer>
@@ -18,16 +19,11 @@
 
 namespace harmonycast {
 
-struct StreamTimeouts {
-    int startup_ms{30000};
-    int frame_ms{15000};
-};
-
 struct SnapshotWorkerContext {
     std::atomic<bool> cancelled{false};
     std::atomic<int> target_width{0};
     std::atomic<int> target_height{0};
-    std::shared_ptr<HdcClient> hdc;
+    std::shared_ptr<DeviceClient> hdc;
     std::string serial;
     uintptr_t session_id{0};
     std::mutex presentation_mutex;
@@ -39,10 +35,10 @@ struct SnapshotWorkerContext {
     qreal dpr{1};
 };
 
-class StreamSession : public QObject {
+class StreamSession : public MirrorSession {
     Q_OBJECT
 public:
-    explicit StreamSession(std::shared_ptr<HdcClient> hdc,
+    explicit StreamSession(std::shared_ptr<DeviceClient> hdc,
                            Device device,
                            int fps = 60,
                            int bitrate = 8000000,
@@ -51,29 +47,24 @@ public:
                            StreamTimeouts timeouts = {});
     ~StreamSession() override;
 
-    bool start();
-    void stop();
-    [[nodiscard]] bool isRunning() const;
+    bool start() override;
+    void stop() override;
+    [[nodiscard]] bool isRunning() const override;
     [[nodiscard]] bool isConnected() const { return isRunning(); }
-    [[nodiscard]] bool isActive() const { return m_running; }
+    [[nodiscard]] bool isActive() const override { return m_running; }
 
     [[nodiscard]] const Device& device() const { return m_device; }
-    [[nodiscard]] std::shared_ptr<ControlChannel> controlChannel() const { return m_control; }
-    [[nodiscard]] int deviceWidth() const { return m_dev_width; }
-    [[nodiscard]] int deviceHeight() const { return m_dev_height; }
-    [[nodiscard]] bool isFallbackSnapshot() const { return m_fallback_snapshot; }
+    [[nodiscard]] std::shared_ptr<ControlChannel> controlChannel() const override { return m_control; }
+    [[nodiscard]] int deviceWidth() const override { return m_dev_width; }
+    [[nodiscard]] int deviceHeight() const override { return m_dev_height; }
+    [[nodiscard]] bool isFallbackSnapshot() const override { return m_fallback_snapshot; }
 
-    void setQuality(int quality_idx, int bitrate);
+    void setQuality(int quality_idx, int bitrate) override;
     [[nodiscard]] int qualityIndex() const { return m_quality_idx; }
-    void setBitrate(int b);
+    void setBitrate(int b) override;
     void updateSnapshotTargetSize();
     void setFps(int f) { m_fps = f; }
-    void setPresentation(QSize viewport, int rotation, qreal dpr);
-
-signals:
-    void frameReady(const DecodedFrame& frame);
-    void statusChanged(const QString& status);
-    void streamFinished(const QString& error);
+    void setPresentation(QSize viewport, int rotation, qreal dpr) override;
 
 private slots:
     void onSocketConnected();
@@ -83,7 +74,7 @@ private slots:
     void sendHeartbeat();
 
 private:
-    std::shared_ptr<HdcClient> m_hdc;
+    std::shared_ptr<DeviceClient> m_hdc;
     Device m_device;
     int m_fps{60};
     int m_bitrate{8000000};
@@ -125,7 +116,7 @@ private:
     std::shared_ptr<SnapshotWorkerContext> m_snapshot_ctx;
 
     int pickFreePort();
-    static bool launchServerAsync(const std::shared_ptr<HdcClient>& hdc,
+    static bool launchServerAsync(const std::shared_ptr<DeviceClient>& hdc,
                                   const std::string& serial,
                                   int remote_port,
                                   int fps,

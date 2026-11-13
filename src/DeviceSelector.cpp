@@ -126,7 +126,7 @@ void DeviceSelector::setEntries(const std::vector<DeviceListEntry>& entries, con
     int firstConnected = -1;
     for (const auto& entry : entries) {
         const int row = count();
-        addItem(entry.label(), QString::fromStdString(entry.device.serial));
+        addItem(entry.label(), QString::fromStdString(entry.device.id()));
         setItemData(row, entry.searchText(), SearchRole);
         setItemData(row, entry.searchText(), Qt::ToolTipRole);
         setItemData(row, QSize(0, 36), Qt::SizeHintRole);

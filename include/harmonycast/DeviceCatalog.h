@@ -11,6 +11,7 @@ struct SavedNetworkDevice {
     std::string name;
     int port{8710};
     int64_t updated_at{0};
+    DevicePlatform platform{DevicePlatform::OpenHarmony};
 };
 
 struct DeviceListEntry {

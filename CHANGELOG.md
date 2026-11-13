@@ -10,6 +10,12 @@ Format adheres to [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and 
 
 ## [Unreleased]
 
+### Added / 新增
+- [批量清理] 设备巡检新增应用数据清理任务，可勾选床旁、病房与 A33 门口控制三个指定包；复用逐台连接/断开逻辑，按 `bm clean -d -n` 执行，支持未安装跳过、逐包结果、停止及 CSV 导出。
+- [Android] 接入 Android 8+ 的 ADB 设备发现、USB/网络连接、内嵌 H.264 投屏、触控与截图回退；与鸿蒙设备按平台隔离身份和保存记录。
+- [工作台] Android 使用 Logcat、APK、应用/文件命令、WebView 调试与 ADB 批量巡检；Windows/macOS 标准包随包提供 ADB 和固定版本采屏服务。
+- [验证] 增加模拟 ADB、真实视频解码、启动时序、生命周期和跨平台切换回归；当前尚无 Android 真机验收结果。
+
 ### Fixed / 修复
 - [日志] 增量显示刷新由 50ms 放缓为 500ms，减少连续滚动和界面更新频率，采集、缓存与手动操作保持原有行为。
 - [投屏] 原生采屏缺库或缺 API 时显示简短兼容提示，详细启动错误保留在诊断日志，收到首张兼容截图后明确提示回退成功。

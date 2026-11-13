@@ -113,6 +113,7 @@ jobs:
         shell: pwsh
         run: |
           Copy-Item -Recurse -Force resources build/Release/resources
+          cmake "-DRESOURCE_DIR=$((Resolve-Path build/Release/resources).Path)" -DKEEP_HOST=windows-x64 -P scripts/filter_android_resources.cmake
 
       - name: Run C++ Regression Tests
         shell: pwsh

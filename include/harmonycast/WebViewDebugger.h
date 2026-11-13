@@ -64,11 +64,15 @@ struct WebNetworkRequest {
 class WebViewDebugger : public QObject {
     Q_OBJECT
 public:
-    explicit WebViewDebugger(std::shared_ptr<HdcClient> hdc, QObject* parent = nullptr);
+    explicit WebViewDebugger(std::shared_ptr<DeviceClient> hdc, QObject* parent = nullptr);
     ~WebViewDebugger() override;
+    void setClient(std::shared_ptr<DeviceClient> client);
 
     // Scan /proc/net/unix on device for @webview_devtools_remote_<pid>
     std::vector<WebViewInstance> scanInstances(const std::string& serial);
+    static std::vector<WebViewInstance> parseInstances(const std::string& output);
+    void adoptForward(const std::string& serial, int localPort, const std::string& remoteTarget);
+    void releaseForward();
 
     // Forward device webview socket or tcp target to local port
     bool forwardInstance(const std::string& serial, const WebViewInstance& instance, int local_port = 9222);
@@ -114,11 +118,13 @@ private slots:
     void onWsDisconnected();
 
 private:
-    std::shared_ptr<HdcClient> m_hdc;
+    std::shared_ptr<DeviceClient> m_hdc;
     QNetworkAccessManager* m_http{nullptr};
     QWebSocket* m_ws{nullptr};
     std::string m_active_serial;
     int m_forwarded_port{0};
+    std::string m_forwarded_target;
+    uint64_t m_target_generation{0};
     int m_msg_id{1};
 
     std::map<std::string, WebNetworkRequest> m_requests;

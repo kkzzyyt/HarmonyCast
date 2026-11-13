@@ -9,6 +9,8 @@
 #include <deque>
 #include <mutex>
 #include <string>
+#include <QTimer>
+#include <map>
 
 namespace harmonycast {
 
@@ -50,6 +52,10 @@ private:
     std::string m_category;
 
     QProcess* m_process{nullptr};
+    QProcess* m_pid_process{nullptr};
+    QTimer m_pid_timer;
+    std::map<int, std::string> m_pid_packages;
+    void refreshAndroidPackages();
     HiLogParser m_parser;
     QByteArray m_line_buffer;
     QByteArray m_stderr_tail;

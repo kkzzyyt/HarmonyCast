@@ -24,6 +24,12 @@ and `NOTICE`. The files below retain their original licenses and attribution.
   License text is included in `licenses/libusb-LGPL-2.1.txt`.
 - These binaries are bundled within the macOS and Windows release packages to allow 0-dependency execution out-of-the-box. Users may also select an alternative SDK-installed HDC executable in Settings.
 
+## scrcpy-server 5.0.1 and Android Debug Bridge
+
+- scrcpy upstream: https://github.com/Genymobile/scrcpy, tag `v5.0.1`, Genymobile contributors, Apache-2.0. The unmodified server is bundled at `resources/servers/android/scrcpy-server-v5.0.1`; its license is included alongside the binary and at `licenses/scrcpy-LICENSE.txt`. The C++ host adapter is HarmonyCast code.
+- Android SDK Platform Tools 37.0.1 supplies the unmodified macOS universal ADB and Windows standalone ADB/DLLs. Source: https://android.googlesource.com/platform/packages/modules/adb/. Upstream component notices and source package version are retained in each `resources/adb/<host>/` directory.
+- Download provenance and source file SHA-256 values are recorded in `resources/adb/README.md`, `resources/adb/checksums.json`, and `resources/servers/android/README.md`.
+
 ## Runtime dependencies
 
 - PyQt5 5.15.11 — Riverbank Computing Limited, GPL v3. https://www.riverbankcomputing.com/software/pyqt/

@@ -118,7 +118,7 @@ CommandResult HdcClient::runProcess(const std::string& hdc_path,
     QProcess process;
     configureProcess(process, hdc_path);
     QStringList qargs;
-    if (!serial.empty()) qargs << "-t" << QString::fromStdString(serial);
+    if (!serial.empty()) qargs << "-t" << QString::fromStdString(deviceSerial(serial));
     for (const auto& arg : args) qargs << QString::fromStdString(arg);
 
     process.start(QString::fromStdString(hdc_path), qargs);

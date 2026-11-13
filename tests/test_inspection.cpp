@@ -11,6 +11,10 @@
 #include <QTableWidget>
 #include <QTemporaryDir>
 #include <QThread>
+#include <QCheckBox>
+#include <QComboBox>
+#include <QMessageBox>
+#include <QTimer>
 #include <iostream>
 #include <stdexcept>
 
@@ -245,6 +249,127 @@ static void testRunner(const QString& log) {
     check(missing.results()[0].status == InspectionStatus::Failed, "missing HDC left batch running");
 }
 
+static void testBatchApplicationCleanup(const QString& log, const QString& directory) {
+    auto hdc = std::make_shared<HdcClient>(QCoreApplication::applicationFilePath().toStdString());
+    InspectionRunner runner(hdc, nullptr, 700);
+    const auto packages = InspectionReport::cleanupPackages();
+    check(packages == QStringList{"com.yarward.etnbedsideoh", "com.yarward.etnroomoh", "com.yarward.etndoorcontrol_a33"},
+          "cleanup package allowlist does not match the requested applications");
+    const auto offset = readFile(log).size();
+    check(!runner.startApplicationCleanup({{"192.0.2.11", 8710}}, {}), "cleanup accepts no selected applications");
+    check(!runner.startApplicationCleanup({{"192.0.2.11", 8710}}, {"com.other.app"}), "cleanup accepts an unrelated application");
+    check(runner.startApplicationCleanup({{"192.0.2.11", 8710}, {"192.0.2.12", 9000}, {"192.0.2.13", 8710},
+        {"192.0.2.14", 8710}, {"192.0.2.15", 8710}, {"192.0.2.16", 8710}}, packages), "cleanup did not start");
+    waitUntil([&] { return !runner.isRunning(); });
+    const auto& rows = runner.results();
+    check(rows.size() == 6 && rows[0].status == InspectionStatus::Succeeded, "successful cleanup was not reported");
+    check(rows[0].applications.size() == 3 && rows[0].applications[0].status == ApplicationCleanupStatus::Succeeded &&
+          rows[0].applications[1].status == ApplicationCleanupStatus::NotInstalled, "missing applications are not skipped individually");
+    check(rows[1].status == InspectionStatus::Partial && rows[1].applications[0].status == ApplicationCleanupStatus::Failed &&
+          rows[1].applications[1].status == ApplicationCleanupStatus::Succeeded, "one application failure stops other applications");
+    check(rows[2].status == InspectionStatus::Skipped, "device with no matching application reports cleanup success");
+    check(rows[3].status == InspectionStatus::Failed && rows[3].notes.contains("连接失败"), "connection failure was hidden");
+    check(rows[4].applications[0].status == ApplicationCleanupStatus::Failed && rows[4].applications[0].detail.contains("超时") &&
+          rows[4].applications[1].status == ApplicationCleanupStatus::Succeeded, "timed-out application stops the batch");
+    check(rows[5].applications[0].status == ApplicationCleanupStatus::Failed, "exit-zero unconfirmed cleanup reports success");
+    const auto commands = QString::fromUtf8(readFile(log).mid(offset));
+    int previous = -1;
+    for (const auto& row : rows) {
+        const auto endpoint = row.target.endpoint();
+        const int connected = commands.indexOf("tconn " + endpoint + '\n', previous + 1);
+        const int disconnected = commands.indexOf("tconn " + endpoint + " -remove\n", connected + 1);
+        check(connected > previous && disconnected > connected, "cleanup opens the next device before disconnecting the current device");
+        previous = disconnected;
+    }
+    check(commands.contains("-t 192.0.2.11:8710 shell bm clean -d -n com.yarward.etnbedsideoh\n") &&
+          !commands.contains("-t 192.0.2.11:8710 shell bm clean -d -n com.yarward.etnroomoh\n"),
+          "cleanup command differs from the requested command or targets an absent app");
+    check(!commands.contains("kill-server") && !commands.contains("-c ") && !commands.contains("com.other"), "cleanup touches unrelated state");
+    check(InspectionReport::writeCsv(directory + "/cleanup.csv", rows), "cleanup CSV export failed");
+    const auto csv = readFile(directory + "/cleanup.csv");
+    check(csv.contains("com.yarward.etndoorcontrol_a33") && csv.contains("未安装") && csv.contains("超时"),
+          "cleanup export loses per-application results");
+
+    const auto cancellationOffset = readFile(log).size();
+    check(runner.startApplicationCleanup({{"192.0.2.15", 8710}, {"192.0.2.11", 8710}}, packages), "cleanup could not restart");
+    waitUntil([&] { return readFile(log).mid(cancellationOffset).contains("bm clean -d -n"); });
+    runner.stop(); waitUntil([&] { return !runner.isRunning(); });
+    const auto cancelled = readFile(log).mid(cancellationOffset);
+    check(cancelled.contains("tconn 192.0.2.15:8710 -remove") && !cancelled.contains("192.0.2.11"),
+          "stopping cleanup leaves the current device connected or starts a pending device");
+    check(runner.results()[0].status == InspectionStatus::Cancelled && runner.results()[1].status == InspectionStatus::Cancelled,
+          "stopped cleanup rows remain pending");
+
+    const auto beforeCommandOffset = readFile(log).size();
+    InspectionRunner beforeCommand(hdc, nullptr, 1000);
+    QObject::connect(&beforeCommand, &InspectionRunner::targetChanged, &beforeCommand, [&](int index) {
+        const auto& applications = beforeCommand.results()[index].applications;
+        if (!applications.empty() && applications[0].status == ApplicationCleanupStatus::Running) beforeCommand.stop();
+    });
+    check(beforeCommand.startApplicationCleanup({{"192.0.2.11", 8710}}, {packages[0]}), "pre-command cancellation setup failed");
+    waitUntil([&] { return !beforeCommand.isRunning(); });
+    check(!readFile(log).mid(beforeCommandOffset).contains("bm clean"), "cleanup executes a destructive command after cancellation");
+
+    const auto closingOffset = readFile(log).size();
+    {
+        InspectionRunner closing(hdc, nullptr, 1000);
+        check(closing.startApplicationCleanup({{"192.0.2.15", 8710}}, packages), "cleanup close setup failed");
+        waitUntil([&] { return readFile(log).mid(closingOffset).contains("bm clean -d -n"); });
+    }
+    check(readFile(log).mid(closingOffset).contains("tconn 192.0.2.15:8710 -remove"), "closing cleanup leaves its target connected");
+
+    InspectionRunner android(std::make_shared<AdbClient>(QCoreApplication::applicationFilePath().toStdString()));
+    check(!android.startApplicationCleanup({{"192.0.2.11", 5555, DevicePlatform::Android}}, packages),
+          "HDC-only cleanup can run on Android");
+}
+
+static void testCleanupPage(const QString& log, const QString& directory) {
+    auto hdc = std::make_shared<HdcClient>(QCoreApplication::applicationFilePath().toStdString());
+    InspectionPage page(hdc);
+    auto* task = page.findChild<QComboBox*>("InspectionTask");
+    auto* input = page.findChild<QPlainTextEdit*>("InspectionTargets");
+    auto* start = page.findChild<QPushButton*>("InspectionStart");
+    auto* table = page.findChild<QTableWidget*>("InspectionResults");
+    check(task && input && start && table, "batch cleanup task selector missing");
+    task->setCurrentIndex(task->findData(int(InspectionTask::ClearApplicationData)));
+    const auto boxes = page.findChildren<QCheckBox*>();
+    check(boxes.size() == 3 && start->text() == "开始清理", "cleanup application choices missing");
+    input->setPlainText("192.0.2.11");
+    for (auto* box : boxes) box->setChecked(false);
+    check(!start->isEnabled(), "cleanup enabled without an application selection");
+    boxes[0]->setChecked(true);
+    check(start->isEnabled(), "selected cleanup application cannot run");
+    bool confirmed = false;
+    QTimer::singleShot(0, &page, [&] {
+        auto* dialog = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+        if (dialog) { confirmed = dialog->text().contains("com.yarward.etnbedsideoh") && dialog->text().contains("数据"); dialog->button(QMessageBox::No)->click(); }
+    });
+    const auto offset = readFile(log).size();
+    start->click();
+    check(confirmed && !page.isRunning() && readFile(log).size() == offset, "declining cleanup still executes commands");
+    QTimer::singleShot(0, &page, [&] {
+        if (auto* dialog = qobject_cast<QMessageBox*>(QApplication::activeModalWidget())) dialog->button(QMessageBox::Yes)->click();
+    });
+    start->click();
+    check(page.isRunning() && !task->isEnabled() && !boxes[0]->isEnabled() && input->isReadOnly(),
+          "running cleanup allows its targets or applications to change");
+    waitUntil([&] { return !page.isRunning(); });
+    check(table->columnCount() == 7 && table->rowCount() == 1 && table->item(0, 3)->text() == "已清理" &&
+          table->item(0, 4)->text().isEmpty(), "cleanup UI loses per-application results or shows unselected apps as cleared");
+    check(page.exportCsv(directory + "/cleanup-page.csv"), "cleanup UI export unavailable");
+    check(!readFile(log).mid(offset).contains("bm clean -d -n com.yarward.etndoorcontrol_a33"), "unchecked application was cleaned");
+    const auto artifacts = qEnvironmentVariable("HC_CLEANUP_ARTIFACTS");
+    if (!artifacts.isEmpty()) {
+        page.resize(1200, 760); page.setStyleSheet(IconManager::getAppStyleSheet()); page.setPalette(IconManager::getAppPalette());
+        page.show(); QCoreApplication::processEvents();
+        check(page.grab().save(artifacts + "/batch-application-cleanup.png"), "cleanup UI preview unavailable");
+    }
+    task->setCurrentIndex(task->findData(int(InspectionTask::Inspect)));
+    check(table->columnCount() == 7 && page.exportCsv(directory + "/cleanup-after-mode-switch.csv") &&
+          readFile(directory + "/cleanup-after-mode-switch.csv").contains("清理结果"),
+          "changing the next task corrupts the previous cleanup export");
+}
+
 static void testPage(const QString& directory) {
     auto hdc = std::make_shared<HdcClient>(QCoreApplication::applicationFilePath().toStdString());
     InspectionPage page(hdc);
@@ -325,14 +450,25 @@ static int fakeHdc(int argc, char** argv) {
     QFile log(QString::fromUtf8(qgetenv("HC_INSPECTION_LOG")));
     if (log.open(QIODevice::WriteOnly | QIODevice::Append)) {
         // Keep the command log compact; the collection script is fixed and read only.
-        log.write((args.contains("shell") ? args.mid(0, 3).join(' ') : args.join(' ')).toUtf8() + '\n');
+        const bool applicationCommand = args.contains("bm") && (args.contains("clean") || args.contains("dump"));
+        log.write((args.contains("shell") && !applicationCommand ? args.mid(0, 3).join(' ') : args.join(' ')).toUtf8() + '\n');
         log.close();
     }
-    if (args.value(0) == "tconn") {
+    if (args.contains("bm") && args.contains("dump") && args.contains("-a")) {
+        if (args.value(1).startsWith("192.0.2.13:")) std::cout << "com.other.app\ncom.yarward.etnbedsideoh.extra\n";
+        else if (args.value(1).startsWith("192.0.2.11:")) std::cout << "com.yarward.etnbedsideoh\ncom.yarward.etndoorcontrol_a33\n";
+        else std::cout << "com.yarward.etnbedsideoh\ncom.yarward.etnroomoh\ncom.yarward.etndoorcontrol_a33\n";
+    } else if (args.contains("bm") && args.contains("clean")) {
+        if (args.value(1).startsWith("192.0.2.12:") && args.last() == "com.yarward.etnbedsideoh")
+            std::cout << "error: clean bundle data files failed\n";
+        else if (args.value(1).startsWith("192.0.2.15:") && args.last() == "com.yarward.etnbedsideoh") QThread::msleep(1800);
+        else if (args.value(1).startsWith("192.0.2.16:")) std::cout << "request sent\n";
+        else std::cout << "clean bundle data files successfully.\n";
+    } else if (args.value(0) == "tconn") {
         if (args.contains("-remove")) {
             std::cout << (args[1].startsWith("192.0.2.4:") ? "[Fail]remove failed\n" : "Remove target finish\n");
         } else {
-            std::cout << (args[1].startsWith("192.0.2.2:") ? "[Fail]The device unauthorized.\n" : "Connect OK\n");
+            std::cout << ((args[1].startsWith("192.0.2.2:") || args[1].startsWith("192.0.2.14:")) ? "[Fail]The device unauthorized.\n" : "Connect OK\n");
         }
     } else if (args.contains("shell")) {
         if (args.value(1).startsWith("192.0.2.3:")) {
@@ -356,8 +492,15 @@ static int fakeHdc(int argc, char** argv) {
 
 int main(int argc, char** argv) {
     if (argc > 1) return fakeHdc(argc, argv);
+#if defined(Q_OS_WIN) && QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
+    // Match DevicePickerTests: Qt 5 QMessageBox needs a Windows native interface.
+    qputenv("QT_QPA_PLATFORM", "windows");
+#else
     qputenv("QT_QPA_PLATFORM", "offscreen");
+#endif
+    QApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
     QApplication app(argc, argv);
+    app.setQuitOnLastWindowClosed(false);
     QStandardPaths::setTestModeEnabled(true);
     QTemporaryDir temporary;
     QSettings::setDefaultFormat(QSettings::IniFormat);
@@ -368,7 +511,9 @@ int main(int argc, char** argv) {
         testParsing();
         testExport(temporary.path());
         testRunner(temporary.filePath("commands.log"));
+        testBatchApplicationCleanup(temporary.filePath("commands.log"), temporary.path());
         testPage(temporary.path());
+        testCleanupPage(temporary.filePath("commands.log"), temporary.path());
         std::cout << "Inspection tests passed\n";
         return 0;
     } catch (const std::exception& error) {

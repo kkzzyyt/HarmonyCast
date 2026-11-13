@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -eo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$DIR"
@@ -30,7 +30,16 @@ if [ -x "$MACDEPLOYQT_BIN" ]; then
     "$MACDEPLOYQT_BIN" "$APP_IN_STAGING" \
         -always-overwrite \
         -verbose=1 \
-        -libpath=/opt/homebrew/opt/ffmpeg/lib
+        -libpath=/opt/homebrew/opt/ffmpeg/lib \
+        -libpath=/opt/homebrew/opt/qt/lib 2>&1 | tee build/macdeployqt.log
+    python3 -c "
+from pathlib import Path
+import sys
+errors = [line for line in Path('build/macdeployqt.log').read_text().splitlines() if line.startswith('ERROR:')]
+if errors:
+    print('Qt deployment failed; refusing to package incomplete dependencies.', file=sys.stderr)
+    sys.exit(1)
+"
 else
     echo "ERROR: macdeployqt not found!"
     exit 1

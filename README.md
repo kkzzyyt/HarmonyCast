@@ -30,6 +30,8 @@ HarmonyCast is a professional desktop workbench tailored for developers and test
 
 HarmonyCast 是专为 OpenHarmony / 鸿蒙设备（平板、手机、智慧屏、医疗终端及工控屏）研发人员与测试团队打造的桌面级专业工作台。全面支持 USB 有线与 Wi-Fi 无线网络连接，集成高速低延迟投屏、触控注入、应用调试与系统维护功能。
 
+开发分支新增 **Android 8.0+** 设备接入，支持 USB / ADB TCP 投屏、触控、截图、Logcat、APK、文件传输及巡检。设备中心可选择平台，具体范围与验证状态见 [Android 设备说明](docs/android.md)。
+
 ---
 
 ## Core Features / 核心特性

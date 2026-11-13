@@ -12,6 +12,19 @@
 
 namespace harmonycast {
 
+enum class DevicePlatform { OpenHarmony, Android };
+
+inline bool isAndroidDevice(const std::string& id) { return id.rfind("android:", 0) == 0; }
+inline std::string deviceSerial(const std::string& id) {
+    if (isAndroidDevice(id)) return id.substr(8);
+    return id.rfind("openharmony:", 0) == 0 ? id.substr(12) : id;
+}
+inline std::string deviceId(DevicePlatform platform, const std::string& serial) {
+    if (platform == DevicePlatform::Android) return "android:" + serial;
+    return isAndroidDevice(serial) || serial.rfind("openharmony:", 0) == 0 ? "openharmony:" + serial : serial;
+}
+inline int defaultDevicePort(DevicePlatform platform) { return platform == DevicePlatform::Android ? 5555 : 8710; }
+
 enum class DeviceState {
     Disconnected,
     Connected,
@@ -51,9 +64,13 @@ struct Device {
     int port{0};
     bool is_network{false};
     DeviceState state{DeviceState::Connected};
+    DevicePlatform platform{DevicePlatform::OpenHarmony};
+
+    [[nodiscard]] std::string id() const { return deviceId(platform, serial); }
 
     bool operator==(const Device& other) const {
-        return serial == other.serial && state == other.state && is_network == other.is_network && port == other.port;
+        return platform == other.platform && serial == other.serial && state == other.state &&
+               is_network == other.is_network && port == other.port && model == other.model;
     }
 };
 
@@ -61,6 +78,12 @@ inline std::string normalizeEndpoint(std::string target) {
     while (!target.empty() && (target.front() == ' ' || target.front() == '\t')) target.erase(0, 1);
     while (!target.empty() && (target.back() == ' ' || target.back() == '\t')) target.pop_back();
     if (target.empty()) return target;
+
+    if (isAndroidDevice(target)) {
+        auto serial = deviceSerial(target);
+        if (serial.find('.') != std::string::npos && serial.find(':') == std::string::npos) serial += ":5555";
+        return deviceId(DevicePlatform::Android, serial);
+    }
 
     // If target is an IP address without port (contains '.' and no ':'), append default port 8710
     if (target.find('.') != std::string::npos && target.find(':') == std::string::npos) {
@@ -70,6 +93,8 @@ inline std::string normalizeEndpoint(std::string target) {
 }
 
 inline bool isSameDevice(const std::string& serial_a, const std::string& serial_b) {
+    if (isAndroidDevice(serial_a) != isAndroidDevice(serial_b)) return false;
+    if (isAndroidDevice(serial_a)) return normalizeEndpoint(serial_a) == normalizeEndpoint(serial_b);
     if (serial_a == serial_b) return true;
     if (serial_a.empty() || serial_b.empty()) return false;
     std::string norm_a = normalizeEndpoint(serial_a);
@@ -94,9 +119,9 @@ inline bool isSameDevice(const std::string& serial_a, const std::string& serial_
 
 inline const Device* findMatchingDevice(const std::vector<Device>& devices, const std::string& serial) {
     if (serial.empty()) return nullptr;
-    for (const auto& device : devices) if (device.serial == serial) return &device;
+    for (const auto& device : devices) if (device.id() == serial) return &device;
     for (const auto& d : devices) {
-        if (isSameDevice(d.serial, serial)) {
+        if (isSameDevice(d.id(), serial)) {
             return &d;
         }
     }

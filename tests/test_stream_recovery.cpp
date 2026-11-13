@@ -254,7 +254,8 @@ static void testLegacySnapshotResize(const char* mode = "snapshot-no-resize") {
 
 static void testSnapshotTransferTimeout() {
     resetCommands("snapshot-slow-transfer");
-    StreamSession session(fakeClient(), testDevice(), 60, 8000000, 0, nullptr, {3000, 350});
+    // Allow instrumented HDC children to reach recv before the watchdog fires.
+    StreamSession session(fakeClient(), testDevice(), 60, 8000000, 0, nullptr, {3000, 900});
     QString failure;
     QObject::connect(&session, &StreamSession::streamFinished, &session, [&](const QString& error) { failure = error; });
     session.start();
@@ -292,7 +293,8 @@ static int fakeHdc(int argc, char** argv) {
         const int index = args.indexOf("recv");
         if (index + 2 >= args.size()) return 1;
         if (mode == "snapshot-recv-denied") { std::cout << "[Fail] FileTransfer rejected\n"; return 0; }
-        if (mode == "snapshot-slow-transfer" || mode == "snapshot-destroy-transfer") QThread::msleep(600);
+        if (mode == "snapshot-slow-transfer") QThread::msleep(1800);
+        if (mode == "snapshot-destroy-transfer") QThread::msleep(600);
         if (mode == "snapshot-stale" && commandLog().count("file recv") > 2) return 0;
         if (mode == "snapshot-invalid-image") {
             QFile file(args[index + 2]);

@@ -194,10 +194,16 @@ class TestWindowsGenericRuntimeGate(unittest.TestCase):
             "msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll",
             "opengl32sw.dll", "D3Dcompiler_47.dll",
             "resources/hdc/hdc.exe", "resources/hdc/libusb_shared.dll",
+            "resources/adb/windows-x64/adb.exe", "resources/adb/windows-x64/AdbWinApi.dll",
+            "resources/adb/windows-x64/AdbWinUsbApi.dll", "resources/adb/windows-x64/libwinpthread-1.dll",
+            "resources/servers/android/scrcpy-server-v5.0.1",
         ):
             target = self.root / name
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(pe_image())
+            image = bytearray(pe_image())
+            if name.startswith("resources/adb/"):
+                struct.pack_into("<H", image, 0x84, 0x14C)
+            target.write_bytes(image)
 
     def tearDown(self):
         self.temp_dir.cleanup()
@@ -270,6 +276,14 @@ class TestWindowsGenericRuntimeGate(unittest.TestCase):
         self.assertTrue(
             any("imageformats/qjpeg.dll: expected x64 binary" in error for error in errors)
         )
+
+    def test_allows_only_named_standalone_adb_process_files(self):
+        path = self.root / "resources/adb/windows-x64/extra.dll"
+        image = bytearray(pe_image())
+        struct.pack_into("<H", image, 0x84, 0x14C)
+        path.write_bytes(image)
+        errors = generic_runtime.check_directory(self.root)
+        self.assertTrue(any("extra.dll: expected x64" in error for error in errors))
 
     def test_rejects_corrupt_hdc_dependency(self):
         (self.root / "resources/hdc/libusb_shared.dll").write_bytes(b"not a PE image")

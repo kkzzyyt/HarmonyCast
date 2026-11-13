@@ -34,7 +34,7 @@ void visitNalus(std::span<const uint8_t> bytes, Visitor visitor) {
 
 namespace harmonycast {
 
-VideoPipeline::VideoPipeline(QObject* parent) : QObject(parent) {
+VideoPipeline::VideoPipeline(QObject* parent, DevicePlatform platform) : QObject(parent), m_platform(platform) {
     m_demuxer.setHandshakeCallback([this](const std::string&) { emit handshakeRequested(); });
     m_demuxer.setHeaderCallback([this](const std::string& name, int width, int height) {
         emit headerParsed(QString::fromStdString(name), width, height);
@@ -45,11 +45,19 @@ VideoPipeline::VideoPipeline(QObject* parent) : QObject(parent) {
     });
     m_decoder.setFrameCallback([this](const DecodedFrame& decoded) {
         DecodedFrame frame = decoded;
-        frame.source_width = m_demuxer.sourceWidth();
-        frame.source_height = m_demuxer.sourceHeight();
+        frame.source_width = m_platform == DevicePlatform::Android ? m_scrcpy.width() : m_demuxer.sourceWidth();
+        frame.source_height = m_platform == DevicePlatform::Android ? m_scrcpy.height() : m_demuxer.sourceHeight();
         m_latest = std::move(frame);
     });
     m_demuxer.setPacketCallback([this](const StreamPacket& packet) { decodePacket(packet); });
+    m_scrcpy.setPacketCallback([this](const StreamPacket& packet) { decodePacket(packet); });
+    m_scrcpy.setHeaderCallback([this](const std::string& name, int w, int h) {
+        // A new capture session carries new SPS/PPS after rotation.
+        m_decoder.close(); m_latest.reset(); m_decoder_failed = false;
+        m_waiting_keyframe = true; m_sps.clear(); m_pps.clear();
+        emit headerParsed(QString::fromStdString(name), w, h);
+    });
+    m_scrcpy.setErrorCallback([this](const QString& error) { emit protocolError(error); });
 }
 
 bool VideoPipeline::useSoftwareDecoder() {
@@ -96,7 +104,7 @@ void VideoPipeline::decodePacket(const StreamPacket& packet) {
     if (!has_picture) return;
     const bool keyframe = has_idr || packet.is_keyframe;
     if (m_waiting_keyframe && !keyframe) return;
-    if (!m_decoder.isReady() && !m_decoder.init(0, 0, true) && !useSoftwareDecoder()) {
+    if (!m_decoder.isReady() && !m_decoder.init(0, 0, !m_software_attempted) && !useSoftwareDecoder()) {
         m_decoder_failed = true;
         return;
     }
@@ -123,7 +131,9 @@ void VideoPipeline::decodePacket(const StreamPacket& packet) {
 }
 
 void VideoPipeline::consume(const QByteArray& data) {
-    m_demuxer.feed(std::span(reinterpret_cast<const uint8_t*>(data.constData()), size_t(data.size())));
+    const auto bytes = std::span(reinterpret_cast<const uint8_t*>(data.constData()), size_t(data.size()));
+    if (m_platform == DevicePlatform::Android) m_scrcpy.feed(bytes);
+    else m_demuxer.feed(bytes);
     if (m_latest) {
         prepareFramePresentation(*m_latest, m_viewport, m_rotation, m_dpr);
         emit frameReady(*m_latest);

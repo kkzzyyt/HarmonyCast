@@ -8,13 +8,16 @@ class QPlainTextEdit;
 class QProgressBar;
 class QPushButton;
 class QTableWidget;
+class QComboBox;
+class QCheckBox;
 
 namespace harmonycast {
 
 class InspectionPage : public QWidget {
     Q_OBJECT
 public:
-    explicit InspectionPage(std::shared_ptr<HdcClient> hdc, QWidget* parent = nullptr);
+    explicit InspectionPage(std::shared_ptr<DeviceClient> hdc, QWidget* parent = nullptr,
+                            std::shared_ptr<DeviceClient> android = nullptr);
     [[nodiscard]] bool isRunning() const { return m_runner->isRunning(); }
     bool importFile(const QString& path, QString* error = nullptr);
     bool exportCsv(const QString& path, QString* error = nullptr) const;
@@ -27,8 +30,18 @@ private:
     void startInspection();
     void updateRow(int index);
     void updateSummary(bool stopped);
+    void updateTaskControls();
+    void configureResults(InspectionTask task);
+    QStringList selectedCleanupPackages() const;
 
     InspectionRunner* m_runner;
+    std::shared_ptr<DeviceClient> m_harmony_client, m_android_client;
+    QComboBox* m_platform;
+    QComboBox* m_task;
+    QWidget* m_cleanup_options;
+    std::vector<QCheckBox*> m_cleanup_packages;
+    InspectionTask m_results_task{InspectionTask::Inspect};
+    QLabel* m_port_hint;
     InspectionImport m_import;
     QPlainTextEdit* m_input;
     QLabel* m_file_label;

@@ -3,6 +3,8 @@
 #include "Types.h"
 #include "HdcClient.h"
 #include "DeviceCatalog.h"
+#include "AdbClient.h"
+#include <QComboBox>
 
 #include <QDialog>
 #include <QTableWidget>
@@ -22,16 +24,18 @@ class NetworkDeviceDialog : public QDialog {
 public:
     explicit NetworkDeviceDialog(
         QWidget* parent = nullptr,
-        std::shared_ptr<HdcClient> hdc = nullptr,
+        std::shared_ptr<DeviceClient> hdc = nullptr,
         const std::vector<std::string>& connected_targets = {},
-        const std::string& current_target = ""
+        const std::string& current_target = "",
+        std::shared_ptr<AdbClient> adb = nullptr
     );
     ~NetworkDeviceDialog() override = default;
 
     // Static persistence helpers
     static QString savedDevicesFilePath();
     static std::vector<SavedNetworkDevice> loadSavedDevices();
-    static void saveDevice(const std::string& ip, const std::string& name = "", int port = 8710);
+    static void saveDevice(const std::string& ip, const std::string& name = "", int port = 0,
+                           DevicePlatform platform = DevicePlatform::OpenHarmony);
     static void deleteSavedDevice(const std::string& ip);
 
     // Callbacks
@@ -60,7 +64,9 @@ private:
     void disconnectTarget(const std::string& endpoint);
     void deleteTarget(const std::string& endpoint);
 
-    std::shared_ptr<HdcClient> m_hdc;
+    std::shared_ptr<DeviceClient> m_hdc;
+    std::shared_ptr<AdbClient> m_adb;
+    QComboBox* m_platform{nullptr};
     std::vector<Device> m_live_devices;
     std::string m_current_target;
 

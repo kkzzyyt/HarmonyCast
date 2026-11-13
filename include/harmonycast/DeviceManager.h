@@ -15,7 +15,8 @@ namespace harmonycast {
 class DeviceManager : public QObject {
     Q_OBJECT
 public:
-    explicit DeviceManager(std::shared_ptr<HdcClient> hdc, QObject* parent = nullptr);
+    explicit DeviceManager(std::shared_ptr<DeviceClient> hdc, QObject* parent = nullptr,
+                           std::shared_ptr<DeviceClient> android = nullptr);
     ~DeviceManager() override;
 
     void startPolling(int interval_ms = 2500);
@@ -36,7 +37,9 @@ signals:
     void deviceDisconnected(const Device& device);
 
 private:
-    std::shared_ptr<HdcClient> m_hdc;
+    std::shared_ptr<DeviceClient> m_hdc;
+    std::shared_ptr<DeviceClient> m_android;
+    std::shared_ptr<QObject> m_delivery;
     QTimer* m_timer{nullptr};
     mutable std::mutex m_mutex;
     std::vector<Device> m_devices;
@@ -44,7 +47,7 @@ private:
     std::atomic<bool> m_is_refreshing{false};
     std::atomic<bool> m_needs_refresh{false};
     std::atomic<bool> m_needs_force_emit{false};
-    int m_consecutive_poll_failures{0};
+    int m_consecutive_poll_failures[2]{0, 0};
 };
 
 } // namespace harmonycast

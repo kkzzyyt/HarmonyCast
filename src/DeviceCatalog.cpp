@@ -9,8 +9,9 @@ namespace {
 
 QString savedEndpoint(const SavedNetworkDevice& saved) {
     const QString host = QString::fromStdString(saved.ip).trimmed();
-    const int port = saved.port > 0 && saved.port <= 65535 ? saved.port : 8710;
-    return host.isEmpty() ? QString{} : host + ":" + QString::number(port);
+    const int port = saved.port > 0 && saved.port <= 65535 ? saved.port : defaultDevicePort(saved.platform);
+    return host.isEmpty() ? QString{} : QString::fromStdString(deviceId(saved.platform,
+        (host + ":" + QString::number(port)).toStdString()));
 }
 
 Device normalizeLive(Device device) {
@@ -27,7 +28,7 @@ Device normalizeLive(Device device) {
     } else if (host.isEmpty()) {
         host = serial;
     }
-    if (port <= 0 || port > 65535) port = 8710;
+    if (port <= 0 || port > 65535) port = defaultDevicePort(device.platform);
     device.ip = host.toStdString();
     device.port = port;
     device.serial = (host + ":" + QString::number(port)).toStdString();
@@ -50,14 +51,16 @@ QString DeviceListEntry::label() const {
     const QString serial = QString::fromStdString(device.serial);
     QString value = device.is_network ? serial : "USB: " + serial;
     if (!name.isEmpty() && name != serial) value += " · " + name;
+    if (device.platform == DevicePlatform::Android) value += " · Android";
     return value + " · " + stateText();
 }
 
 QString DeviceListEntry::searchText() const {
-    return QString("%1 %2 %3 %4 %5 %6")
+    return QString("%1 %2 %3 %4 %5 %6 %7")
         .arg(QString::fromStdString(device.serial), QString::fromStdString(device.ip), name,
              QString::fromStdString(device.model), stateText(),
-             device.is_network ? QStringLiteral("TCP 网络 无线") : QStringLiteral("USB 有线"));
+             device.is_network ? QStringLiteral("TCP 网络 无线") : QStringLiteral("USB 有线"),
+             device.platform == DevicePlatform::Android ? QStringLiteral("Android 安卓 ADB") : QStringLiteral("OpenHarmony 鸿蒙 HDC"));
 }
 
 std::vector<DeviceListEntry> DeviceCatalog::merge(const std::vector<Device>& liveDevices,
@@ -72,7 +75,7 @@ std::vector<DeviceListEntry> DeviceCatalog::merge(const std::vector<Device>& liv
     QSet<QString> seen;
     for (const auto& live : liveDevices) {
         auto device = normalizeLive(live);
-        const QString endpoint = QString::fromStdString(device.serial);
+        const QString endpoint = QString::fromStdString(device.id());
         if (endpoint.isEmpty() || seen.contains(endpoint)) continue;
         seen.insert(endpoint);
         DeviceListEntry entry;
@@ -87,9 +90,10 @@ std::vector<DeviceListEntry> DeviceCatalog::merge(const std::vector<Device>& liv
         if (endpoint.isEmpty() || seen.contains(endpoint)) continue;
         seen.insert(endpoint);
         DeviceListEntry entry;
-        entry.device.serial = endpoint.toStdString();
+        entry.device.serial = deviceSerial(endpoint.toStdString());
+        entry.device.platform = saved.platform;
         entry.device.ip = QString::fromStdString(saved.ip).trimmed().toStdString();
-        entry.device.port = saved.port > 0 && saved.port <= 65535 ? saved.port : 8710;
+        entry.device.port = saved.port > 0 && saved.port <= 65535 ? saved.port : defaultDevicePort(saved.platform);
         entry.device.is_network = true;
         entry.device.state = DeviceState::Disconnected;
         entry.name = QString::fromStdString(saved.name);

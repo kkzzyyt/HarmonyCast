@@ -1,4 +1,5 @@
 #include "harmonycast/DeviceManager.h"
+#include "harmonycast/AdbClient.h"
 #include <algorithm>
 #include <sstream>
 #include <regex>
@@ -11,8 +12,9 @@
 
 namespace harmonycast {
 
-DeviceManager::DeviceManager(std::shared_ptr<HdcClient> hdc, QObject* parent)
-    : QObject(parent), m_hdc(std::move(hdc)), m_timer(new QTimer(this)) {
+DeviceManager::DeviceManager(std::shared_ptr<DeviceClient> hdc, QObject* parent, std::shared_ptr<DeviceClient> android)
+    : QObject(parent), m_hdc(std::move(hdc)), m_android(std::move(android)),
+      m_delivery(new QObject, [](QObject* context) { context->deleteLater(); }), m_timer(new QTimer(this)) {
     connect(m_timer, &QTimer::timeout, this, [this]{ refresh(false); });
 }
 
@@ -42,120 +44,116 @@ void DeviceManager::refresh(bool forceEmit) {
 
     QPointer<DeviceManager> weak_this(this);
     auto hdc = m_hdc;
-    std::thread([weak_this, hdc]() {
-        if (!hdc) return;
+    auto android = m_android;
+    auto delivery = m_delivery;
+    std::thread([weak_this, hdc, android, delivery]() {
         auto currentOpt = hdc->listDevicesChecked();
-
-        if (weak_this) {
-            QMetaObject::invokeMethod(weak_this.data(), [weak_this, currentOpt = std::move(currentOpt)]() {
-                if (!weak_this) return;
-
-                if (!currentOpt.has_value()) {
-                    weak_this->m_consecutive_poll_failures++;
-                    // Ignore transient HDC command latency or query timeouts (< 3 cycles) to prevent false disconnects
-                    if (weak_this->m_consecutive_poll_failures < 3) {
-                        weak_this->m_is_refreshing = false;
-                        if (weak_this->m_needs_refresh.exchange(false)) {
-                            weak_this->refresh(false);
-                        }
-                        return;
+        auto androidOpt = android ? android->listDevicesChecked() : std::optional<std::vector<Device>>(std::vector<Device>{});
+        QMetaObject::invokeMethod(delivery.get(), [weak_this, currentOpt = std::move(currentOpt), androidOpt = std::move(androidOpt)]() {
+            if (!weak_this) return;
+            std::vector<Device> current;
+            const std::optional<std::vector<Device>>* results[] = {&currentOpt, &androidOpt};
+            for (int platform = 0; platform < 2; ++platform) {
+                if (results[platform]->has_value()) {
+                    weak_this->m_consecutive_poll_failures[platform] = 0;
+                    const auto& found = results[platform]->value();
+                    current.insert(current.end(), found.begin(), found.end());
+                } else if (++weak_this->m_consecutive_poll_failures[platform] < 3) {
+                    for (const auto& device : weak_this->devices()) {
+                        if (int(device.platform) == platform) current.push_back(device);
                     }
-                } else {
-                    weak_this->m_consecutive_poll_failures = 0;
+                }
+            }
+
+            std::vector<Device> connected_events;
+            std::vector<Device> disconnected_events;
+            bool has_changes = false;
+
+            {
+                std::lock_guard<std::mutex> lock(weak_this->m_mutex);
+
+                // Check current devices against previous devices
+                for (auto& dev : current) {
+                    auto it = std::find_if(weak_this->m_devices.begin(), weak_this->m_devices.end(),
+                                           [&dev](const Device& old) { return isSameDevice(old.id(), dev.id()); });
+                    // Verbose HDC lists Offline explicitly instead of omitting the target.
+                    // Apply the same debounce as missing targets, but report lost authorization immediately.
+                    if (it != weak_this->m_devices.end() && it->state == DeviceState::Connected &&
+                        dev.state == DeviceState::Offline) {
+                        int& misses = weak_this->m_miss_counts[it->id()];
+                        const int threshold = it->is_network ? 3 : 2;
+                        if (++misses < threshold) {
+                            dev = *it;
+                            continue;
+                        }
+                    } else {
+                        weak_this->m_miss_counts[dev.id()] = 0;
+                    }
+                    if (it == weak_this->m_devices.end()) {
+                        // Brand new device
+                        if (dev.state == DeviceState::Connected) {
+                            connected_events.push_back(dev);
+                        }
+                    } else {
+                        // Existing device whose state transitioned to Connected
+                        if (it->state != DeviceState::Connected && dev.state == DeviceState::Connected) {
+                            connected_events.push_back(dev);
+                        } else if (it->state == DeviceState::Connected && dev.state != DeviceState::Connected) {
+                            // Transitioned from Connected to Offline / Unauthorized
+                            disconnected_events.push_back(dev);
+                        }
+                    }
                 }
 
-                auto current = currentOpt.value_or(std::vector<Device>{});
-
-                std::vector<Device> connected_events;
-                std::vector<Device> disconnected_events;
-                bool has_changes = false;
-
-                {
-                    std::lock_guard<std::mutex> lock(weak_this->m_mutex);
-
-                    // Check current devices against previous devices
-                    for (auto& dev : current) {
-                        auto it = std::find_if(weak_this->m_devices.begin(), weak_this->m_devices.end(),
-                                               [&dev](const Device& old) { return isSameDevice(old.serial, dev.serial); });
-                        // Verbose HDC lists Offline explicitly instead of omitting the target.
-                        // Apply the same debounce as missing targets, but report lost authorization immediately.
-                        if (it != weak_this->m_devices.end() && it->state == DeviceState::Connected &&
-                            dev.state == DeviceState::Offline) {
-                            int& misses = weak_this->m_miss_counts[it->serial];
-                            const int threshold = it->is_network ? 3 : 2;
-                            if (++misses < threshold) {
-                                dev = *it;
-                                continue;
-                            }
+                // Check for devices missing from current target list with debounce
+                std::vector<Device> preserved_missing;
+                for (const auto& old_dev : weak_this->m_devices) {
+                    auto it = std::find_if(current.begin(), current.end(),
+                                           [&old_dev](const Device& dev) { return isSameDevice(dev.id(), old_dev.id()); });
+                    if (it == current.end()) {
+                        int& misses = weak_this->m_miss_counts[old_dev.id()];
+                        misses++;
+                        // Network devices tolerate up to 3 missed poll cycles (~7.5s) to survive Wi-Fi jitter; USB devices tolerate 2 (~5s)
+                        int threshold = old_dev.is_network ? 3 : 2;
+                        if (misses < threshold) {
+                            preserved_missing.push_back(old_dev);
                         } else {
-                            weak_this->m_miss_counts[dev.serial] = 0;
-                        }
-                        if (it == weak_this->m_devices.end()) {
-                            // Brand new device
-                            if (dev.state == DeviceState::Connected) {
-                                connected_events.push_back(dev);
+                            if (old_dev.state == DeviceState::Connected) {
+                                disconnected_events.push_back(old_dev);
                             }
-                        } else {
-                            // Existing device whose state transitioned to Connected
-                            if (it->state != DeviceState::Connected && dev.state == DeviceState::Connected) {
-                                connected_events.push_back(dev);
-                            } else if (it->state == DeviceState::Connected && dev.state != DeviceState::Connected) {
-                                // Transitioned from Connected to Offline / Unauthorized
-                                disconnected_events.push_back(dev);
-                            }
+                            weak_this->m_miss_counts.erase(old_dev.id());
                         }
                     }
-
-                    // Check for devices missing from current target list with debounce
-                    std::vector<Device> preserved_missing;
-                    for (const auto& old_dev : weak_this->m_devices) {
-                        auto it = std::find_if(current.begin(), current.end(),
-                                               [&old_dev](const Device& dev) { return isSameDevice(dev.serial, old_dev.serial); });
-                        if (it == current.end()) {
-                            int& misses = weak_this->m_miss_counts[old_dev.serial];
-                            misses++;
-                            // Network devices tolerate up to 3 missed poll cycles (~7.5s) to survive Wi-Fi jitter; USB devices tolerate 2 (~5s)
-                            int threshold = old_dev.is_network ? 3 : 2;
-                            if (misses < threshold) {
-                                preserved_missing.push_back(old_dev);
-                            } else {
-                                if (old_dev.state == DeviceState::Connected) {
-                                    disconnected_events.push_back(old_dev);
-                                }
-                                weak_this->m_miss_counts.erase(old_dev.serial);
-                            }
-                        }
-                    }
-
-                    for (const auto& preserved : preserved_missing) {
-                        current.push_back(preserved);
-                    }
-
-                    has_changes = (weak_this->m_devices != current);
-                    weak_this->m_devices = current;
                 }
 
-                // Direct Qt slots may read devices() or findDevice(). Never call
-                // them while holding the non-recursive device-list mutex.
-                const bool force = weak_this->m_needs_force_emit.exchange(false);
-                for (const auto& d : connected_events) {
-                    if (!weak_this) return;
-                    emit weak_this->deviceConnected(d);
+                for (const auto& preserved : preserved_missing) {
+                    current.push_back(preserved);
                 }
-                for (const auto& d : disconnected_events) {
-                    if (!weak_this) return;
-                    emit weak_this->deviceDisconnected(d);
-                }
+
+                has_changes = (weak_this->m_devices != current);
+                weak_this->m_devices = current;
+            }
+
+            // Direct Qt slots may read devices() or findDevice(). Never call
+            // them while holding the non-recursive device-list mutex.
+            const bool force = weak_this->m_needs_force_emit.exchange(false);
+            for (const auto& d : connected_events) {
                 if (!weak_this) return;
-                if (force || has_changes) emit weak_this->devicesUpdated(current);
-
+                emit weak_this->deviceConnected(d);
+            }
+            for (const auto& d : disconnected_events) {
                 if (!weak_this) return;
-                weak_this->m_is_refreshing = false;
-                if (weak_this->m_needs_refresh.exchange(false)) {
-                    weak_this->refresh(false);
-                }
-            });
-        }
+                emit weak_this->deviceDisconnected(d);
+            }
+            if (!weak_this) return;
+            if (force || has_changes) emit weak_this->devicesUpdated(current);
+
+            if (!weak_this) return;
+            weak_this->m_is_refreshing = false;
+            if (weak_this->m_needs_refresh.exchange(false)) {
+                weak_this->refresh(false);
+            }
+        }, Qt::QueuedConnection);
     }).detach();
 }
 
@@ -167,13 +165,20 @@ std::vector<Device> DeviceManager::devices() const {
 std::optional<Device> DeviceManager::findDevice(const std::string& serial) const {
     std::lock_guard<std::mutex> lock(m_mutex);
     for (const auto& dev : m_devices) {
-        if (dev.serial == serial) return dev;
+        if (dev.id() == serial) return dev;
     }
     return std::nullopt;
 }
 
 void DeviceManager::queryDeviceInfoAsync(const std::string& serial, std::function<void(DeviceInfo)> callback) {
     if (!m_hdc) return;
+    if (isAndroidDevice(serial)) {
+        if (m_android) m_android->executeAsync({"shell", AdbClient::deviceInfoScript()}, serial,
+            [serial, callback = std::move(callback)](const CommandResult& result) {
+                callback(AdbClient::parseDeviceInfo(serial, result.out));
+            });
+        return;
+    }
 
     std::string script =
         "echo \"<<<PARAM>>>\"; param dump 2>/dev/null; "

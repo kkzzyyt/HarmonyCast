@@ -11,10 +11,11 @@ namespace harmonycast {
 class ControlChannel : public QObject {
     Q_OBJECT
 public:
-    explicit ControlChannel(QObject* parent = nullptr);
+    explicit ControlChannel(QObject* parent = nullptr, DevicePlatform platform = DevicePlatform::OpenHarmony);
     ~ControlChannel() override;
 
     bool connectToHost(const QString& host, quint16 port);
+    void connectToHostAsync(const QString& host, quint16 port);
     void disconnectFromHost();
     [[nodiscard]] bool isConnected() const;
 
@@ -34,6 +35,7 @@ signals:
 
 private:
     QTcpSocket* m_socket{nullptr};
+    DevicePlatform m_platform;
 };
 
 } // namespace harmonycast

@@ -80,6 +80,11 @@ message(STATUS "Found libavcodec: ${AVCODEC_LIBRARY}")
 
 # Core Library Sources
 set(CORE_HEADERS
+    include/harmonycast/DeviceClient.h
+    include/harmonycast/MirrorSession.h
+    include/harmonycast/AndroidStreamSession.h
+    include/harmonycast/AdbClient.h
+    include/harmonycast/ScrcpyDemuxer.h
     include/harmonycast/Types.h
     include/harmonycast/HdcClient.h
     include/harmonycast/DeviceManager.h
@@ -111,6 +116,9 @@ set(CORE_HEADERS
 )
 
 set(CORE_SOURCES
+    src/AdbClient.cpp
+    src/AndroidStreamSession.cpp
+    src/ScrcpyDemuxer.cpp
     src/HdcClient.cpp
     src/DeviceManager.cpp
     src/DeviceCatalog.cpp
@@ -198,6 +206,7 @@ if(APPLE)
     )
     add_custom_command(TARGET HarmonyCast POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/resources" "$<TARGET_BUNDLE_DIR:HarmonyCast>/Contents/Resources"
+        COMMAND ${CMAKE_COMMAND} "-DRESOURCE_DIR=$<TARGET_BUNDLE_DIR:HarmonyCast>/Contents/Resources" -DKEEP_HOST=macos -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/filter_android_resources.cmake"
         COMMAND codesign --force --deep --sign - "$<TARGET_BUNDLE_DIR:HarmonyCast>"
         COMMENT "Copying resources and applying ad-hoc code signature to HarmonyCast.app"
     )
@@ -254,6 +263,16 @@ endif()
 
 target_include_directories(HarmonyCast PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(HarmonyCast PRIVATE harmonycast_core)
+if(WIN32)
+    if(HARMONYCAST_SERVER2012_COMPAT)
+        set(HARMONYCAST_ADB_HOST none)
+    else()
+        set(HARMONYCAST_ADB_HOST windows-x64)
+    endif()
+    add_custom_command(TARGET HarmonyCast POST_BUILD
+        COMMAND ${CMAKE_COMMAND} "-DRESOURCE_DIR=$<TARGET_FILE_DIR:HarmonyCast>/resources" "-DKEEP_HOST=${HARMONYCAST_ADB_HOST}" -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/filter_android_resources.cmake"
+    )
+endif()
 if(HARMONYCAST_SERVER2012_COMPAT AND MSVC)
     target_link_options(HarmonyCast PRIVATE /SUBSYSTEM:WINDOWS,6.02)
 endif()
@@ -302,7 +321,16 @@ add_executable(test_harmonycast_hdc_commands tests/test_hdc_commands.cpp)
 target_link_libraries(test_harmonycast_hdc_commands PRIVATE harmonycast_core)
 add_test(NAME HdcCommandTests COMMAND test_harmonycast_hdc_commands)
 
+add_executable(test_harmonycast_android tests/test_android.cpp)
+target_link_libraries(test_harmonycast_android PRIVATE harmonycast_core)
+target_compile_definitions(test_harmonycast_android PRIVATE HARMONYCAST_TEST_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
+add_test(NAME AndroidCompatibilityTests COMMAND test_harmonycast_android)
+set_tests_properties(AndroidCompatibilityTests PROPERTIES TIMEOUT 60)
+
 set_tests_properties(CoreTests UpdateAssetTests PerformanceRegressionTests ConnectionRegressionTests InspectionTests ScrollingRegressionTests StreamRecoveryTests HiLogControlTests DevicePickerTests HdcCommandTests PROPERTIES TIMEOUT 60)
+set_tests_properties(CoreTests UpdateAssetTests PerformanceRegressionTests ConnectionRegressionTests
+    InspectionTests ScrollingRegressionTests StreamRecoveryTests HiLogControlTests DevicePickerTests
+    HdcCommandTests AndroidCompatibilityTests PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 
 add_executable(benchmark_harmonycast tests/benchmark_core.cpp)
 target_link_libraries(benchmark_harmonycast PRIVATE harmonycast_core)

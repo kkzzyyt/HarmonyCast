@@ -2,6 +2,7 @@
 
 #include "PacketDemuxer.h"
 #include "VideoDecoder.h"
+#include "ScrcpyDemuxer.h"
 #include <QByteArray>
 #include <QObject>
 #include <optional>
@@ -12,7 +13,7 @@ namespace harmonycast {
 class VideoPipeline : public QObject {
     Q_OBJECT
 public:
-    explicit VideoPipeline(QObject* parent = nullptr);
+    explicit VideoPipeline(QObject* parent = nullptr, DevicePlatform platform = DevicePlatform::OpenHarmony);
     void consume(const QByteArray& data);
     void setPresentation(QSize viewport, int rotation, qreal dpr);
     // Call on the owning worker thread. Each encoded stream gets one CPU retry.
@@ -26,9 +27,12 @@ signals:
     void headerParsed(const QString& name, int width, int height);
     void decoderFallback(const QString& reason);
     void softwareRetryCompleted(bool recovered);
+    void protocolError(const QString& error);
 
 private:
     PacketDemuxer m_demuxer;
+    ScrcpyDemuxer m_scrcpy;
+    DevicePlatform m_platform;
     VideoDecoder m_decoder;
     bool m_decoder_failed{false};
     bool m_encoded_stream{false};
