@@ -1,0 +1,55 @@
+name: Publish verified Windows artifacts
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag
+        required: true
+        type: string
+      run_id:
+        description: Successful Windows build run for the tag commit
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ inputs.tag }}
+      BUILD_RUN: ${{ inputs.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+      - name: Verify tag and successful Windows jobs
+        shell: bash
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$BUILD_RUN" =~ ^[0-9]+$ ]]
+          gh run view "$BUILD_RUN" --json headSha,jobs > /tmp/build-run.json
+          python3 - <<'PY'
+          import json, os, re, subprocess
+          from pathlib import Path
+          run = json.loads(Path('/tmp/build-run.json').read_text())
+          assert run['headSha'] == subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          version = re.search(r'project\(HarmonyCast VERSION ([0-9.]+)', Path('CMakeLists.txt').read_text()).group(1)
+          assert os.environ['RELEASE_TAG'] == 'v' + version
+          required = {'Build Windows x64 Executable & Single EXE', 'Build Windows Server 2012 compatibility edition'}
+          passed = {job['name'] for job in run['jobs'] if job['conclusion'] == 'success'}
+          assert required <= passed, 'Both Windows jobs must pass before publication'
+          PY
+          gh release view "$RELEASE_TAG" --json tagName
+      - name: Download and publish Windows packages
+        shell: bash
+        run: |
+          gh run download "$BUILD_RUN" --name HarmonyCast-Windows-x64 --dir windows
+          gh run download "$BUILD_RUN" --name HarmonyCast-Windows-Server2012-x64 --dir server2012
+          gh release upload "$RELEASE_TAG" windows/* server2012/* --clobber
+          gh release edit "$RELEASE_TAG" --draft=false --latest
