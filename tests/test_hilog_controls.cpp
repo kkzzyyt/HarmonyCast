@@ -181,7 +181,7 @@ static void testProcessFailureReporting() {
 }
 
 static void testWirelessControls() {
-    MainWindow window(nullptr, false, QCoreApplication::applicationFilePath().toStdString());
+    MainWindow window(nullptr, false, QCoreApplication::applicationFilePath().toStdString(), "/missing/adb");
     window.setAttribute(Qt::WA_ShowWithoutActivating);
     window.show();
     auto* toggle = window.findChild<QCheckBox*>("WirelessHiLog");
@@ -262,7 +262,7 @@ static void testWirelessControls() {
 }
 
 static void testUsbAndFreshDefault() {
-    MainWindow window(nullptr, false, QCoreApplication::applicationFilePath().toStdString());
+    MainWindow window(nullptr, false, QCoreApplication::applicationFilePath().toStdString(), "/missing/adb");
     window.setAttribute(Qt::WA_ShowWithoutActivating);
     window.show();
     auto* toggle = window.findChild<QCheckBox*>("WirelessHiLog");

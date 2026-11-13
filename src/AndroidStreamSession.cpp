@@ -38,6 +38,8 @@ AndroidStreamSession::AndroidStreamSession(std::shared_ptr<AdbClient> adb, Devic
       m_timeouts{std::max(100, timeouts.startup_ms), std::max(100, timeouts.frame_ms)},
       m_server_path(serverPath.isEmpty() ? findServer() : std::move(serverPath)), m_bitrate(bitrate),
       m_delivery(new QObject, [](QObject* receiver) { receiver->deleteLater(); }) {
+    qRegisterMetaType<DecodedFrame>("harmonycast::DecodedFrame");
+    qRegisterMetaType<DecodedFrame>("DecodedFrame");
     m_device.platform = DevicePlatform::Android;
     m_socket->setProxy(QNetworkProxy(QNetworkProxy::NoProxy));
     m_socket->setReadBufferSize(2 * 1024 * 1024);

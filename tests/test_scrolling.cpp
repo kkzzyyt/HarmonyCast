@@ -66,7 +66,7 @@ static void testReentrantDiscovery() {
 static void testStartup() {
     qputenv("HC_SCROLL_TEST_SLOW_HDC", "1");
     QSettings("HarmonyCast", "HarmonyCast").setValue("auto_check_update", false);
-    MainWindow window(nullptr, true, QCoreApplication::applicationFilePath().toStdString());
+    MainWindow window(nullptr, true, QCoreApplication::applicationFilePath().toStdString(), "/missing/adb");
     auto* manager = window.findChild<DeviceManager*>();
     check(manager, "device manager missing");
     auto* polling = manager->findChild<QTimer*>();
@@ -234,7 +234,7 @@ int main(int argc, char** argv) {
     try {
         testReentrantDiscovery();
         testStartup();
-        MainWindow window(nullptr, false, QCoreApplication::applicationFilePath().toStdString());
+        MainWindow window(nullptr, false, QCoreApplication::applicationFilePath().toStdString(), "/missing/adb");
         window.show();
         testTableScrolling(window);
         testLogScrollPosition(window);

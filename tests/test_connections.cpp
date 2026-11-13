@@ -95,7 +95,7 @@ static QComboBox* deviceCombo(MainWindow& window, const QString& target) {
 static void testOfflineDoesNotReconnect(const QString& commandLog) {
     qputenv("HC_CONNECTION_TEST_MODE", "empty");
     QSettings("HarmonyCast", "HarmonyCast").setValue("auto_start_mirror", true);
-    MainWindow window(nullptr, false, QCoreApplication::applicationFilePath().toStdString());
+    MainWindow window(nullptr, false, QCoreApplication::applicationFilePath().toStdString(), "/missing/adb");
     std::vector<Device> devices = HdcClient::parseDeviceList("192.0.2.55:9000 TCP Offline HR36\n");
     check(QMetaObject::invokeMethod(&window, "onDevicesUpdated", Qt::DirectConnection,
                                    Q_ARG(std::vector<Device>, devices)), "device update slot unavailable");
@@ -139,7 +139,7 @@ static void testOnlineSelectionAndPort() {
     qputenv("HC_CONNECTION_TEST_MODE", "empty");
     QSettings("HarmonyCast", "HarmonyCast").setValue("auto_start_mirror", false);
     NetworkDeviceDialog::saveDevice("192.0.2.55", "", 9000);
-    MainWindow window(nullptr, false, QCoreApplication::applicationFilePath().toStdString());
+    MainWindow window(nullptr, false, QCoreApplication::applicationFilePath().toStdString(), "/missing/adb");
     const auto devices = HdcClient::parseDeviceList(verboseTargets);
     check(QMetaObject::invokeMethod(&window, "onDevicesUpdated", Qt::DirectConnection,
                                    Q_ARG(std::vector<Device>, devices)), "device update slot unavailable");
@@ -153,7 +153,7 @@ static void testOnlineSelectionAndPort() {
 static void testConnectionFailure(const QByteArray& mode, const QString& expected) {
     qputenv("HC_CONNECTION_TEST_MODE", mode);
     QSettings("HarmonyCast", "HarmonyCast").setValue("auto_start_mirror", false);
-    MainWindow window(nullptr, false, QCoreApplication::applicationFilePath().toStdString());
+    MainWindow window(nullptr, false, QCoreApplication::applicationFilePath().toStdString(), "/missing/adb");
     check(QMetaObject::invokeMethod(&window, "switchModule", Qt::DirectConnection, Q_ARG(int, 1)), "mirror navigation unavailable");
     const std::string endpoint = "192.0.2.55:9000";
     check(QMetaObject::invokeMethod(&window, "switchToSingleDevice", Qt::DirectConnection,

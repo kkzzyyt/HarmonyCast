@@ -38,7 +38,7 @@ int main(int argc, char** argv) {
         check(HdcClient::commandArguments("file send \"C:/test dir/file.hap\" /data/local/tmp/", false) ==
               std::vector<std::string>{"file", "send", "C:/test dir/file.hap", "/data/local/tmp/"}, "host command quoting lost");
         check(HdcClient::commandArguments("  ").empty() && HdcClient::commandArguments("hdc shell").empty(), "empty input starts interactive shell");
-        MainWindow window(nullptr, false, QCoreApplication::applicationFilePath().toStdString());
+        MainWindow window(nullptr, false, QCoreApplication::applicationFilePath().toStdString(), "/missing/adb");
         auto* input = window.findChild<QLineEdit*>("HdcCommandInput");
         auto* mode = window.findChild<QComboBox*>("HdcCommandMode");
         auto* presets = window.findChild<QComboBox*>("HdcPresets");
