@@ -32,6 +32,8 @@ private:
     void updateSummary(bool stopped);
     void updateTaskControls();
     void configureResults(InspectionTask task);
+    void refreshResults();
+    void renderRow(int index, const InspectionResult& row);
     QStringList selectedCleanupPackages() const;
 
     InspectionRunner* m_runner;
@@ -41,6 +43,7 @@ private:
     QWidget* m_cleanup_options;
     std::vector<QCheckBox*> m_cleanup_packages;
     InspectionTask m_results_task{InspectionTask::Inspect};
+    InspectionTask m_table_task{InspectionTask::Inspect};
     QLabel* m_port_hint;
     InspectionImport m_import;
     QPlainTextEdit* m_input;

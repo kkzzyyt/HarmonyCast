@@ -438,8 +438,12 @@ bool InspectionRunner::startBatch(const std::vector<InspectionTarget>& targets, 
 }
 
 void InspectionRunner::stop() {
-    if (!m_running) return;
+    if (!m_running || m_stopping) return;
     m_stopping = true;
+    if (m_index < static_cast<int>(m_results.size()) && !m_disconnecting) {
+        m_results[m_index].activity = "停止中";
+        emit targetChanged(m_index);
+    }
     emit activityChanged("正在停止，断开当前设备后结束");
     if (m_process && !m_disconnecting) m_process->kill();
 }
@@ -451,6 +455,7 @@ void InspectionRunner::nextTarget() {
     }
     auto& row = m_results[m_index];
     row.status = InspectionStatus::Connecting;
+    row.activity = "连接中";
     row.inspectedAt = QDateTime::currentDateTime();
     emit targetChanged(m_index);
     emit activityChanged("正在连接 " + row.target.endpoint());
@@ -472,6 +477,7 @@ void InspectionRunner::nextTarget() {
 void InspectionRunner::collectCurrent() {
     auto& row = m_results[m_index];
     row.status = InspectionStatus::Collecting;
+    row.activity = "采集中";
     emit targetChanged(m_index);
     emit activityChanged("正在读取 " + row.target.endpoint());
     runCommand({"shell", InspectionReport::collectionScript(row.target.platform).toStdString()}, row.target.endpoint(), m_command_timeout_ms,
@@ -498,6 +504,7 @@ void InspectionRunner::collectCurrent() {
 void InspectionRunner::queryCleanupApplications() {
     auto& row = m_results[m_index];
     row.status = InspectionStatus::Cleaning;
+    row.activity = "查询应用";
     emit targetChanged(m_index);
     emit activityChanged("正在查询已安装应用 " + row.target.endpoint());
     if (m_stopping) { finishApplicationCleanup(); return; }
@@ -530,6 +537,7 @@ void InspectionRunner::cleanNextApplication() {
     if (m_application_index == row.applications.size()) { finishApplicationCleanup(); return; }
     auto& app = row.applications[m_application_index];
     app.status = ApplicationCleanupStatus::Running;
+    row.activity = "清理中";
     emit targetChanged(m_index);
     emit activityChanged(QString("正在清理 %1 · %2").arg(row.target.endpoint(), app.package));
     if (m_stopping) {
@@ -579,6 +587,8 @@ void InspectionRunner::finishApplicationCleanup() {
 
 void InspectionRunner::disconnectCurrent() {
     m_disconnecting = true;
+    m_results[m_index].activity = "断开中";
+    emit targetChanged(m_index);
     emit activityChanged("正在断开 " + m_results[m_index].target.endpoint());
     const auto endpoint = m_results[m_index].target.endpoint().toStdString();
     runCommand(m_hdc->platform() == DevicePlatform::Android ? std::vector<std::string>{"disconnect", endpoint} :
@@ -591,6 +601,7 @@ void InspectionRunner::disconnectCurrent() {
         }
         m_connection_attempted = false;
         m_disconnecting = false;
+        row.activity.clear();
         emit targetChanged(m_index);
         ++m_index;
         emit progressChanged(m_index, static_cast<int>(m_results.size()));
@@ -601,6 +612,7 @@ void InspectionRunner::disconnectCurrent() {
 void InspectionRunner::finishBatch() {
     for (int i = m_index; i < static_cast<int>(m_results.size()); ++i) {
         m_results[i].status = InspectionStatus::Cancelled;
+        m_results[i].activity.clear();
         m_results[i].notes = "用户停止，未执行";
         for (auto& app : m_results[i].applications) {
             app.status = ApplicationCleanupStatus::Cancelled; app.detail = "用户停止，未执行";

@@ -62,6 +62,7 @@ struct InspectionResult {
     QString notes;
     InspectionTask task{InspectionTask::Inspect};
     std::vector<ApplicationCleanupResult> applications;
+    QString activity;
 };
 
 class InspectionReport {

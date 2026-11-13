@@ -332,9 +332,11 @@ static void testCleanupPage(const QString& log, const QString& directory) {
     auto* table = page.findChild<QTableWidget*>("InspectionResults");
     check(task && input && start && table, "batch cleanup task selector missing");
     task->setCurrentIndex(task->findData(int(InspectionTask::ClearApplicationData)));
+    check(table->columnCount() == 7, "cleanup columns do not follow the selected task immediately");
     const auto boxes = page.findChildren<QCheckBox*>();
     check(boxes.size() == 3 && start->text() == "开始清理", "cleanup application choices missing");
     input->setPlainText("192.0.2.11");
+    check(table->rowCount() == 1 && table->item(0, 1)->text() == "待处理", "cleanup target list is not synchronized before starting");
     for (auto* box : boxes) box->setChecked(false);
     check(!start->isEnabled(), "cleanup enabled without an application selection");
     boxes[0]->setChecked(true);
@@ -355,7 +357,7 @@ static void testCleanupPage(const QString& log, const QString& directory) {
           "running cleanup allows its targets or applications to change");
     waitUntil([&] { return !page.isRunning(); });
     check(table->columnCount() == 7 && table->rowCount() == 1 && table->item(0, 3)->text() == "已清理" &&
-          table->item(0, 4)->text().isEmpty(), "cleanup UI loses per-application results or shows unselected apps as cleared");
+          table->item(0, 4)->text() == "未选择", "cleanup UI loses per-application results or shows unselected apps as cleared");
     check(page.exportCsv(directory + "/cleanup-page.csv"), "cleanup UI export unavailable");
     check(!readFile(log).mid(offset).contains("bm clean -d -n com.yarward.etndoorcontrol_a33"), "unchecked application was cleaned");
     const auto artifacts = qEnvironmentVariable("HC_CLEANUP_ARTIFACTS");
@@ -365,9 +367,43 @@ static void testCleanupPage(const QString& log, const QString& directory) {
         check(page.grab().save(artifacts + "/batch-application-cleanup.png"), "cleanup UI preview unavailable");
     }
     task->setCurrentIndex(task->findData(int(InspectionTask::Inspect)));
-    check(table->columnCount() == 7 && page.exportCsv(directory + "/cleanup-after-mode-switch.csv") &&
+    check(table->columnCount() == 10 && page.exportCsv(directory + "/cleanup-after-mode-switch.csv") &&
           readFile(directory + "/cleanup-after-mode-switch.csv").contains("清理结果"),
           "changing the next task corrupts the previous cleanup export");
+}
+
+static void testCleanupLiveStatus() {
+    InspectionPage page(std::make_shared<HdcClient>(QCoreApplication::applicationFilePath().toStdString()));
+    auto* task = page.findChild<QComboBox*>("InspectionTask");
+    auto* input = page.findChild<QPlainTextEdit*>("InspectionTargets");
+    auto* table = page.findChild<QTableWidget*>("InspectionResults");
+    task->setCurrentIndex(task->findData(int(InspectionTask::ClearApplicationData)));
+    input->setPlainText("192.0.2.15\n192.0.2.13");
+    const auto boxes = page.findChildren<QCheckBox*>();
+    boxes[1]->setChecked(false); boxes[2]->setChecked(false);
+    bool sawQuery = false, sawDisconnect = false;
+    auto* runner = page.findChild<InspectionRunner*>();
+    QObject::connect(runner, &InspectionRunner::targetChanged, &page, [&](int index) {
+        const auto text = table->item(index, 1)->text();
+        sawQuery |= text == "查询应用";
+        sawDisconnect |= text == "断开中";
+    });
+    QTimer::singleShot(0, &page, [&] {
+        if (auto* dialog = qobject_cast<QMessageBox*>(QApplication::activeModalWidget())) dialog->button(QMessageBox::Yes)->click();
+    });
+    page.findChild<QPushButton*>("InspectionStart")->click();
+    waitUntil([&] { return table->item(0, 3)->text() == "清理中"; });
+    check(page.isRunning() && table->item(0, 1)->text() == "清理中" && table->item(1, 1)->text() == "待处理" &&
+        table->item(0, 4)->text() == "未选择", "per-application progress is only shown after the batch finishes");
+    const auto artifacts = qEnvironmentVariable("HC_CLEANUP_STATUS_ARTIFACTS");
+    if (!artifacts.isEmpty()) {
+        page.resize(1200, 760); page.setStyleSheet(IconManager::getAppStyleSheet()); page.setPalette(IconManager::getAppPalette());
+        page.show(); QCoreApplication::processEvents();
+        check(page.grab().save(artifacts + "/cleanup-live-status.png"), "live cleanup status preview unavailable");
+    }
+    waitUntil([&] { return !page.isRunning(); });
+    check(sawQuery && sawDisconnect && table->item(0, 3)->text().startsWith("失败") &&
+        table->item(1, 3)->text().contains("未安装"), "query, disconnect, failure or skipped status was not synchronized");
 }
 
 static void testPage(const QString& directory) {
@@ -418,7 +454,7 @@ static void testPage(const QString& directory) {
         check(page.grab().save(artifactDirectory + "/inspection-results.png"), "UI screenshot unavailable");
     }
     QSettings("HarmonyCast", "HarmonyCast").setValue("auto_start_mirror", true);
-    MainWindow window(nullptr, false, hdc->path());
+    MainWindow window(nullptr, false, hdc->path(), "/missing/adb");
     check(QMetaObject::invokeMethod(&window, "switchModule", Qt::DirectConnection, Q_ARG(int, 3)), "inspection navigation missing");
     auto* batch = window.findChild<InspectionPage*>();
     check(batch && !batch->isHidden(), "inspection page not selected");
@@ -514,6 +550,7 @@ int main(int argc, char** argv) {
         testBatchApplicationCleanup(temporary.filePath("commands.log"), temporary.path());
         testPage(temporary.path());
         testCleanupPage(temporary.filePath("commands.log"), temporary.path());
+        testCleanupLiveStatus();
         std::cout << "Inspection tests passed\n";
         return 0;
     } catch (const std::exception& error) {

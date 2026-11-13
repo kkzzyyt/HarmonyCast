@@ -17,6 +17,7 @@
 #include <QVBoxLayout>
 #include <QComboBox>
 #include <QCheckBox>
+#include <algorithm>
 
 namespace harmonycast {
 
@@ -278,6 +279,7 @@ void InspectionPage::updateInput() {
     m_input_errors->setToolTip(m_import.errors.join('\n'));
     const bool packagesValid = m_task->currentData().toInt() != int(InspectionTask::ClearApplicationData) || !selectedCleanupPackages().isEmpty();
     m_start_button->setEnabled(!isRunning() && !m_import.targets.empty() && m_import.errors.isEmpty() && packagesValid);
+    refreshResults();
 }
 
 QStringList InspectionPage::selectedCleanupPackages() const {
@@ -297,8 +299,9 @@ void InspectionPage::updateTaskControls() {
 }
 
 void InspectionPage::configureResults(InspectionTask task) {
-    m_results_task = task;
+    m_table_task = task;
     m_table->clear();
+    m_table->setRowCount(0);
     if (task == InspectionTask::ClearApplicationData) {
         m_table->setColumnCount(7);
         QStringList columns{"IP / 端口", "状态", "执行时间"};
@@ -321,6 +324,40 @@ void InspectionPage::configureResults(InspectionTask task) {
     }
 }
 
+void InspectionPage::refreshResults() {
+    const auto task = InspectionTask(m_task->currentData().toInt());
+    if (m_table_task != task) configureResults(task);
+    const auto& results = m_runner->results();
+    bool matches = !results.empty() && results.front().task == task && results.size() == m_import.targets.size();
+    for (size_t i = 0; matches && i < results.size(); ++i) {
+        matches = results[i].target.endpoint() == m_import.targets[i].endpoint() &&
+            results[i].target.platform == m_import.targets[i].platform;
+    }
+    const auto selected = selectedCleanupPackages();
+    if (matches && task == InspectionTask::ClearApplicationData) {
+        QStringList previous;
+        for (const auto& app : results.front().applications) previous << app.package;
+        matches = previous == selected;
+    }
+    m_table->setRowCount(static_cast<int>(matches ? results.size() : m_import.targets.size()));
+    for (int i = 0; i < m_table->rowCount(); ++i) {
+        if (matches) renderRow(i, results[i]);
+        else {
+            InspectionResult pending; pending.target = m_import.targets[i]; pending.task = task;
+            if (task == InspectionTask::ClearApplicationData)
+                for (const auto& package : selected) pending.applications.push_back({package, ApplicationCleanupStatus::Pending, {}});
+            renderRow(i, pending);
+        }
+    }
+    m_export_button->setText(!results.empty() && !matches ? "导出上次结果" : "导出表格");
+    if (matches) updateSummary(false);
+    else {
+        m_activity->setText(task == InspectionTask::ClearApplicationData ? "待开始清理，右侧显示待处理设备" : "待开始巡检，右侧显示待巡检设备");
+        m_summary->setText(QString("待处理 %1 台%2").arg(m_import.targets.size())
+            .arg(task == InspectionTask::ClearApplicationData ? QString(" · 已选 %1 个应用").arg(selected.size()) : QString{}));
+    }
+}
+
 void InspectionPage::startInspection() {
     if (isRunning() || m_import.targets.empty() || !m_import.errors.isEmpty()) return;
     const auto targets = m_import.targets;
@@ -335,23 +372,42 @@ void InspectionPage::startInspection() {
             QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes) return;
     }
     configureResults(task);
+    m_results_task = task;
     m_table->clearContents();
     m_table->setRowCount(static_cast<int>(targets.size()));
     const bool started = task == InspectionTask::ClearApplicationData ? m_runner->startApplicationCleanup(targets, packages) :
         m_runner->start(targets);
     if (!started) return;
-    for (int i = 0; i < m_table->rowCount(); ++i) updateRow(i);
-    m_summary->setText(task == InspectionTask::ClearApplicationData ? "逐台处理，逐应用记录结果；未安装的包跳过，单项失败继续后续任务" :
-        "失败设备也会保留记录；缺失信息留空并在备注中说明");
+    updateSummary(false);
 }
 
 void InspectionPage::updateRow(int index) {
     if (index < 0 || index >= static_cast<int>(m_runner->results().size())) return;
     const auto& row = m_runner->results()[index];
+    if (row.task != m_table_task) return;
+    renderRow(index, row);
+    if (isRunning()) {
+        m_table->setCurrentCell(index, 1);
+        m_table->scrollToItem(m_table->item(index, 1), QAbstractItemView::EnsureVisible);
+        updateSummary(false);
+    }
+}
+
+void InspectionPage::renderRow(int index, const InspectionResult& row) {
     const auto cells = InspectionReport::cells(row);
     QStringList visible;
     if (row.task == InspectionTask::ClearApplicationData) {
         visible = QStringList{row.target.endpoint(), cells[2], cells[3], cells[4], cells[5], cells[6], cells[7]};
+        if (row.status == InspectionStatus::Pending) visible[1] = "待处理";
+        const auto packages = InspectionReport::cleanupPackages();
+        for (int appIndex = 0; appIndex < packages.size(); ++appIndex) {
+            const auto app = std::find_if(row.applications.begin(), row.applications.end(),
+                [&](const ApplicationCleanupResult& value) { return value.package == packages[appIndex]; });
+            if (app == row.applications.end()) visible[3 + appIndex] = "未选择";
+            else if (app->status == ApplicationCleanupStatus::Pending &&
+                     (row.status == InspectionStatus::Pending || row.status == InspectionStatus::Connecting || row.status == InspectionStatus::Cleaning))
+                visible[3 + appIndex] = "待执行";
+        }
     } else {
         const QString memory = cells[12].isEmpty() ? QString{} :
             (cells[13].isEmpty() ? "—" : QString::number(cells[13].toDouble(), 'f', 0)) + " / " + QString::number(cells[12].toDouble(), 'f', 0);
@@ -369,6 +425,7 @@ void InspectionPage::updateRow(int index) {
             cells[15].isEmpty() ? QString{} : cells[15] + "%",
             row.model, row.systemVersion, cells[20], row.notes};
     }
+    if (!row.activity.isEmpty()) visible[1] = row.activity;
     for (int column = 0; column < visible.size(); ++column) {
         auto* item = m_table->item(index, column);
         if (!item) {
@@ -401,9 +458,11 @@ void InspectionPage::updateSummary(bool stopped) {
         else if (row.status == InspectionStatus::Skipped) ++skipped;
     }
     const auto name = m_results_task == InspectionTask::ClearApplicationData ? QStringLiteral("清理") : QStringLiteral("巡检");
-    m_activity->setText(name + (stopped ? "已停止，可导出当前结果" : "结束，可导出表格"));
+    if (!isRunning()) m_activity->setText(name + (stopped ? "已停止，可导出当前结果" : "结束，可导出表格"));
     m_summary->setText(QString("完成 %1 · 部分完成 %2 · 失败 %3 · 已停止 %4").arg(succeeded).arg(partial).arg(failed).arg(cancelled) +
-        (m_results_task == InspectionTask::ClearApplicationData ? QString(" · 无匹配应用 %1").arg(skipped) : QString{}));
+        (m_results_task == InspectionTask::ClearApplicationData ? QString(" · 无匹配应用 %1").arg(skipped) : QString{}) +
+        (isRunning() ? QString(" · 待处理 %1").arg(std::count_if(m_runner->results().begin(), m_runner->results().end(),
+            [](const InspectionResult& row) { return row.status == InspectionStatus::Pending; })) : QString{}));
 }
 
 } // namespace harmonycast
