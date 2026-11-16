@@ -13,6 +13,9 @@ cleanup() {
 trap cleanup EXIT
 export HC_BATCH_SCRIPT_LOG="$temporary/commands"
 export HC_BATCH_SCRIPT_READY="$temporary/ready"
+export HC_BATCH_SCRIPT_COPY_LOG="$temporary/copies"
+export HC_BATCH_SCRIPT_STAGE_LOG="$temporary/staging"
+export HC_BATCH_SCRIPT_SOURCE="$temporary/床旁 error 安装包.hap"
 : > "$HC_BATCH_SCRIPT_LOG"
 cat > "$temporary/fake hdc" <<'EOF'
 #!/bin/bash
@@ -23,6 +26,10 @@ if [ "${1:-}" = tconn ]; then
 elif [ "${3:-}" = shell ]; then
     printf 'com.yarward.etnbedsideoh\ncom.yarward.etnroomoh.extra\ncom.yarward.etndoorcontrol_a33\n'
 elif [ "${3:-}" = install ]; then
+    [ "$#" -eq 4 ] || exit 61
+    case "$4" in package_[0-9][0-9][0-9].hap|package_[0-9][0-9][0-9].app) ;; *) printf 'error: install requires a short ASCII filename\n'; exit 62 ;; esac
+    [ -f "$4" ] && cmp -s "$4" "$HC_BATCH_SCRIPT_SOURCE" || { printf 'error: staged file bytes unavailable from HDC cwd\n'; exit 63; }
+    pwd -P >> "$HC_BATCH_SCRIPT_STAGE_LOG"
     if [ "${HC_BATCH_SCRIPT_SLOW:-0}" = 1 ]; then
         : > "$HC_BATCH_SCRIPT_READY"
         exec sleep 20
@@ -36,6 +43,15 @@ else printf 'unexpected command\n' >&2; exit 8
 fi
 EOF
 chmod +x "$temporary/fake hdc"
+cat > "$temporary/cp" <<'EOF'
+#!/bin/bash
+printf '<%s>' "$@" >> "$HC_BATCH_SCRIPT_COPY_LOG"
+printf '\n' >> "$HC_BATCH_SCRIPT_COPY_LOG"
+if [ "${HC_BATCH_SCRIPT_COPY_FAIL:-0}" = 1 ] || [ "$1" = "${HC_BATCH_SCRIPT_COPY_FAIL_MATCH:-}" ]; then echo 'simulated copy failure' >&2; exit 7; fi
+if [ "${HC_BATCH_SCRIPT_COPY_SLOW:-0}" = 1 ]; then : > "$HC_BATCH_SCRIPT_READY"; exec sleep 20; fi
+exec /bin/cp "$@"
+EOF
+chmod +x "$temporary/cp"
 printf 'test HAP\n' > "$temporary/床旁 error 安装包.hap"
 printf '# target list\r\n192.0.2.21\r\n192.0.2.21:8710\n192.0.2.22\n' > "$temporary/devices.txt"
 script="$root/scripts/batch_apps.sh"
@@ -44,11 +60,26 @@ common=(--ips "$temporary/devices.txt" --hdc "$temporary/fake hdc")
 if bash "$script" install "${common[@]}" --file "$temporary/床旁 error 安装包.hap" > "$temporary/install.log" 2>&1; then
     echo 'Expected one failed device' >&2; exit 1
 fi
-grep -Fq '<-t><192.0.2.21:8710><install><'"$temporary/床旁 error 安装包.hap"'>' "$HC_BATCH_SCRIPT_LOG"
+grep -Fq '<-t><192.0.2.21:8710><install><package_001.hap>' "$HC_BATCH_SCRIPT_LOG"
+! grep -Fq '床旁 error 安装包.hap' "$HC_BATCH_SCRIPT_LOG"
+[ "$(wc -l < "$HC_BATCH_SCRIPT_COPY_LOG" | tr -d ' ')" -eq 1 ]
+grep -Fq "$temporary/床旁 error 安装包.hap" "$temporary/install.log"
+while IFS= read -r directory; do [ ! -d "$directory" ]; done < "$HC_BATCH_SCRIPT_STAGE_LOG"
 [ "$(grep -Fc '<tconn><192.0.2.21:8710>' "$HC_BATCH_SCRIPT_LOG")" -eq 2 ]
 grep -Fq '已安装' "$temporary/install.log"
 grep -Fq '<tconn><192.0.2.22:8710><-remove>' "$HC_BATCH_SCRIPT_LOG"
-echo 'PASS: deduplication, Unicode/spaces, exact install arguments, path error text, failure continuation and disconnect'
+echo 'PASS: copy once, ASCII filename, readable bytes from HDC cwd, original path display, failure continuation and cleanup'
+
+printf 'test HAP\n' > "$temporary/病房 APP.app"
+: > "$HC_BATCH_SCRIPT_LOG"
+: > "$HC_BATCH_SCRIPT_COPY_LOG"
+: > "$HC_BATCH_SCRIPT_STAGE_LOG"
+if bash "$script" install "${common[@]}" --file "$temporary/床旁 error 安装包.hap" --file "$temporary/病房 APP.app" --file "$temporary/床旁 error 安装包.hap" > "$temporary/multiple.log" 2>&1; then exit 1; fi
+[ "$(wc -l < "$HC_BATCH_SCRIPT_COPY_LOG" | tr -d ' ')" -eq 2 ]
+[ "$(grep -Fc '<install><package_001.hap>' "$HC_BATCH_SCRIPT_LOG")" -eq 2 ]
+[ "$(grep -Fc '<install><package_002.app>' "$HC_BATCH_SCRIPT_LOG")" -eq 2 ]
+while IFS= read -r directory; do [ ! -d "$directory" ]; done < "$HC_BATCH_SCRIPT_STAGE_LOG"
+echo 'PASS: multiple file suffixes and deduplication reuse one copy per file across devices'
 
 : > "$HC_BATCH_SCRIPT_LOG"
 if bash "$script" uninstall "${common[@]}" --yes > "$temporary/uninstall.log" 2>&1; then
@@ -72,6 +103,18 @@ if bash "$script" install "${common[@]}" --file "$temporary/missing.hap" > /dev/
 [ ! -s "$HC_BATCH_SCRIPT_LOG" ]
 echo 'PASS: invalid IP/package/file and missing confirmation perform no device commands'
 
+: > "$HC_BATCH_SCRIPT_COPY_LOG"
+if HC_BATCH_SCRIPT_COPY_FAIL=1 bash "$script" install "${common[@]}" --file "$temporary/床旁 error 安装包.hap" > "$temporary/copy-failed.log" 2>&1; then exit 1; fi
+[ ! -s "$HC_BATCH_SCRIPT_LOG" ]
+grep -Fq "$temporary/床旁 error 安装包.hap" "$temporary/copy-failed.log"
+if HC_BATCH_SCRIPT_COPY_FAIL_MATCH="$temporary/病房 APP.app" bash "$script" install "${common[@]}" --file "$temporary/床旁 error 安装包.hap" --file "$temporary/病房 APP.app" > "$temporary/second-copy-failed.log" 2>&1; then exit 1; fi
+[ ! -s "$HC_BATCH_SCRIPT_LOG" ]
+while IFS= read -r entry; do
+    destination=$(printf '%s\n' "$entry" | sed -E 's/^<[^>]*><(.*)>$/\1/')
+    [ ! -e "$destination" ] && [ ! -d "$(dirname "$destination")" ]
+done < "$HC_BATCH_SCRIPT_COPY_LOG"
+echo 'PASS: copy failure reports original path and connects no device'
+
 printf '192.0.2.21\n' > "$temporary/single.txt"
 : > "$HC_BATCH_SCRIPT_LOG"
 printf 'test HAP\n' > "$temporary/install bundle successfully.hap"
@@ -82,6 +125,7 @@ echo 'PASS: no false success from a filename or missing positive receipt'
 if HC_BATCH_SCRIPT_SLOW=1 bash "$script" install --ips "$temporary/single.txt" --hdc "$temporary/fake hdc" --file "$temporary/床旁 error 安装包.hap" --timeout 1 > "$temporary/timeout.log" 2>&1; then exit 1; fi
 grep -Fq '命令超时' "$temporary/timeout.log"
 grep -Fq '<tconn><192.0.2.21:8710><-remove>' "$HC_BATCH_SCRIPT_LOG"
+while IFS= read -r directory; do [ ! -d "$directory" ]; done < "$HC_BATCH_SCRIPT_STAGE_LOG"
 echo 'PASS: bounded timeout and disconnection'
 
 : > "$HC_BATCH_SCRIPT_LOG"
@@ -94,5 +138,20 @@ kill -TERM "$batch_pid"
 if wait "$batch_pid"; then echo 'Expected cancelled exit' >&2; exit 1; else [ "$?" -eq 130 ]; fi
 grep -Fq '<tconn><192.0.2.21:8710><-remove>' "$HC_BATCH_SCRIPT_LOG"
 ! grep -Fq '192.0.2.22' "$HC_BATCH_SCRIPT_LOG"
+while IFS= read -r directory; do [ ! -d "$directory" ]; done < "$HC_BATCH_SCRIPT_STAGE_LOG"
 echo 'PASS: termination disconnects the current device and never starts the next'
+
+: > "$HC_BATCH_SCRIPT_LOG"
+: > "$HC_BATCH_SCRIPT_COPY_LOG"
+rm -f "$HC_BATCH_SCRIPT_READY"
+HC_BATCH_SCRIPT_COPY_SLOW=1 bash "$script" install "${common[@]}" --file "$temporary/床旁 error 安装包.hap" > "$temporary/copy-cancel.log" 2>&1 &
+batch_pid=$!
+for attempt in {1..100}; do [ ! -f "$HC_BATCH_SCRIPT_READY" ] || break; sleep 0.05; done
+[ -f "$HC_BATCH_SCRIPT_READY" ]
+kill -TERM "$batch_pid"
+if wait "$batch_pid"; then echo 'Expected cancelled copy' >&2; exit 1; else [ "$?" -eq 130 ]; fi
+[ ! -s "$HC_BATCH_SCRIPT_LOG" ]
+copy_destination=$(sed -E 's/^<[^>]*><(.*)>$/\1/' "$HC_BATCH_SCRIPT_COPY_LOG")
+[ ! -e "$copy_destination" ] && [ ! -d "$(dirname "$copy_destination")" ]
+echo 'PASS: cancelling preparation stops copy, removes temporary files and connects no device'
 echo 'All batch shell tests passed'

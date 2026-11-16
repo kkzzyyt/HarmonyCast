@@ -2,6 +2,7 @@
 #include "harmonycast/DeviceManager.h"
 #include "harmonycast/AdbClient.h"
 #include <QFileInfo>
+#include <QElapsedTimer>
 #include <QDir>
 #include <QMap>
 #include <QRegularExpression>
@@ -37,7 +38,7 @@ void appendNote(InspectionResult& result, const QString& note) {
 
 QString cleanValue(const QString& value) {
     const QString first = value.trimmed().section('\n', 0, 0).trimmed();
-    static const QRegularExpression invalid(R"(^(\[|error\b|fail\b|invalid\b|unknown\b|not found\b)|\b(get parameter.*fail|parameter.*not (found|exist))\b)",
+    static const QRegularExpression invalid(R"(^(\[|error\b|fail\b|invalid\b|unknown\b|not found\b|permission denied\b|access denied\b|operation not permitted\b|cat:)|\b(get parameter.*fail|parameter.*not (found|exist))\b)",
                                              QRegularExpression::CaseInsensitiveOption);
     return invalid.match(first).hasMatch() ? QString{} : first;
 }
@@ -114,8 +115,8 @@ QString InspectionReport::collectionScript(DevicePlatform platform) {
         "echo '<<<HC_INSPECTION:BEGIN>>>'; "
         "echo '<<<HC_INSPECTION:ICU>>>'; "
         "for dir in /sys/class/ICU/version /sys/class/icu/version /sys/class/ICU /sys/class/icu; do "
-        "for f in model Model MODEL; do if [ -r \"$dir/$f\" ]; then "
-        "echo \"model: $(cat \"$dir/$f\" 2>/dev/null)\"; fi; done; done; "
+        "for f in model Model MODEL Version version mcu_version MCU_Version mcuVersion MCUVersion MCU icu_version; do "
+        "if [ -r \"$dir/$f\" ]; then echo \"$f: $(cat \"$dir/$f\" 2>/dev/null)\"; fi; done; done; "
         "echo '<<<HC_INSPECTION:SERIAL>>>'; param get ohos.boot.sn 2>/dev/null; "
         "echo '<<<HC_INSPECTION:SYSTEM>>>'; param get const.ohos.fullname 2>/dev/null; "
         "echo '<<<HC_INSPECTION:API>>>'; param get const.ohos.apiversion 2>/dev/null; "
@@ -166,12 +167,13 @@ InspectionResult InspectionReport::parseSnapshot(const InspectionTarget& target,
         return row;
     }
     // The script orders version nodes before root nodes. Keep the first usable
-    // hardware model when a firmware exposes several aliases for the same ICU.
+    // hardware model and firmware version when several ICU aliases exist.
     for (const auto& line : sections["ICU"].split('\n')) {
         DeviceInfo icu;
         DeviceManager::parseIcuInfo(icu, line.toStdString());
-        row.model = cleanValue(QString::fromStdString(icu.icu_model));
-        if (!row.model.isEmpty()) break;
+        if (row.model.isEmpty()) row.model = cleanValue(QString::fromStdString(icu.icu_model));
+        if (row.mcuVersion.isEmpty()) row.mcuVersion = cleanValue(QString::fromStdString(icu.icu_version));
+        if (!row.model.isEmpty() && !row.mcuVersion.isEmpty()) break;
     }
     row.serial = cleanValue(sections["SERIAL"]);
     row.systemVersion = cleanValue(sections["SYSTEM"]);
@@ -260,6 +262,7 @@ InspectionResult InspectionReport::parseSnapshot(const InspectionTarget& target,
     if (macs(row).isEmpty()) missing << "MAC 地址";
     if (!row.storageTotalKiB || !row.storageAvailableKiB) missing << "/data 容量";
     if (row.model.isEmpty()) missing << (target.platform == DevicePlatform::Android ? "设备型号" : "看门狗硬件型号");
+    if (target.platform == DevicePlatform::OpenHarmony && row.mcuVersion.isEmpty()) missing << "单片机版本";
     if (row.systemVersion.isEmpty()) missing << "系统版本";
     if (row.architecture.isEmpty()) missing << "CPU 架构";
     if (row.cpuLoad.isEmpty()) missing << "CPU 负载";
@@ -368,7 +371,7 @@ QStringList InspectionReport::headers(InspectionTask task) {
     return {"目标 IP", "HDC 端口", "巡检结果", "运行时间", "运行秒数", "MAC 地址", "设备型号",
             "序列号", "系统版本", "API 版本", "CPU 架构", "CPU 负载（1/5/15 分钟）", "总内存（MiB）",
             "已用内存（MiB）", "可用内存（MiB）", "内存使用率（%）", "/data 总容量（GiB）",
-            "/data 可用容量（GiB）", "内核版本", "设备时间", "巡检时间", "备注"};
+            "/data 可用容量（GiB）", "内核版本", "设备时间", "巡检时间", "单片机版本", "备注"};
 }
 
 QStringList InspectionReport::cells(const InspectionResult& row) {
@@ -401,7 +404,7 @@ QStringList InspectionReport::cells(const InspectionResult& row) {
             amount(row.memoryTotalKiB, 1024), amount(used, 1024), amount(row.memoryAvailableKiB, 1024), memoryPercent(row),
             amount(row.storageTotalKiB, 1048576), amount(row.storageAvailableKiB, 1048576),
             row.kernel,
-            row.deviceTime, row.inspectedAt.toString("yyyy-MM-dd HH:mm:ss"), row.notes};
+            row.deviceTime, row.inspectedAt.toString("yyyy-MM-dd HH:mm:ss"), row.mcuVersion, row.notes};
 }
 
 bool InspectionReport::writeCsv(const QString& path, const std::vector<InspectionResult>& results, QString* error) {
@@ -475,7 +478,15 @@ bool InspectionRunner::startBatch(const std::vector<InspectionTarget>& targets, 
         const auto parsed = InspectionReport::parseTargets(target.endpoint(), target.platform);
         if (!parsed.errors.isEmpty() || parsed.targets.size() != 1 || parsed.targets.front().endpoint() != target.endpoint()) return false;
     }
+    std::shared_ptr<QTemporaryDir> install_directory;
+    if (task == InspectionTask::InstallApplications && m_hdc->platform() == DevicePlatform::OpenHarmony) {
+        auto directory = std::make_shared<QTemporaryDir>(QDir::tempPath() + "/hc_install_XXXXXX");
+        if (!directory->isValid()) return false;
+        install_directory = std::move(directory);
+    }
     m_results.clear();
+    m_prepared_installations.clear();
+    m_install_directory = std::move(install_directory);
     m_task = task;
     for (const auto& target : targets) {
         InspectionResult row;
@@ -490,6 +501,8 @@ bool InspectionRunner::startBatch(const std::vector<InspectionTarget>& targets, 
         m_results.push_back(std::move(row));
     }
     m_hdc_path = m_hdc->path();
+    const QFileInfo executable(QString::fromStdString(m_hdc_path));
+    if (executable.exists()) m_hdc_path = executable.absoluteFilePath().toStdString();
     m_index = 0;
     m_stopping = false;
     m_connection_attempted = false;
@@ -614,6 +627,28 @@ void InspectionRunner::executeNextApplication() {
         app.status = ApplicationCleanupStatus::Cancelled; app.detail = "用户停止，未执行";
         finishApplications(); return;
     }
+    if (m_task == InspectionTask::InstallApplications && row.target.platform == DevicePlatform::OpenHarmony &&
+        !m_prepared_installations.contains(app.sourcePath)) {
+        row.activity = "准备安装包";
+        emit targetChanged(m_index);
+        prepareInstallation(app.sourcePath, [this](QString filename, QString error) {
+            auto& app = m_results[m_index].applications[m_application_index];
+            if (m_stopping) {
+                app.status = ApplicationCleanupStatus::Cancelled;
+                app.detail = "用户停止，未开始安装";
+                finishApplications(); return;
+            }
+            if (filename.isEmpty()) {
+                app.status = ApplicationCleanupStatus::Failed; app.detail = error;
+                emit targetChanged(m_index); ++m_application_index;
+            } else {
+                m_prepared_installations.insert(app.sourcePath, filename);
+                app.status = ApplicationCleanupStatus::Pending;
+            }
+            QTimer::singleShot(0, this, &InspectionRunner::executeNextApplication);
+        });
+        return;
+    }
     std::vector<std::string> command;
     if (m_task == InspectionTask::InstallApplications) {
         QString error;
@@ -625,7 +660,7 @@ void InspectionRunner::executeNextApplication() {
         }
         command = row.target.platform == DevicePlatform::Android ?
             std::vector<std::string>{"install", "-r", app.sourcePath.toStdString()} :
-            std::vector<std::string>{"install", app.sourcePath.toStdString()};
+            std::vector<std::string>{"install", m_prepared_installations.value(app.sourcePath).toStdString()};
     } else if (m_task == InspectionTask::UninstallApplications) command = {"uninstall", app.package.toStdString()};
     else command = {"shell", "bm", "clean", "-d", "-n", app.package.toStdString()};
     runCommand(command, row.target.endpoint(),
@@ -650,6 +685,18 @@ void InspectionRunner::executeNextApplication() {
             } else if (failed || !success.match(QString::fromStdString(checked.out)).hasMatch()) {
                 app.status = ApplicationCleanupStatus::Failed;
                 app.detail = commandDetail(result);
+                if (m_task == InspectionTask::InstallApplications) {
+                    auto detail = app.detail.toLower();
+                    const auto message = detail.indexOf("msg:");
+                    if (message >= 0) detail = detail.mid(message + 4);
+                    if (detail.contains("device not") || detail.contains("device '") || detail.contains("no connected") || detail.contains("connect key"))
+                        app.detail.prepend("设备地址未连接或授权已失效，请检查目标 IP、端口和 HDC 授权：");
+                    else if (detail.contains("signature") || detail.contains("sign verification"))
+                        app.detail.prepend("安装包签名校验失败：");
+                    else if (detail.contains("path not") || detail.contains("path incorrect") || detail.contains("invalid path") ||
+                             detail.contains("no such file") || detail.contains("file not found") || detail.contains("找不到"))
+                        app.detail.prepend("安装包路径或传输失败，请确认文件未被移走及 HDC 可读取：");
+                }
                 if (app.detail.contains("超时")) app.detail += "（设备端结果未确认）";
                 if (result.success() && !failed) app.detail = "未收到" + InspectionReport::taskName(m_task) + "成功确认：" + app.detail;
             } else {
@@ -660,6 +707,44 @@ void InspectionRunner::executeNextApplication() {
             ++m_application_index;
             QTimer::singleShot(0, this, &InspectionRunner::executeNextApplication);
         });
+}
+
+void InspectionRunner::prepareInstallation(const QString& source, std::function<void(QString, QString)> callback) {
+    const auto directory = m_install_directory;
+    if (!directory || !directory->isValid()) { callback({}, "无法创建安装包临时目录"); return; }
+    const auto filename = QString("package_%1.%2").arg(m_prepared_installations.size() + 1)
+        .arg(QFileInfo(source).suffix().toLower());
+    auto input = std::make_shared<QFile>(source);
+    auto output = std::make_shared<QFile>(directory->filePath(filename));
+    if (!input->open(QIODevice::ReadOnly)) { callback({}, "无法读取安装包：" + input->errorString()); return; }
+    if (!output->open(QIODevice::WriteOnly | QIODevice::Truncate)) { callback({}, "无法准备安装包：" + output->errorString()); return; }
+    // Copy in bounded event-loop slices so large packages remain cancellable.
+    auto step = std::make_shared<std::function<void()>>();
+    std::weak_ptr<std::function<void()>> weak = step;
+    *step = [this, directory, input, output, filename, callback = std::move(callback), weak] {
+        auto finish = [&](const QString& error) {
+            input->close(); output->close();
+            if (!error.isEmpty()) { output->remove(); callback({}, error); }
+            else callback(filename, {});
+        };
+        if (m_stopping) { finish("用户停止，未开始安装"); return; }
+        QElapsedTimer slice; slice.start();
+        int blocks = 0;
+        do {
+            const auto block = input->read(1024 * 1024);
+            if (block.isEmpty()) {
+                if (input->error() != QFile::NoError) finish("安装包读取失败：" + input->errorString());
+                else if (output->size() <= 0 || output->size() != input->size()) finish("安装包复制不完整，请重新选择文件");
+                else if (!output->flush()) finish("安装包写入失败：" + output->errorString());
+                else finish({});
+                return;
+            }
+            if (output->write(block) != block.size()) { finish("安装包写入失败：" + output->errorString()); return; }
+            ++blocks;
+        } while (blocks < 4 && slice.elapsed() < 15);
+        if (auto next = weak.lock()) QTimer::singleShot(0, this, [next] { (*next)(); });
+    };
+    QTimer::singleShot(0, this, [step] { (*step)(); });
 }
 
 void InspectionRunner::finishApplications() {
@@ -715,6 +800,8 @@ void InspectionRunner::finishBatch() {
         emit targetChanged(i);
     }
     m_running = false;
+    m_prepared_installations.clear();
+    m_install_directory.reset();
     emit runningChanged(false);
     emit finished(m_stopping);
 }
@@ -731,6 +818,8 @@ void InspectionRunner::runCommand(const std::vector<std::string>& args, const QS
     if (!serial.isEmpty()) arguments << (m_hdc->platform() == DevicePlatform::Android ? "-s" : "-t") << serial;
     for (const auto& arg : args) arguments << QString::fromStdString(arg);
     HdcClient::configureProcess(*process, m_hdc_path);
+    if (m_install_directory && args.size() >= 1 && args[0] == "install")
+        process->setWorkingDirectory(m_install_directory->path());
     auto* timeout = new QTimer(process);
     timeout->setSingleShot(true);
     connect(timeout, &QTimer::timeout, this, [this, process, timeoutMs] {

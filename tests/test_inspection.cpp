@@ -44,6 +44,7 @@ static const char* snapshot = R"(<<<HC_INSPECTION:BEGIN>>>
 HR36
 <<<HC_INSPECTION:ICU>>>
 model: "YH-H36M01"
+Version: "MCU-1.9.3"
 <<<HC_INSPECTION:SERIAL>>>
 SN-0007
 <<<HC_INSPECTION:SYSTEM>>>
@@ -105,6 +106,21 @@ static void testParsing() {
           !InspectionReport::ips(row).contains("127.0.0.1"), "network interfaces mismatched or loopback exported");
     check(row.model == "YH-H36M01" && row.architecture == "aarch64" && row.cpuLoad == "0.15 / 0.25 / 0.35",
           "common device information missing");
+    check(row.mcuVersion == "MCU-1.9.3", "inspection loses the microcontroller firmware version");
+    const auto alternateVersion = InspectionReport::parseSnapshot(target, QString::fromUtf8(snapshot)
+        .replace("Version: \"MCU-1.9.3\"", "Version: fail\nMCU_Version: 'V2.1'\nversion: lower-priority"));
+    check(alternateVersion.mcuVersion == "V2.1", "MCU aliases or priority are incorrect");
+    const auto missingVersion = InspectionReport::parseSnapshot(target, QString::fromUtf8(snapshot)
+        .replace("Version: \"MCU-1.9.3\"", "Version: permission denied\nHardwareVersion: board-3\nStopWatchDog: 1"));
+    check(missingVersion.mcuVersion.isEmpty() && missingVersion.notes.contains("单片机版本"), "unreadable MCU version fabricated or hidden");
+    auto androidTarget = target; androidTarget.platform = DevicePlatform::Android;
+    const auto androidWithoutMcu = InspectionReport::parseSnapshot(androidTarget, QString::fromUtf8(snapshot)
+        .replace("Version: \"MCU-1.9.3\"", ""));
+    check(androidWithoutMcu.status == InspectionStatus::Succeeded && !androidWithoutMcu.notes.contains("单片机"),
+          "Android requires a microcontroller interface it does not provide");
+    const auto androidVersion = InspectionReport::parseSnapshot({"192.0.2.1", 5555, DevicePlatform::Android},
+        QString::fromUtf8(snapshot).replace("Version: \"MCU-1.9.3\"", ""));
+    check(androidVersion.status == InspectionStatus::Succeeded, "Android inspection requires a Harmony MCU node");
     auto noIcu = InspectionReport::parseSnapshot(target, QString::fromUtf8(snapshot).replace("model: \"YH-H36M01\"", ""));
     check(noIcu.model.isEmpty() && noIcu.notes.contains("看门狗硬件型号"), "product model must not replace the watchdog model");
     auto watchdogOnly = InspectionReport::parseSnapshot(target,
@@ -155,7 +171,7 @@ static void testExport(const QString& directory) {
     auto row = InspectionReport::parseSnapshot({"192.0.2.1", 8710}, QString::fromUtf8(snapshot));
     const auto headers = InspectionReport::headers();
     const auto values = InspectionReport::cells(row);
-    check(headers.size() == 22 && headers.size() == values.size(), "CSV columns do not match headers");
+    check(headers.size() == 23 && headers.size() == values.size(), "CSV columns do not match headers");
     check(!headers.contains("设备 IP") && !headers.contains("/data 使用率（%）"),
           "removed inspection columns remain in CSV");
     auto field = [&](const QString& header) {
@@ -186,6 +202,7 @@ static void testExport(const QString& directory) {
     check(csv.contains("\"'=HYPERLINK(\"\""), "spreadsheet formula injection not escaped");
     check(csv.contains("quote \"\" and comma,\nnext line") && csv.contains("192.0.2.2"),
           "CSV quoting or failed row lost");
+    check(csv.contains("单片机版本") && csv.contains("MCU-1.9.3"), "CSV omits MCU firmware version");
     check(!InspectionReport::writeCsv(directory + "/missing/report.csv", {row}, &error) && !error.isEmpty(),
           "export write failures hidden");
     const QString artifacts = QString::fromUtf8(qgetenv("HC_INSPECTION_ARTIFACTS"));
@@ -367,7 +384,7 @@ static void testCleanupPage(const QString& log, const QString& directory) {
         check(page.grab().save(artifacts + "/batch-application-cleanup.png"), "cleanup UI preview unavailable");
     }
     task->setCurrentIndex(task->findData(int(InspectionTask::Inspect)));
-    check(table->columnCount() == 10 && page.exportCsv(directory + "/cleanup-after-mode-switch.csv") &&
+    check(table->columnCount() == 11 && page.exportCsv(directory + "/cleanup-after-mode-switch.csv") &&
           readFile(directory + "/cleanup-after-mode-switch.csv").contains("清理结果"),
           "changing the next task corrupts the previous cleanup export");
 }
@@ -423,14 +440,23 @@ static void testPage(const QString& directory) {
     check(!start->isEnabled() && input->isReadOnly(), "running batch inputs not locked");
     waitUntil([&] { return !page.isRunning(); });
     check(table->rowCount() == 2 && exportButton->isEnabled(), "UI results or export state missing");
-    check(table->columnCount() == 10 && table->item(0, 6)->text() == "YH-H36M01", "inspection columns or watchdog model are incorrect");
+    check(table->columnCount() == 11 && table->item(0, 6)->text() == "YH-H36M01" &&
+          table->item(0, 7)->text() == "MCU-1.9.3", "inspection columns or MCU firmware are incorrect");
     check(table->item(0, 3)->text() == "aa:bb:cc:dd:ee:01" && table->item(0, 4)->text() == "1536 / 2048" &&
-          table->item(0, 5)->text() == "75.0%" && table->item(0, 7)->text() == "OpenHarmony 5.0.1" &&
-          !table->item(0, 8)->text().isEmpty() && table->item(0, 9)->text().isEmpty(),
+          table->item(0, 5)->text() == "75.0%" && table->item(0, 8)->text() == "OpenHarmony 5.0.1" &&
+          !table->item(0, 9)->text().isEmpty() && table->item(0, 10)->text().isEmpty(),
           "removing columns shifted inspection table values");
     for (int column = 0; column < table->columnCount(); ++column) {
         const QString header = table->horizontalHeaderItem(column)->text();
         check(header != "设备 IP" && header != "/data 使用率", "removed inspection table columns remain visible");
+    }
+    const auto mcuArtifacts = qEnvironmentVariable("HC_INSPECTION_ARTIFACTS");
+    if (!mcuArtifacts.isEmpty()) {
+        page.resize(1320, 760); page.setStyleSheet(IconManager::getAppStyleSheet()); page.setPalette(IconManager::getAppPalette());
+        page.show(); QCoreApplication::processEvents();
+        table->scrollToItem(table->item(0, 7), QAbstractItemView::PositionAtCenter);
+        QCoreApplication::processEvents();
+        check(page.grab().save(mcuArtifacts + "/inspection-mcu-version.png"), "MCU version preview unavailable");
     }
     check(page.exportCsv(directory + "/page.csv"), "UI CSV export failed");
     QString error;

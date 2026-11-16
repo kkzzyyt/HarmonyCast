@@ -23,7 +23,8 @@ usage() {
 
 IP 文件使用 UTF-8，每行一个 IPv4 或 IPv4:端口；默认端口 8710。
 支持 # 注释、空行、空格/逗号/分号分隔及 CRLF。先验证全部输入，再连接设备。
-安装直接执行 hdc install，不自动卸载、不附加 -r。失败会继续后续项，最终非零退出。
+安装包先复制为临时目录内的 ASCII 短文件名，再执行 hdc install 相对文件名。
+不自动卸载、不附加 -r。失败会继续后续项，最终非零退出。
 EOF
 }
 
@@ -109,6 +110,7 @@ if [ "$mode" = install ]; then
 fi
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/harmonycast-batch.XXXXXX") || fail "无法创建临时目录"
+work=$(cd "$work" && pwd -P) || fail "无法读取临时目录"
 current_target= active_pid= timer_pid= command_output= command_status=0
 command_diagnostic=
 stop_child() {
@@ -125,12 +127,16 @@ stop_child() {
     fi
 }
 
-run_hdc() {
-    local limit=$1 child sleeper watcher status diagnostic
-    shift
+run_hdc_at() {
+    local directory=$1 limit=$2 child sleeper watcher status diagnostic
+    shift 2
     : > "$work/output"
     rm -f "$work/timed-out"
-    "$hdc" "$@" > "$work/output" 2>&1 &
+    if [ -n "$directory" ]; then
+        (cd "$directory" && exec "$hdc" "$@") > "$work/output" 2>&1 &
+    else
+        "$hdc" "$@" > "$work/output" 2>&1 &
+    fi
     active_pid=$!; child=$active_pid
     (
         sleeper=
@@ -163,6 +169,7 @@ run_hdc() {
     command_diagnostic=$diagnostic
     ! printf '%s\n' "$diagnostic" | grep -Eiq '\[Fail\]|\[E[[:xdigit:]]+\]|(^|[[:space:]])(error|failed|failure)(:|[[:space:]])|permission denied|access denied|not permitted|not found|inaccessible|unauthori[sz]ed'
 }
+run_hdc() { run_hdc_at "" "$@"; }
 
 disconnect_target() {
     [ -n "$current_target" ] || return 0
@@ -220,6 +227,27 @@ else
     printf '  %s\n' "${selected_files[@]}"
 fi
 
+# Stage every file before any connection. HDC receives only a short ASCII
+# relative filename, so its internal argument parsing never sees the user path.
+staged_files=()
+if [ "$mode" = install ]; then
+    mkdir "$work/packages" || fail "无法创建安装包准备目录"
+    for ((file_index=0; file_index<${#selected_files[@]}; ++file_index)); do
+        file=${selected_files[$file_index]}
+        suffix=$(printf '%s' "${file##*.}" | tr '[:upper:]' '[:lower:]')
+        short_name=$(printf 'package_%03d.%s' "$((file_index+1))" "$suffix")
+        printf '准备安装包：%s\n' "$file"
+        cp "$file" "$work/packages/$short_name" > "$work/copy-output" 2>&1 &
+        active_pid=$!
+        wait "$active_pid"; copy_status=$?
+        active_pid=
+        if [ "$copy_status" -ne 0 ] || [ ! -r "$work/packages/$short_name" ] || [ ! -s "$work/packages/$short_name" ]; then
+            fail "准备安装包失败：$file；$(head -c 1024 "$work/copy-output")"
+        fi
+        staged_files+=("$short_name")
+    done
+fi
+
 completed=0 succeeded=0 failed=0 skipped=0
 while IFS= read -r target; do
     current_target=$target
@@ -227,15 +255,17 @@ while IFS= read -r target; do
     if ! run_hdc 10 tconn "$target"; then
         printf '  连接失败：%s\n' "$command_output" >&2; failed=$((failed+1))
     elif [ "$mode" = install ]; then
-        for file in "${selected_files[@]}"; do
+        for ((file_index=0; file_index<${#selected_files[@]}; ++file_index)); do
+            file=${selected_files[$file_index]}
+            short_name=${staged_files[$file_index]}
             printf '  安装 %s\n' "$file"
-            if [ ! -f "$file" ] || [ ! -r "$file" ] || [ ! -s "$file" ]; then
-                printf '  安装失败：本地安装包已不可用\n' >&2; failed=$((failed+1)); continue
+            if [ ! -f "$work/packages/$short_name" ] || [ ! -r "$work/packages/$short_name" ] || [ ! -s "$work/packages/$short_name" ]; then
+                printf '  安装失败：准备后的安装包已不可用，原文件：%s\n' "$file" >&2; failed=$((failed+1)); continue
             fi
-            if run_hdc "$timeout_seconds" -t "$target" install "$file" &&
+            if run_hdc_at "$work/packages" "$timeout_seconds" -t "$target" install "$short_name" &&
                 printf '%s\n' "$command_diagnostic" | grep -Eiq '^[[:space:]]*(msg:)?[[:space:]]*install[[:space:]]+bundle[[:space:]]+successfully\.?[[:space:]]*$'; then
                 printf '  已安装\n'; succeeded=$((succeeded+1))
-            else printf '  安装失败或未收到成功确认：%s\n' "$command_output" >&2; failed=$((failed+1)); fi
+            else printf '  安装失败或未收到成功确认，原文件：%s\n  %s\n' "$file" "$command_output" >&2; failed=$((failed+1)); fi
         done
     else
         if ! run_hdc 15 -t "$target" shell bm dump -a; then

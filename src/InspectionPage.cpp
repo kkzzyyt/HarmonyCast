@@ -165,9 +165,9 @@ InspectionPage::InspectionPage(std::shared_ptr<DeviceClient> hdc, QWidget* paren
     results->addWidget(m_progress);
     m_table = new QTableWidget;
     m_table->setObjectName("InspectionResults");
-    m_table->setColumnCount(10);
+    m_table->setColumnCount(11);
     m_table->setHorizontalHeaderLabels({"IP / 端口", "状态", "运行时间", "MAC 地址", "内存（MiB）",
-                                       "内存使用率", "型号", "系统版本", "巡检时间", "备注"});
+                                       "内存使用率", "型号", "单片机版本", "系统版本", "巡检时间", "备注"});
     m_table->horizontalHeaderItem(6)->setToolTip("ICU 硬件与看门狗中的硬件型号");
     m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -180,8 +180,8 @@ InspectionPage::InspectionPage(std::shared_ptr<DeviceClient> hdc, QWidget* paren
     m_table->verticalHeader()->setDefaultSectionSize(36);
     m_table->horizontalHeader()->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     m_table->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
-    const int widths[] = {148, 72, 128, 164, 144, 112, 120, 192, 176, 320};
-    for (int i = 0; i < 10; ++i) m_table->setColumnWidth(i, widths[i]);
+    const int widths[] = {148, 72, 128, 164, 144, 112, 120, 136, 192, 176, 320};
+    for (int i = 0; i < 11; ++i) m_table->setColumnWidth(i, widths[i]);
     results->addWidget(m_table, 1);
     m_summary = IconManager::label("采集运行时长、网络、内存、存储、系统和 CPU 信息", "Muted", true);
     results->addWidget(m_summary);
@@ -372,11 +372,11 @@ void InspectionPage::configureResults(InspectionTask task) {
             m_table->horizontalHeaderItem(i)->setToolTip(i >= 3 && i <= 5 ? InspectionReport::cleanupPackages()[i - 3] : columns[i]);
         }
     } else {
-        m_table->setColumnCount(10);
+        m_table->setColumnCount(11);
         m_table->setHorizontalHeaderLabels({"IP / 端口", "状态", "运行时间", "MAC 地址", "内存（MiB）",
-            "内存使用率", "型号", "系统版本", "巡检时间", "备注"});
-        const int widths[] = {148, 72, 128, 164, 144, 112, 120, 192, 176, 320};
-        for (int i = 0; i < 10; ++i) m_table->setColumnWidth(i, widths[i]);
+            "内存使用率", "型号", "单片机版本", "系统版本", "巡检时间", "备注"});
+        const int widths[] = {148, 72, 128, 164, 144, 112, 120, 136, 192, 176, 320};
+        for (int i = 0; i < 11; ++i) m_table->setColumnWidth(i, widths[i]);
         m_table->horizontalHeaderItem(4)->setToolTip("已用内存 / 总内存（MiB）");
         m_table->horizontalHeaderItem(6)->setToolTip("ICU 硬件与看门狗中的硬件型号");
     }
@@ -506,7 +506,7 @@ void InspectionPage::renderRow(int index, const InspectionResult& row) {
         }
         visible = QStringList{row.target.endpoint(), cells[2], runtime, mac, memory,
             cells[15].isEmpty() ? QString{} : cells[15] + "%",
-            row.model, row.systemVersion, cells[20], row.notes};
+            row.model, row.mcuVersion, row.systemVersion, cells[20], row.notes};
     }
     if (!row.activity.isEmpty()) visible[1] = row.activity;
     for (int column = 0; column < visible.size(); ++column) {

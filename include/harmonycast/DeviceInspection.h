@@ -5,6 +5,8 @@
 #include <QObject>
 #include <QProcess>
 #include <QStringList>
+#include <QMap>
+#include <QTemporaryDir>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -47,6 +49,7 @@ struct InspectionResult {
     InspectionStatus status{InspectionStatus::Pending};
     QDateTime inspectedAt;
     QString model;
+    QString mcuVersion;
     QString serial;
     QString systemVersion;
     QString apiVersion;
@@ -117,6 +120,7 @@ private:
     void collectCurrent();
     void queryApplications();
     void executeNextApplication();
+    void prepareInstallation(const QString& source, std::function<void(QString, QString)> callback);
     void finishApplications();
     void disconnectCurrent();
     void finishBatch();
@@ -136,6 +140,8 @@ private:
     int m_index{0};
     int m_command_timeout_ms;
     int m_installation_timeout_ms;
+    std::shared_ptr<QTemporaryDir> m_install_directory;
+    QMap<QString, QString> m_prepared_installations;
     InspectionTask m_task{InspectionTask::Inspect};
     size_t m_application_index{0};
     bool m_running{false};

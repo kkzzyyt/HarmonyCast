@@ -45,7 +45,7 @@ static QList<QStringList> commands() {
 }
 static void resetCommands() { QFile file(qEnvironmentVariable("HC_BATCH_APP_LOG")); check(file.open(QIODevice::WriteOnly | QIODevice::Truncate), "log unavailable"); }
 static void testUninstall(const QString& folder) {
-    InspectionRunner runner(client(), nullptr, 250);
+    InspectionRunner runner(client(), nullptr, 800);
     const auto packages = InspectionReport::cleanupPackages();
     check(!runner.startApplicationUninstall({{"192.0.2.21"}}, {"com.other.app"}), "uninstall accepts unrelated packages");
     check(!runner.startApplicationUninstall({{"192.0.2.21"}}, {}), "empty uninstall accepted");
@@ -70,7 +70,7 @@ static void testUninstall(const QString& folder) {
 }
 static void testInstall(const QString& folder) {
     const auto first = fixture(folder, "床旁 安装包.hap"), second = fixture(folder, "room.app");
-    InspectionRunner runner(client(), nullptr, 300, 250);
+    InspectionRunner runner(client(), nullptr, 800, 800);
     QString error;
     check(InspectionReport::installationFiles({first, first}, DevicePlatform::OpenHarmony, &error).size() == 1, "duplicate install files not removed");
     check(!runner.startApplicationInstall({{"192.0.2.21"}}, {}), "empty installation accepted");
@@ -88,7 +88,14 @@ static void testInstall(const QString& folder) {
     check(rows[1].status == InspectionStatus::Partial && rows[1].applications[1].status == ApplicationCleanupStatus::Succeeded, "failed install stops remaining files");
     check(rows[2].status == InspectionStatus::Failed, "unconfirmed install reported success");
     check(rows[3].applications[0].status == ApplicationCleanupStatus::Failed && rows[3].applications[0].detail.contains("超时"), "install timeout hidden");
-    check(commands().contains({"-t", "192.0.2.21:8710", "install", first}), "installation path was split or command incorrect");
+    bool prepared = false;
+    for (const auto& args : commands()) {
+        if (args.contains("install") && args.value(1) == "192.0.2.21:8710") {
+            const auto path = args.last();
+            prepared = !QFileInfo(path).isAbsolute() && !path.contains(' ') && path.toLatin1() == path.toUtf8();
+        }
+    }
+    check(prepared, "HDC install still receives the original Unicode or spaced host path");
     check(InspectionReport::writeCsv(folder + "/install.csv", rows) && readFile(folder + "/install.csv").contains("床旁 安装包.hap"), "install CSV loses filenames");
     const auto errorName = fixture(folder, "error failed.hap");
     check(runner.startApplicationInstall({{"192.0.2.21"}}, {errorName}), "error filename setup failed");
@@ -118,6 +125,63 @@ static void testCancellation(const QString& folder) {
     check(before.startApplicationUninstall({{"192.0.2.21"}}, {InspectionReport::cleanupPackages()[0]}), "precommand cancellation setup failed");
     waitUntil([&] { return !before.isRunning(); });
     for (const auto& args : commands()) check(!args.contains("uninstall"), "uninstall ran after cancellation");
+}
+static void testPreparedInstallation(const QString& folder) {
+    const auto file = fixture(folder, "目录 error 中文 安装包.hap");
+    resetCommands();
+    InspectionRunner runner(client());
+    check(runner.startApplicationInstall({{"192.0.2.21"}, {"192.0.2.26"}, {"192.0.2.27"}, {"192.0.2.28"}}, {file}), "prepared install setup failed");
+    waitUntil([&] { return !runner.isRunning(); });
+    check(runner.results()[0].status == InspectionStatus::Succeeded, "prepared package was unreadable to HDC");
+    check(runner.results()[1].applications[0].detail.contains("设备地址未连接"), "device address failure shown as a file problem");
+    check(runner.results()[2].applications[0].detail.contains("安装包路径或传输失败"), "local package path failure not explained");
+    check(runner.results()[3].applications[0].detail.startsWith("安装包签名校验失败") &&
+          !runner.results()[3].applications[0].detail.contains("安装包路径或传输失败"), "HDC path prefix misclassified a signature error");
+    check(readFile(file) == "test application archive", "installation altered the original package");
+    for (const auto& args : commands()) {
+        if (args.first() == "__INSTALL_CWD__") check(!QFileInfo::exists(args.value(1)), "installation left its temporary directory behind");
+    }
+    resetCommands();
+    InspectionRunner cancelled(client());
+    QObject::connect(&cancelled, &InspectionRunner::targetChanged, &cancelled, [&](int i) {
+        if (cancelled.results()[i].activity == "准备安装包") cancelled.stop();
+    });
+    check(cancelled.startApplicationInstall({{"192.0.2.21"}}, {file}), "stop-copy setup failed");
+    waitUntil([&] { return !cancelled.isRunning(); });
+    for (const auto& args : commands()) check(!args.contains("install"), "installation ran after stopping package preparation");
+    check(cancelled.results()[0].applications[0].status == ApplicationCleanupStatus::Cancelled, "stopped preparation still marked successful");
+
+    const auto large = folder + "/large-copy.hap";
+    QFile archive(large); check(archive.open(QIODevice::WriteOnly), "large copy fixture unavailable");
+    for (int i = 0; i < 12; ++i) check(archive.write(QByteArray(1024 * 1024, 'a')) == 1024 * 1024, "large fixture write failed");
+    archive.close(); resetCommands();
+    InspectionRunner betweenSlices(client());
+    QObject::connect(&betweenSlices, &InspectionRunner::targetChanged, &betweenSlices, [&](int i) {
+        if (betweenSlices.results()[i].activity == "准备安装包") {
+            // First callback queues the copy slice; the second stops between
+            // the first and second bounded slices of the real file copy.
+            QTimer::singleShot(0, &betweenSlices, [&] {
+                QTimer::singleShot(0, &betweenSlices, [&] { betweenSlices.stop(); });
+            });
+        }
+    });
+    check(betweenSlices.startApplicationInstall({{"192.0.2.21"}}, {large}), "slice cancellation setup failed");
+    waitUntil([&] { return !betweenSlices.isRunning(); });
+    for (const auto& args : commands()) check(!args.contains("install"), "install ran after cancellation between copy slices");
+    check(betweenSlices.results()[0].applications[0].status == ApplicationCleanupStatus::Cancelled, "copy cancellation left a running application");
+
+    resetCommands();
+    auto closing = std::make_unique<InspectionRunner>(client());
+    bool destroyed = false;
+    QObject::connect(closing.get(), &InspectionRunner::targetChanged, closing.get(), [&](int i) {
+        if (closing->results()[i].activity == "准备安装包") QTimer::singleShot(0, closing.get(), [&] {
+            QTimer::singleShot(0, closing.get(), [&] { closing.reset(); destroyed = true; });
+        });
+    });
+    check(closing->startApplicationInstall({{"192.0.2.21"}}, {large}), "destroy-during-copy setup failed");
+    waitUntil([&] { return destroyed; });
+    QCoreApplication::processEvents();
+    for (const auto& args : commands()) check(!args.contains("install"), "destroyed copy still launched installation");
 }
 static void confirm() {
     QTimer::singleShot(0, [] { if (auto* dialog = qobject_cast<QMessageBox*>(QApplication::activeModalWidget())) dialog->button(QMessageBox::Yes)->click(); });
@@ -169,10 +233,22 @@ static int fakeTool(int argc, char** argv) {
         else if (endpoint.startsWith("192.0.2.21:")) std::cout << "com.yarward.etnbedsideoh\ncom.yarward.etndoorcontrol_a33\n";
         else for (const auto& package : InspectionReport::cleanupPackages()) std::cout << package.toStdString() << '\n';
     } else if (args.contains("install") || args.contains("uninstall")) {
-        const bool first = args.last().contains("床旁") || args.last().contains("etnbedsideoh");
+        if (args.contains("install") && args.first() == "-t") {
+            if (log.open(QIODevice::WriteOnly | QIODevice::Append)) {
+                log.write(QJsonDocument(QJsonArray::fromStringList({"__INSTALL_CWD__", QDir::currentPath()})).toJson(QJsonDocument::Compact) + '\n');
+                log.close();
+            }
+            if (!QFile::exists(args.last()) || readFile(args.last()) != "test application archive") {
+                std::cout << "[Fail] local installation path not found\n"; return 0;
+            }
+        }
+        const bool first = args.last().contains("床旁") || args.last().contains("etnbedsideoh") || args.last().contains("package_1.");
         if (endpoint.startsWith("192.0.2.25:")) QThread::msleep(1800);
         else if (endpoint.startsWith("192.0.2.22:") && first) std::cout << "error: operation failed\n";
         else if (endpoint.startsWith("192.0.2.24:")) std::cout << "request sent\n";
+        else if (endpoint.startsWith("192.0.2.26:")) std::cout << "[Fail]Device not founded or connected\n";
+        else if (endpoint.startsWith("192.0.2.27:")) std::cout << "[Fail]local path not found\n";
+        else if (endpoint.startsWith("192.0.2.28:")) std::cout << "[Info]App install path:" << args.last().toStdString() << " msg:error: signature verification failed\n";
         else if (args.first() == "-s") std::cout << "Success\n";
         else if (args.contains("uninstall")) std::cout << "uninstall bundle successfully.\n";
         else std::cout << "[Info]App install path:" << args.last().toStdString() << " msg:install bundle successfully.\nAppMod finish\n";
@@ -190,7 +266,8 @@ int main(int argc, char** argv) {
     QApplication app(argc, argv); app.setQuitOnLastWindowClosed(false);
     QTemporaryDir temporary; qputenv("HC_BATCH_APP_LOG", temporary.filePath("commands.jsonl").toUtf8());
     try {
-        testUninstall(temporary.path()); testInstall(temporary.path()); testCancellation(temporary.path()); testPage(temporary.path());
+        testUninstall(temporary.path()); testInstall(temporary.path()); testCancellation(temporary.path());
+        testPreparedInstallation(temporary.path()); testPage(temporary.path());
         std::cout << "Batch application tests passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }
