@@ -27,7 +27,7 @@ InspectionPage::InspectionPage(std::shared_ptr<DeviceClient> hdc, QWidget* paren
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(24, 24, 24, 24);
     layout->setSpacing(16);
-    layout->addWidget(IconManager::label("导入设备列表，逐台巡检或清理应用数据，并导出执行结果", "Muted", true));
+    layout->addWidget(IconManager::label("导入设备列表，逐台巡检、安装、卸载或清理应用数据，并导出执行结果", "Muted", true));
 
     auto* splitter = new QSplitter(Qt::Horizontal, this);
     splitter->setChildrenCollapsible(false);
@@ -53,6 +53,8 @@ InspectionPage::InspectionPage(std::shared_ptr<DeviceClient> hdc, QWidget* paren
     m_task->setObjectName("InspectionTask");
     m_task->addItem("设备巡检", int(InspectionTask::Inspect));
     m_task->addItem("清理应用数据", int(InspectionTask::ClearApplicationData));
+    m_task->addItem("批量安装应用", int(InspectionTask::InstallApplications));
+    m_task->addItem("批量卸载应用", int(InspectionTask::UninstallApplications));
     m_task->setFixedHeight(32);
     IconManager::setupComboBoxPopup(m_task, 180);
     inputLayout->addWidget(m_task);
@@ -69,7 +71,8 @@ InspectionPage::InspectionPage(std::shared_ptr<DeviceClient> hdc, QWidget* paren
     auto* cleanupLayout = new QVBoxLayout(m_cleanup_options);
     cleanupLayout->setContentsMargins(0, 0, 0, 0);
     cleanupLayout->setSpacing(8);
-    cleanupLayout->addWidget(IconManager::label("选择要清理的应用", "Section"));
+    m_application_heading = IconManager::label("选择要清理的应用", "Section");
+    cleanupLayout->addWidget(m_application_heading);
     for (const auto& package : InspectionReport::cleanupPackages()) {
         auto* checkbox = new QCheckBox(package, m_cleanup_options);
         checkbox->setProperty("cleanupPackage", package);
@@ -78,9 +81,23 @@ InspectionPage::InspectionPage(std::shared_ptr<DeviceClient> hdc, QWidget* paren
         cleanupLayout->addWidget(checkbox);
         m_cleanup_packages.push_back(checkbox);
     }
-    cleanupLayout->addWidget(IconManager::label("清除应用数据目录，包含本地配置和登录状态。仅处理设备已安装的所选应用。", "Muted", true));
+    m_application_hint = IconManager::label("清除应用数据目录，包含本地配置和登录状态。仅处理设备已安装的所选应用。", "Muted", true);
+    cleanupLayout->addWidget(m_application_hint);
     inputLayout->addWidget(m_cleanup_options);
     m_cleanup_options->hide();
+    m_install_options = new QWidget(this);
+    auto* installLayout = new QVBoxLayout(m_install_options);
+    installLayout->setContentsMargins(0, 0, 0, 0); installLayout->setSpacing(8);
+    m_select_install_button = IconManager::button("选择安装包");
+    m_select_install_button->setObjectName("InspectionSelectPackages");
+    m_select_install_button->setFixedHeight(32);
+    installLayout->addWidget(m_select_install_button);
+    m_install_file_label = IconManager::label("未选择安装包", "Muted", true);
+    m_install_file_label->setTextFormat(Qt::PlainText);
+    installLayout->addWidget(m_install_file_label);
+    installLayout->addWidget(IconManager::label("按选择顺序逐个安装，所有目标设备使用同一组安装包", "Muted", true));
+    inputLayout->addWidget(m_install_options);
+    m_install_options->hide();
     m_file_label = IconManager::label("导入 TXT 或直接粘贴 IP", "Muted", true);
     m_file_label->setTextFormat(Qt::PlainText);
     inputLayout->addWidget(m_file_label);
@@ -189,13 +206,21 @@ InspectionPage::InspectionPage(std::shared_ptr<DeviceClient> hdc, QWidget* paren
         QString error;
         if (!importFile(path, &error)) QMessageBox::warning(this, "导入失败", error);
     });
+    connect(m_select_install_button, &QPushButton::clicked, this, [this] {
+        const bool android = DevicePlatform(m_platform->currentData().toInt()) == DevicePlatform::Android;
+        const auto paths = QFileDialog::getOpenFileNames(this, "选择批量安装的应用", {},
+            android ? "Android 安装包 (*.apk)" : "鸿蒙安装包 (*.hap *.app)");
+        if (paths.isEmpty()) return;
+        QString error;
+        if (!setInstallationFiles(paths, &error)) QMessageBox::warning(this, "安装包不可用", error);
+    });
     connect(m_start_button, &QPushButton::clicked, this, &InspectionPage::startInspection);
     connect(m_stop_button, &QPushButton::clicked, this, [this] {
         m_stop_button->setEnabled(false);
         m_runner->stop();
     });
     connect(m_export_button, &QPushButton::clicked, this, [this] {
-        const auto prefix = m_results_task == InspectionTask::ClearApplicationData ? QStringLiteral("应用数据清理_") : QStringLiteral("设备巡检_");
+        const auto prefix = QString("批量%1_").arg(InspectionReport::taskName(m_results_task));
         QString path = QFileDialog::getSaveFileName(this, "导出执行结果",
             prefix + QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss") + ".csv", "CSV 表格 (*.csv)");
         if (path.isEmpty()) return;
@@ -207,7 +232,9 @@ InspectionPage::InspectionPage(std::shared_ptr<DeviceClient> hdc, QWidget* paren
     connect(m_runner, &InspectionRunner::runningChanged, this, [this](bool running) {
         m_progress->setVisible(running || !m_runner->results().empty());
         m_input->setReadOnly(running);
-        m_platform->setEnabled(!running && m_task->currentData().toInt() == int(InspectionTask::Inspect));
+        const auto task = InspectionTask(m_task->currentData().toInt());
+        m_platform->setEnabled(!running && (task == InspectionTask::Inspect || task == InspectionTask::InstallApplications));
+        m_select_install_button->setEnabled(!running);
         m_task->setEnabled(!running);
         for (auto* checkbox : m_cleanup_packages) checkbox->setEnabled(!running);
         m_import_button->setEnabled(!running);
@@ -277,7 +304,10 @@ void InspectionPage::updateInput() {
     m_input_errors->setText(m_import.errors.mid(0, 3).join('\n') +
         (m_import.errors.isEmpty() ? QString{} : QStringLiteral("\n请修正无效地址后开始巡检")));
     m_input_errors->setToolTip(m_import.errors.join('\n'));
-    const bool packagesValid = m_task->currentData().toInt() != int(InspectionTask::ClearApplicationData) || !selectedCleanupPackages().isEmpty();
+    const auto task = InspectionTask(m_task->currentData().toInt());
+    const bool packagesValid = task == InspectionTask::InstallApplications ?
+        !InspectionReport::installationFiles(m_install_files, DevicePlatform(m_platform->currentData().toInt())).isEmpty() :
+        task == InspectionTask::Inspect || !selectedCleanupPackages().isEmpty();
     m_start_button->setEnabled(!isRunning() && !m_import.targets.empty() && m_import.errors.isEmpty() && packagesValid);
     refreshResults();
 }
@@ -288,13 +318,31 @@ QStringList InspectionPage::selectedCleanupPackages() const {
     return selected;
 }
 
+bool InspectionPage::setInstallationFiles(const QStringList& paths, QString* error) {
+    if (isRunning()) { if (error) *error = "请先停止当前任务"; return false; }
+    const auto files = InspectionReport::installationFiles(paths, DevicePlatform(m_platform->currentData().toInt()), error);
+    if (files.isEmpty()) return false;
+    m_install_files = files;
+    QStringList names; for (const auto& file : files) names << QFileInfo(file).fileName();
+    m_install_file_label->setText(QString("已选 %1 个安装包\n%2%3").arg(files.size()).arg(names.mid(0, 3).join('\n'))
+        .arg(files.size() > 3 ? QString("\n另有 %1 个，悬停查看完整路径").arg(files.size() - 3) : QString{}));
+    m_install_file_label->setToolTip(files.join('\n'));
+    updateInput();
+    return true;
+}
+
 void InspectionPage::updateTaskControls() {
-    const bool cleanup = m_task->currentData().toInt() == int(InspectionTask::ClearApplicationData);
+    const auto task = InspectionTask(m_task->currentData().toInt());
+    const bool cleanup = task == InspectionTask::ClearApplicationData || task == InspectionTask::UninstallApplications;
     if (cleanup) m_platform->setCurrentIndex(0);
     m_platform->setEnabled(!isRunning() && !cleanup);
     m_cleanup_options->setVisible(cleanup);
-    m_start_button->setText(cleanup ? "开始清理" : "开始巡检");
-    m_input->parentWidget()->setMinimumWidth(cleanup ? 328 : 224);
+    m_install_options->setVisible(task == InspectionTask::InstallApplications);
+    m_application_heading->setText(task == InspectionTask::UninstallApplications ? "选择要卸载的应用" : "选择要清理的应用");
+    m_application_hint->setText(task == InspectionTask::UninstallApplications ? "卸载应用并删除应用数据，未安装的应用自动跳过" :
+        "清除应用数据目录，包含本地配置和登录状态。仅处理设备已安装的所选应用。");
+    m_start_button->setText("开始" + InspectionReport::taskName(task));
+    m_input->parentWidget()->setMinimumWidth(task != InspectionTask::Inspect ? 328 : 224);
     updateInput();
 }
 
@@ -302,7 +350,17 @@ void InspectionPage::configureResults(InspectionTask task) {
     m_table_task = task;
     m_table->clear();
     m_table->setRowCount(0);
-    if (task == InspectionTask::ClearApplicationData) {
+    if (task == InspectionTask::InstallApplications) {
+        m_table_install_files = m_install_files;
+        QStringList columns{"IP / 端口", "状态", "执行时间"};
+        for (const auto& file : m_install_files) columns << QFileInfo(file).fileName();
+        columns << "备注";
+        m_table->setColumnCount(columns.size()); m_table->setHorizontalHeaderLabels(columns);
+        for (int i = 0; i < columns.size(); ++i) {
+            m_table->setColumnWidth(i, i == 0 ? 148 : i == 1 ? 88 : i == 2 ? 160 : 240);
+            m_table->horizontalHeaderItem(i)->setToolTip(i >= 3 && i < 3 + m_install_files.size() ? m_install_files[i - 3] : columns[i]);
+        }
+    } else if (task == InspectionTask::ClearApplicationData || task == InspectionTask::UninstallApplications) {
         m_table->setColumnCount(7);
         QStringList columns{"IP / 端口", "状态", "执行时间"};
         for (const auto& package : InspectionReport::cleanupPackages()) columns << package.section('.', -1);
@@ -326,7 +384,7 @@ void InspectionPage::configureResults(InspectionTask task) {
 
 void InspectionPage::refreshResults() {
     const auto task = InspectionTask(m_task->currentData().toInt());
-    if (m_table_task != task) configureResults(task);
+    if (m_table_task != task || (task == InspectionTask::InstallApplications && m_table_install_files != m_install_files)) configureResults(task);
     const auto& results = m_runner->results();
     bool matches = !results.empty() && results.front().task == task && results.size() == m_import.targets.size();
     for (size_t i = 0; matches && i < results.size(); ++i) {
@@ -334,17 +392,20 @@ void InspectionPage::refreshResults() {
             results[i].target.platform == m_import.targets[i].platform;
     }
     const auto selected = selectedCleanupPackages();
-    if (matches && task == InspectionTask::ClearApplicationData) {
+    if (matches && task != InspectionTask::Inspect) {
         QStringList previous;
-        for (const auto& app : results.front().applications) previous << app.package;
-        matches = previous == selected;
+        for (const auto& app : results.front().applications) previous << (task == InspectionTask::InstallApplications ? app.sourcePath : app.package);
+        matches = previous == (task == InspectionTask::InstallApplications ? m_install_files : selected);
     }
     m_table->setRowCount(static_cast<int>(matches ? results.size() : m_import.targets.size()));
     for (int i = 0; i < m_table->rowCount(); ++i) {
         if (matches) renderRow(i, results[i]);
         else {
             InspectionResult pending; pending.target = m_import.targets[i]; pending.task = task;
-            if (task == InspectionTask::ClearApplicationData)
+            if (task == InspectionTask::InstallApplications) {
+                for (const auto& file : m_install_files)
+                    pending.applications.push_back({QFileInfo(file).fileName(), ApplicationCleanupStatus::Pending, {}, file});
+            } else if (task != InspectionTask::Inspect)
                 for (const auto& package : selected) pending.applications.push_back({package, ApplicationCleanupStatus::Pending, {}});
             renderRow(i, pending);
         }
@@ -352,9 +413,10 @@ void InspectionPage::refreshResults() {
     m_export_button->setText(!results.empty() && !matches ? "导出上次结果" : "导出表格");
     if (matches) updateSummary(false);
     else {
-        m_activity->setText(task == InspectionTask::ClearApplicationData ? "待开始清理，右侧显示待处理设备" : "待开始巡检，右侧显示待巡检设备");
+        m_activity->setText("待开始" + InspectionReport::taskName(task) + "，右侧显示待处理设备");
         m_summary->setText(QString("待处理 %1 台%2").arg(m_import.targets.size())
-            .arg(task == InspectionTask::ClearApplicationData ? QString(" · 已选 %1 个应用").arg(selected.size()) : QString{}));
+            .arg(task == InspectionTask::InstallApplications ? QString(" · 已选 %1 个安装包").arg(m_install_files.size()) :
+                task != InspectionTask::Inspect ? QString(" · 已选 %1 个应用").arg(selected.size()) : QString{}));
     }
 }
 
@@ -363,7 +425,20 @@ void InspectionPage::startInspection() {
     const auto targets = m_import.targets;
     const auto task = InspectionTask(m_task->currentData().toInt());
     const auto packages = selectedCleanupPackages();
-    if (task == InspectionTask::ClearApplicationData) {
+    if (task == InspectionTask::InstallApplications) {
+        QString error;
+        if (InspectionReport::installationFiles(m_install_files, DevicePlatform(m_platform->currentData().toInt()), &error).isEmpty()) {
+            QMessageBox::warning(this, "安装包不可用", error); return;
+        }
+        const auto confirmation = QString("将在 %1 台设备上依次安装：\n\n%2\n\n确认开始？")
+            .arg(targets.size()).arg(m_install_files.join('\n'));
+        if (QMessageBox::question(this, "批量安装应用", confirmation, QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes) return;
+    } else if (task == InspectionTask::UninstallApplications) {
+        if (packages.isEmpty()) return;
+        const auto confirmation = QString("将在 %1 台设备上卸载以下应用，并删除应用数据：\n\n%2\n\n未安装的应用会跳过，已完成的卸载无法撤销。确认开始？")
+            .arg(targets.size()).arg(packages.join('\n'));
+        if (QMessageBox::warning(this, "批量卸载应用", confirmation, QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes) return;
+    } else if (task == InspectionTask::ClearApplicationData) {
         if (packages.isEmpty()) return;
         const auto confirmation = QString("将在列表中的 %1 台设备上，清除以下应用的数据目录：\n\n%2\n\n"
             "这会删除应用的本地配置和登录状态。未安装的应用会跳过，已完成的清理无法撤销。\n\n确认开始？")
@@ -376,7 +451,8 @@ void InspectionPage::startInspection() {
     m_table->clearContents();
     m_table->setRowCount(static_cast<int>(targets.size()));
     const bool started = task == InspectionTask::ClearApplicationData ? m_runner->startApplicationCleanup(targets, packages) :
-        m_runner->start(targets);
+        task == InspectionTask::UninstallApplications ? m_runner->startApplicationUninstall(targets, packages) :
+        task == InspectionTask::InstallApplications ? m_runner->startApplicationInstall(targets, m_install_files) : m_runner->start(targets);
     if (!started) return;
     updateSummary(false);
 }
@@ -396,7 +472,14 @@ void InspectionPage::updateRow(int index) {
 void InspectionPage::renderRow(int index, const InspectionResult& row) {
     const auto cells = InspectionReport::cells(row);
     QStringList visible;
-    if (row.task == InspectionTask::ClearApplicationData) {
+    if (row.task == InspectionTask::InstallApplications) {
+        visible = QStringList{row.target.endpoint(), row.status == InspectionStatus::Pending ? "待处理" : cells[2], cells[3]};
+        for (const auto& file : m_table_install_files) {
+            const auto app = std::find_if(row.applications.begin(), row.applications.end(), [&](const ApplicationCleanupResult& value) { return value.sourcePath == file; });
+            visible << (app == row.applications.end() ? QString("未选择") : InspectionReport::applicationCleanupText(*app, row.task));
+        }
+        visible << row.notes;
+    } else if (row.task == InspectionTask::ClearApplicationData || row.task == InspectionTask::UninstallApplications) {
         visible = QStringList{row.target.endpoint(), cells[2], cells[3], cells[4], cells[5], cells[6], cells[7]};
         if (row.status == InspectionStatus::Pending) visible[1] = "待处理";
         const auto packages = InspectionReport::cleanupPackages();
@@ -405,7 +488,7 @@ void InspectionPage::renderRow(int index, const InspectionResult& row) {
                 [&](const ApplicationCleanupResult& value) { return value.package == packages[appIndex]; });
             if (app == row.applications.end()) visible[3 + appIndex] = "未选择";
             else if (app->status == ApplicationCleanupStatus::Pending &&
-                     (row.status == InspectionStatus::Pending || row.status == InspectionStatus::Connecting || row.status == InspectionStatus::Cleaning))
+                     (row.status == InspectionStatus::Pending || row.status == InspectionStatus::Connecting || row.status == InspectionStatus::Cleaning || row.status == InspectionStatus::Uninstalling))
                 visible[3 + appIndex] = "待执行";
         }
     } else {
@@ -457,10 +540,10 @@ void InspectionPage::updateSummary(bool stopped) {
         else if (row.status == InspectionStatus::Cancelled) ++cancelled;
         else if (row.status == InspectionStatus::Skipped) ++skipped;
     }
-    const auto name = m_results_task == InspectionTask::ClearApplicationData ? QStringLiteral("清理") : QStringLiteral("巡检");
+    const auto name = InspectionReport::taskName(m_results_task);
     if (!isRunning()) m_activity->setText(name + (stopped ? "已停止，可导出当前结果" : "结束，可导出表格"));
     m_summary->setText(QString("完成 %1 · 部分完成 %2 · 失败 %3 · 已停止 %4").arg(succeeded).arg(partial).arg(failed).arg(cancelled) +
-        (m_results_task == InspectionTask::ClearApplicationData ? QString(" · 无匹配应用 %1").arg(skipped) : QString{}) +
+        ((m_results_task == InspectionTask::ClearApplicationData || m_results_task == InspectionTask::UninstallApplications) ? QString(" · 无匹配应用 %1").arg(skipped) : QString{}) +
         (isRunning() ? QString(" · 待处理 %1").arg(std::count_if(m_runner->results().begin(), m_runner->results().end(),
             [](const InspectionResult& row) { return row.status == InspectionStatus::Pending; })) : QString{}));
 }

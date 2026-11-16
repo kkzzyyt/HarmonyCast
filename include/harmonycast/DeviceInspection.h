@@ -25,14 +25,15 @@ struct InspectionImport {
     int duplicates{0};
 };
 
-enum class InspectionTask { Inspect, ClearApplicationData };
-enum class InspectionStatus { Pending, Connecting, Collecting, Succeeded, Partial, Failed, Cancelled, Cleaning, Skipped };
+enum class InspectionTask { Inspect, ClearApplicationData, UninstallApplications, InstallApplications };
+enum class InspectionStatus { Pending, Connecting, Collecting, Succeeded, Partial, Failed, Cancelled, Cleaning, Skipped, Installing, Uninstalling };
 enum class ApplicationCleanupStatus { Pending, Running, Succeeded, NotInstalled, Failed, Cancelled };
 
 struct ApplicationCleanupResult {
     QString package;
     ApplicationCleanupStatus status{ApplicationCleanupStatus::Pending};
     QString detail;
+    QString sourcePath;
 };
 
 struct InspectionNetwork {
@@ -77,7 +78,9 @@ public:
     static QString ips(const InspectionResult& result);
     static QString macs(const InspectionResult& result);
     static QStringList cleanupPackages();
-    static QString applicationCleanupText(const ApplicationCleanupResult& result);
+    static QString taskName(InspectionTask task);
+    static QStringList installationFiles(const QStringList& paths, DevicePlatform platform, QString* error = nullptr);
+    static QString applicationCleanupText(const ApplicationCleanupResult& result, InspectionTask task = InspectionTask::ClearApplicationData);
     static QStringList headers(InspectionTask task = InspectionTask::Inspect);
     static QStringList cells(const InspectionResult& result);
     static bool writeCsv(const QString& path, const std::vector<InspectionResult>& results, QString* error = nullptr);
@@ -88,11 +91,14 @@ public:
 class InspectionRunner : public QObject {
     Q_OBJECT
 public:
-    explicit InspectionRunner(std::shared_ptr<DeviceClient> hdc, QObject* parent = nullptr, int commandTimeoutMs = 15000);
+    explicit InspectionRunner(std::shared_ptr<DeviceClient> hdc, QObject* parent = nullptr, int commandTimeoutMs = 15000,
+                              int installationTimeoutMs = 120000);
     void setClient(std::shared_ptr<DeviceClient> client) { if (!m_running) m_hdc = std::move(client); }
     ~InspectionRunner() override;
     bool start(const std::vector<InspectionTarget>& targets);
     bool startApplicationCleanup(const std::vector<InspectionTarget>& targets, const QStringList& packages);
+    bool startApplicationUninstall(const std::vector<InspectionTarget>& targets, const QStringList& packages);
+    bool startApplicationInstall(const std::vector<InspectionTarget>& targets, const QStringList& files);
     void stop();
     [[nodiscard]] bool isRunning() const { return m_running; }
     [[nodiscard]] const std::vector<InspectionResult>& results() const { return m_results; }
@@ -106,11 +112,12 @@ signals:
 
 private:
     bool startBatch(const std::vector<InspectionTarget>& targets, InspectionTask task, const QStringList& packages);
+    bool startSelectedApplications(const std::vector<InspectionTarget>& targets, InspectionTask task, const QStringList& packages);
     void nextTarget();
     void collectCurrent();
-    void queryCleanupApplications();
-    void cleanNextApplication();
-    void finishApplicationCleanup();
+    void queryApplications();
+    void executeNextApplication();
+    void finishApplications();
     void disconnectCurrent();
     void finishBatch();
     void runCommand(const std::vector<std::string>& args, const QString& serial, int timeoutMs,
@@ -128,6 +135,7 @@ private:
     std::vector<InspectionResult> m_results;
     int m_index{0};
     int m_command_timeout_ms;
+    int m_installation_timeout_ms;
     InspectionTask m_task{InspectionTask::Inspect};
     size_t m_application_index{0};
     bool m_running{false};

@@ -21,6 +21,7 @@ public:
     [[nodiscard]] bool isRunning() const { return m_runner->isRunning(); }
     bool importFile(const QString& path, QString* error = nullptr);
     bool exportCsv(const QString& path, QString* error = nullptr) const;
+    bool setInstallationFiles(const QStringList& paths, QString* error = nullptr);
 
 signals:
     void runningChanged(bool running);
@@ -41,7 +42,14 @@ private:
     QComboBox* m_platform;
     QComboBox* m_task;
     QWidget* m_cleanup_options;
+    QLabel* m_application_heading;
+    QLabel* m_application_hint;
     std::vector<QCheckBox*> m_cleanup_packages;
+    QWidget* m_install_options;
+    QLabel* m_install_file_label;
+    QPushButton* m_select_install_button;
+    QStringList m_install_files;
+    QStringList m_table_install_files;
     InspectionTask m_results_task{InspectionTask::Inspect};
     InspectionTask m_table_task{InspectionTask::Inspect};
     QLabel* m_port_hint;

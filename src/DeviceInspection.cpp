@@ -283,6 +283,8 @@ QString InspectionReport::statusText(InspectionStatus status) {
     case InspectionStatus::Failed: return "失败";
     case InspectionStatus::Cancelled: return "已停止";
     case InspectionStatus::Cleaning: return "清理中";
+    case InspectionStatus::Installing: return "安装中";
+    case InspectionStatus::Uninstalling: return "卸载中";
     case InspectionStatus::Skipped: return "无匹配应用";
     }
     return {};
@@ -311,11 +313,42 @@ QStringList InspectionReport::cleanupPackages() {
     return {"com.yarward.etnbedsideoh", "com.yarward.etnroomoh", "com.yarward.etndoorcontrol_a33"};
 }
 
-QString InspectionReport::applicationCleanupText(const ApplicationCleanupResult& result) {
+QString InspectionReport::taskName(InspectionTask task) {
+    switch (task) {
+    case InspectionTask::Inspect: return "巡检";
+    case InspectionTask::ClearApplicationData: return "清理";
+    case InspectionTask::UninstallApplications: return "卸载";
+    case InspectionTask::InstallApplications: return "安装";
+    }
+    return {};
+}
+
+QStringList InspectionReport::installationFiles(const QStringList& paths, DevicePlatform platform, QString* error) {
+    if (error) error->clear();
+    auto fail = [&](const QString& message) { if (error) *error = message; return QStringList{}; };
+    if (paths.isEmpty()) return fail("请选择安装包");
+    if (paths.size() > 32) return fail("单次最多选择 32 个安装包");
+    QStringList files;
+    for (const auto& path : paths) {
+        const QFileInfo file(path);
+        const auto suffix = file.suffix().toLower();
+        if ((platform == DevicePlatform::Android && suffix != "apk") ||
+            (platform == DevicePlatform::OpenHarmony && suffix != "hap" && suffix != "app"))
+            return fail("安装包格式与设备平台不匹配：" + file.fileName());
+        if (!file.isFile() || !file.isReadable() || file.size() <= 0)
+            return fail("安装包不存在、为空或无法读取：" + path);
+        const auto canonical = QDir::toNativeSeparators(file.canonicalFilePath());
+        if (canonical.isEmpty()) return fail("无法读取安装包路径：" + path);
+        if (!files.contains(canonical)) files << canonical;
+    }
+    return files;
+}
+
+QString InspectionReport::applicationCleanupText(const ApplicationCleanupResult& result, InspectionTask task) {
     switch (result.status) {
     case ApplicationCleanupStatus::Pending: return "未执行";
-    case ApplicationCleanupStatus::Running: return "清理中";
-    case ApplicationCleanupStatus::Succeeded: return "已清理";
+    case ApplicationCleanupStatus::Running: return taskName(task) + "中";
+    case ApplicationCleanupStatus::Succeeded: return "已" + taskName(task);
     case ApplicationCleanupStatus::NotInstalled: return "未安装（跳过）";
     case ApplicationCleanupStatus::Failed: return "失败：" + result.detail;
     case ApplicationCleanupStatus::Cancelled: return "已停止：" + result.detail;
@@ -324,8 +357,10 @@ QString InspectionReport::applicationCleanupText(const ApplicationCleanupResult&
 }
 
 QStringList InspectionReport::headers(InspectionTask task) {
-    if (task == InspectionTask::ClearApplicationData) {
-        QStringList columns{"目标 IP", "HDC 端口", "清理结果", "执行时间"};
+    if (task == InspectionTask::InstallApplications)
+        return {"目标 IP", "设备端口", "安装结果", "执行时间", "安装包结果", "安装包路径", "备注"};
+    if (task == InspectionTask::ClearApplicationData || task == InspectionTask::UninstallApplications) {
+        QStringList columns{"目标 IP", "HDC 端口", taskName(task) + "结果", "执行时间"};
         columns << cleanupPackages();
         columns << "备注";
         return columns;
@@ -337,13 +372,22 @@ QStringList InspectionReport::headers(InspectionTask task) {
 }
 
 QStringList InspectionReport::cells(const InspectionResult& row) {
-    if (row.task == InspectionTask::ClearApplicationData) {
+    if (row.task == InspectionTask::InstallApplications) {
+        QStringList applications, paths;
+        for (const auto& app : row.applications) {
+            applications << app.package + "：" + applicationCleanupText(app, row.task);
+            paths << app.sourcePath;
+        }
+        return {row.target.ip, QString::number(row.target.port), statusText(row.status),
+            row.inspectedAt.toString("yyyy-MM-dd HH:mm:ss"), applications.join('\n'), paths.join('\n'), row.notes};
+    }
+    if (row.task == InspectionTask::ClearApplicationData || row.task == InspectionTask::UninstallApplications) {
         QStringList columns{row.target.ip, QString::number(row.target.port), statusText(row.status),
             row.inspectedAt.toString("yyyy-MM-dd HH:mm:ss")};
         for (const auto& package : cleanupPackages()) {
             const auto found = std::find_if(row.applications.begin(), row.applications.end(),
                 [&package](const ApplicationCleanupResult& app) { return app.package == package; });
-            columns << (found == row.applications.end() ? QString{} : applicationCleanupText(*found));
+            columns << (found == row.applications.end() ? QString{} : applicationCleanupText(*found, row.task));
         }
         columns << row.notes;
         return columns;
@@ -378,8 +422,9 @@ bool InspectionReport::writeCsv(const QString& path, const std::vector<Inspectio
     return true;
 }
 
-InspectionRunner::InspectionRunner(std::shared_ptr<DeviceClient> hdc, QObject* parent, int commandTimeoutMs)
-    : QObject(parent), m_hdc(std::move(hdc)), m_command_timeout_ms(std::max(100, commandTimeoutMs)) {}
+InspectionRunner::InspectionRunner(std::shared_ptr<DeviceClient> hdc, QObject* parent, int commandTimeoutMs, int installationTimeoutMs)
+    : QObject(parent), m_hdc(std::move(hdc)), m_command_timeout_ms(std::max(100, commandTimeoutMs)),
+      m_installation_timeout_ms(std::max(100, installationTimeoutMs)) {}
 
 InspectionRunner::~InspectionRunner() {
     if (m_process) {
@@ -399,6 +444,20 @@ bool InspectionRunner::start(const std::vector<InspectionTarget>& targets) {
 }
 
 bool InspectionRunner::startApplicationCleanup(const std::vector<InspectionTarget>& targets, const QStringList& packages) {
+    return startSelectedApplications(targets, InspectionTask::ClearApplicationData, packages);
+}
+
+bool InspectionRunner::startApplicationUninstall(const std::vector<InspectionTarget>& targets, const QStringList& packages) {
+    return startSelectedApplications(targets, InspectionTask::UninstallApplications, packages);
+}
+
+bool InspectionRunner::startApplicationInstall(const std::vector<InspectionTarget>& targets, const QStringList& files) {
+    if (!m_hdc) return false;
+    const auto validated = InspectionReport::installationFiles(files, m_hdc->platform());
+    return !validated.isEmpty() && startBatch(targets, InspectionTask::InstallApplications, validated);
+}
+
+bool InspectionRunner::startSelectedApplications(const std::vector<InspectionTarget>& targets, InspectionTask task, const QStringList& packages) {
     if (!m_hdc || m_hdc->platform() != DevicePlatform::OpenHarmony || packages.isEmpty()) return false;
     const auto allowed = InspectionReport::cleanupPackages();
     QStringList selected;
@@ -406,7 +465,7 @@ bool InspectionRunner::startApplicationCleanup(const std::vector<InspectionTarge
         if (!allowed.contains(package)) return false;
         if (!selected.contains(package)) selected << package;
     }
-    return startBatch(targets, InspectionTask::ClearApplicationData, selected);
+    return startBatch(targets, task, selected);
 }
 
 bool InspectionRunner::startBatch(const std::vector<InspectionTarget>& targets, InspectionTask task, const QStringList& packages) {
@@ -422,7 +481,12 @@ bool InspectionRunner::startBatch(const std::vector<InspectionTarget>& targets, 
         InspectionResult row;
         row.target = target;
         row.task = task;
-        for (const auto& package : packages) row.applications.push_back({package, ApplicationCleanupStatus::Pending, {}});
+        for (const auto& package : packages) {
+            ApplicationCleanupResult app;
+            app.package = task == InspectionTask::InstallApplications ? QFileInfo(package).fileName() : package;
+            if (task == InspectionTask::InstallApplications) app.sourcePath = package;
+            row.applications.push_back(std::move(app));
+        }
         m_results.push_back(std::move(row));
     }
     m_hdc_path = m_hdc->path();
@@ -468,7 +532,10 @@ void InspectionRunner::nextTarget() {
             row.notes = m_stopping ? "用户停止" : "连接失败：" + commandDetail(result);
             disconnectCurrent();
         } else {
-            if (m_task == InspectionTask::ClearApplicationData) queryCleanupApplications();
+            if (m_task == InspectionTask::InstallApplications) {
+                m_application_index = 0;
+                executeNextApplication();
+            } else if (m_task != InspectionTask::Inspect) queryApplications();
             else collectCurrent();
         }
     });
@@ -501,13 +568,13 @@ void InspectionRunner::collectCurrent() {
     });
 }
 
-void InspectionRunner::queryCleanupApplications() {
+void InspectionRunner::queryApplications() {
     auto& row = m_results[m_index];
-    row.status = InspectionStatus::Cleaning;
+    row.status = m_task == InspectionTask::UninstallApplications ? InspectionStatus::Uninstalling : InspectionStatus::Cleaning;
     row.activity = "查询应用";
     emit targetChanged(m_index);
     emit activityChanged("正在查询已安装应用 " + row.target.endpoint());
-    if (m_stopping) { finishApplicationCleanup(); return; }
+    if (m_stopping) { finishApplications(); return; }
     runCommand({"shell", "bm", "dump", "-a"}, row.target.endpoint(), m_command_timeout_ms, [this](CommandResult result) {
         auto& row = m_results[m_index];
         const CommandResult transport{result.exit_code, {}, result.err};
@@ -515,7 +582,7 @@ void InspectionRunner::queryCleanupApplications() {
             R"((?im)^\s*(?:\[(?:Fail|E[0-9a-f]+)\]|error\b|failed\b|permission denied\b|[^\n]*\bbm\b[^\n]*(?:not found|inaccessible)))");
         if (m_stopping || commandFailed(transport) || failedLine.match(QString::fromStdString(result.out)).hasMatch()) {
             row.status = m_stopping ? InspectionStatus::Cancelled : InspectionStatus::Failed;
-            row.notes = m_stopping ? "用户停止，未执行应用清理" : "查询应用失败：" + commandDetail(result);
+            row.notes = m_stopping ? "用户停止，未执行应用操作" : "查询应用失败：" + commandDetail(result);
             disconnectCurrent();
             return;
         }
@@ -525,49 +592,77 @@ void InspectionRunner::queryCleanupApplications() {
             if (!exactPackage.match(installed).hasMatch()) app.status = ApplicationCleanupStatus::NotInstalled;
         }
         m_application_index = 0;
-        cleanNextApplication();
+        executeNextApplication();
     });
 }
 
-void InspectionRunner::cleanNextApplication() {
+void InspectionRunner::executeNextApplication() {
     auto& row = m_results[m_index];
-    if (m_stopping) { finishApplicationCleanup(); return; }
+    if (m_stopping) { finishApplications(); return; }
     while (m_application_index < row.applications.size() &&
            row.applications[m_application_index].status != ApplicationCleanupStatus::Pending) ++m_application_index;
-    if (m_application_index == row.applications.size()) { finishApplicationCleanup(); return; }
+    if (m_application_index == row.applications.size()) { finishApplications(); return; }
     auto& app = row.applications[m_application_index];
     app.status = ApplicationCleanupStatus::Running;
-    row.activity = "清理中";
+    row.status = m_task == InspectionTask::InstallApplications ? InspectionStatus::Installing :
+        m_task == InspectionTask::UninstallApplications ? InspectionStatus::Uninstalling : InspectionStatus::Cleaning;
+    const auto action = InspectionReport::taskName(m_task);
+    row.activity = action + "中";
     emit targetChanged(m_index);
-    emit activityChanged(QString("正在清理 %1 · %2").arg(row.target.endpoint(), app.package));
+    emit activityChanged(QString("正在%1 %2 · %3").arg(action, row.target.endpoint(), app.package));
     if (m_stopping) {
         app.status = ApplicationCleanupStatus::Cancelled; app.detail = "用户停止，未执行";
-        finishApplicationCleanup(); return;
+        finishApplications(); return;
     }
-    runCommand({"shell", "bm", "clean", "-d", "-n", app.package.toStdString()}, row.target.endpoint(),
-        m_command_timeout_ms, [this](CommandResult result) {
+    std::vector<std::string> command;
+    if (m_task == InspectionTask::InstallApplications) {
+        QString error;
+        if (InspectionReport::installationFiles({app.sourcePath}, row.target.platform, &error).isEmpty()) {
+            app.status = ApplicationCleanupStatus::Failed; app.detail = error;
+            emit targetChanged(m_index); ++m_application_index;
+            QTimer::singleShot(0, this, &InspectionRunner::executeNextApplication);
+            return;
+        }
+        command = row.target.platform == DevicePlatform::Android ?
+            std::vector<std::string>{"install", "-r", app.sourcePath.toStdString()} :
+            std::vector<std::string>{"install", app.sourcePath.toStdString()};
+    } else if (m_task == InspectionTask::UninstallApplications) command = {"uninstall", app.package.toStdString()};
+    else command = {"shell", "bm", "clean", "-d", "-n", app.package.toStdString()};
+    runCommand(command, row.target.endpoint(),
+        m_task == InspectionTask::InstallApplications ? m_installation_timeout_ms : m_command_timeout_ms, [this](CommandResult result) {
             auto& app = m_results[m_index].applications[m_application_index];
-            static const QRegularExpression success(R"(clean\s+bundle\s+data\s+files\s+successfully)",
-                QRegularExpression::CaseInsensitiveOption);
+            auto checked = result;
+            if (m_task == InspectionTask::InstallApplications) {
+                auto output = QString::fromStdString(result.out);
+                output.replace(app.sourcePath, "<package>");
+                output.replace(QFileInfo(app.sourcePath).fileName(), "<package>");
+                checked.out = output.toStdString();
+            }
+            const QString pattern = m_task == InspectionTask::InstallApplications ?
+                (m_hdc->platform() == DevicePlatform::Android ? QStringLiteral(R"((?m)^\s*Success\s*$)") : QStringLiteral(R"((?m)(?:^|msg:)\s*install\s+bundle\s+successfully\.?\s*$)")) :
+                m_task == InspectionTask::UninstallApplications ? QStringLiteral(R"((?m)(?:^|msg:)\s*uninstall\s+bundle\s+successfully\.?\s*$)") :
+                QStringLiteral(R"(clean\s+bundle\s+data\s+files\s+successfully)");
+            const QRegularExpression success(pattern, QRegularExpression::CaseInsensitiveOption);
+            const bool failed = commandFailed(checked);
             if (m_stopping) {
                 app.status = ApplicationCleanupStatus::Cancelled;
                 app.detail = "已停止等待，设备端结果未确认";
-            } else if (commandFailed(result) || !success.match(QString::fromStdString(result.out)).hasMatch()) {
+            } else if (failed || !success.match(QString::fromStdString(checked.out)).hasMatch()) {
                 app.status = ApplicationCleanupStatus::Failed;
                 app.detail = commandDetail(result);
                 if (app.detail.contains("超时")) app.detail += "（设备端结果未确认）";
-                if (result.success() && !commandFailed(result)) app.detail = "未收到清理成功确认：" + app.detail;
+                if (result.success() && !failed) app.detail = "未收到" + InspectionReport::taskName(m_task) + "成功确认：" + app.detail;
             } else {
                 app.status = ApplicationCleanupStatus::Succeeded;
                 app.detail = QString::fromStdString(result.out).trimmed().left(1024);
             }
             emit targetChanged(m_index);
             ++m_application_index;
-            QTimer::singleShot(0, this, &InspectionRunner::cleanNextApplication);
+            QTimer::singleShot(0, this, &InspectionRunner::executeNextApplication);
         });
 }
 
-void InspectionRunner::finishApplicationCleanup() {
+void InspectionRunner::finishApplications() {
     auto& row = m_results[m_index];
     int succeeded = 0, failed = 0;
     for (auto& app : row.applications) {
@@ -580,7 +675,7 @@ void InspectionRunner::finishApplicationCleanup() {
     row.status = m_stopping ? InspectionStatus::Cancelled : failed ?
         (succeeded ? InspectionStatus::Partial : InspectionStatus::Failed) :
         succeeded ? InspectionStatus::Succeeded : InspectionStatus::Skipped;
-    if (m_stopping) appendNote(row, "用户停止，已完成的清理不会撤销");
+    if (m_stopping) appendNote(row, "用户停止，已完成的操作不会撤销");
     emit targetChanged(m_index);
     disconnectCurrent();
 }
