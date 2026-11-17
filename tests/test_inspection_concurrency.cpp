@@ -5,6 +5,7 @@
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QLockFile>
 #include <QSet>
 #include <QTemporaryDir>
 #include <QThread>
@@ -24,11 +25,19 @@ static std::shared_ptr<HdcClient> client() { return std::make_shared<HdcClient>(
 static QList<QStringList> calls() {
     QFile log(qEnvironmentVariable("HC_CONCURRENCY_LOG"));
     QList<QStringList> result;
-    if (!log.open(QIODevice::ReadOnly)) return result;
-    for (const auto& line : log.readAll().split('\n')) {
+    check(log.open(QIODevice::ReadOnly), "could not read fake command trace");
+    const auto bytes = log.readAll();
+    check(log.error() == QFile::NoError, "fake command trace read failed");
+    // Writers serialize each record. During a live poll the last write may
+    // still be in progress, so only parse complete newline-terminated records.
+    const auto complete = bytes.left(bytes.lastIndexOf('\n') + 1);
+    for (const auto& line : complete.split('\n')) {
         if (line.isEmpty()) continue;
         QStringList args;
-        for (const auto& value : QJsonDocument::fromJson(line).array()) args << value.toString();
+        QJsonParseError error;
+        const auto document = QJsonDocument::fromJson(line, &error);
+        check(error.error == QJsonParseError::NoError && document.isArray(), "fake command trace contains a corrupt record");
+        for (const auto& value : document.array()) args << value.toString();
         result << args;
     }
     return result;
@@ -65,7 +74,11 @@ static void testParallelLimitAndOrder() {
             else { check(!active.contains(args[1]), "same endpoint connected twice concurrently"); active.insert(args[1]); peak = std::max(peak, int(active.size())); }
         }
     }
-    check(peak >= 3 && peak <= 8 && active.isEmpty(), "inspection is serial, exceeds its limit or leaks connections");
+    if (peak < 3 || peak > 8 || !active.isEmpty())
+        std::cerr << "observed peak=" << peak << ", remaining=" << active.size() << ", trace records=" << calls().size() << '\n';
+    check(peak >= 3, "inspection did not run at least three targets concurrently");
+    check(peak <= 8, "inspection exceeded eight concurrent targets");
+    check(active.isEmpty(), "inspection left a target connected");
     for (size_t index = 0; index < list.size(); ++index) {
         check(runner.results()[index].target.endpoint() == list[index].endpoint(), "out-of-order worker results shifted target rows");
         check(runner.results()[index].uptimeSeconds.has_value(), "parallel worker lost its collected fields");
@@ -84,8 +97,10 @@ static void testReadOnlyOnlyAndDuplicates() {
     }
     int duplicateConnections = 0;
     for (const auto& args : calls()) if (args == QStringList{"tconn", "192.0.2.1:8710"}) ++duplicateConnections;
-    check(duplicateConnections == 1 && runner.results()[3].target.bed == "共享IP的另一床位" &&
-          runner.results()[3].uptimeSeconds == runner.results()[0].uptimeSeconds, "shared terminal was inspected twice or its bed row was lost");
+    if (duplicateConnections != 1) std::cerr << "shared IP connection count=" << duplicateConnections << '\n';
+    check(duplicateConnections == 1, "shared terminal was connected more or less than once");
+    check(runner.results()[3].target.bed == "共享IP的另一床位", "shared terminal bed metadata was lost");
+    check(runner.results()[3].uptimeSeconds == runner.results()[0].uptimeSeconds, "shared terminal result was not reused");
     check(!runner.startApplicationUninstall(list, {InspectionReport::cleanupPackages()[0]}), "application mutation accepts duplicated endpoints");
     reset("normal");
     check(runner.startApplicationCleanup(targets(3), {InspectionReport::cleanupPackages()[0]}), "cleanup setup failed");
@@ -121,6 +136,7 @@ static void testStopAndDestruction() {
     runner.stop(); waitUntil([&] { return !runner.isRunning(); });
     QSet<QString> opened, removed;
     for (const auto& args : calls()) if (args.first() == "tconn") { if (args.contains("-remove")) removed.insert(args[1]); else opened.insert(args[1]); }
+    if (opened.size() != 3 || removed != opened) std::cerr << "stop opened=" << opened.size() << ", removed=" << removed.size() << '\n';
     check(opened.size() == 3 && removed == opened, "stop opened another target or missed active cleanup");
     for (const auto& row : runner.results()) check(row.status == InspectionStatus::Cancelled, "stop left a pending or active parallel row");
 
@@ -215,9 +231,15 @@ static void testSynchronousStopAndRestart() {
 static int fakeTool(int argc, char** argv) {
     QCoreApplication app(argc, argv);
     const auto args = app.arguments().mid(1);
-    QFile log(qEnvironmentVariable("HC_CONCURRENCY_LOG"));
-    if (log.open(QIODevice::WriteOnly | QIODevice::Append)) log.write(QJsonDocument(QJsonArray::fromStringList(args)).toJson(QJsonDocument::Compact) + '\n');
-    log.close();
+    {
+        QLockFile lock(qEnvironmentVariable("HC_CONCURRENCY_LOG") + ".lock");
+        if (!lock.tryLock(5000)) { std::cerr << "fake HDC command trace lock failed\n"; return 1; }
+        QFile log(qEnvironmentVariable("HC_CONCURRENCY_LOG"));
+        const auto record = QJsonDocument(QJsonArray::fromStringList(args)).toJson(QJsonDocument::Compact) + '\n';
+        if (!log.open(QIODevice::WriteOnly | QIODevice::Append) || log.write(record) != record.size() || !log.flush()) {
+            std::cerr << "fake HDC command trace write failed\n"; return 1;
+        }
+    }
     const auto mode = qEnvironmentVariable("HC_CONCURRENCY_MODE");
     if (args.first() == "tconn") {
         if (!args.contains("-remove")) {

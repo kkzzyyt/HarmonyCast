@@ -45,7 +45,7 @@ Excel（`.xlsx`）、CSV、TSV 支持参考脚本中的列名：`ip`、`devicety
 
 「系统镜像版本」与参考脚本一致，优先读取 `const.product.software.version`，例如 `YH-H35MS01_v1.0`；读取不到时再回退 `const.ohos.fullname`，例如 `OpenHarmony-4.0.10.13`。不拼接两项，也不推测补全，完整内容保留在单元格提示和 CSV 中。
 
-从 2.6.1 起，巡检不再采集或导出 API 版本、CPU 架构、`/data` 总容量、`/data` 可用容量、内核版本和设备时间，这些字段缺失不影响巡检完整性。巡检时间是电脑记录的执行时间，仍保留。
+从 2.6.2 起，巡检不再采集或导出 API 版本、CPU 架构、`/data` 总容量、`/data` 可用容量、内核版本和设备时间，这些字段缺失不影响巡检完整性。巡检时间是电脑记录的执行时间，仍保留。
 
 型号读取 `/sys/class/ICU/version`、`/sys/class/icu/version` 及对应根目录下的 `model`/`Model`/`MODEL` 节点，与设备信息页「ICU 硬件与看门狗」中的硬件型号含义一致。缺失时留空并注明原因，不使用系统产品型号或看门狗开关状态替代。表格和 CSV 不再提供单独的「设备 IP」或 `/data` 使用率。
 
