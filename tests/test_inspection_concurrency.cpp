@@ -198,7 +198,10 @@ static void testSynchronousStopAndRestart() {
     check(aliasAttempts == 1 && newAttempts == 1, "old retry timer or worker callback reopened a target after restart");
 
     reset("normal");
-    InspectionRunner queued(client(), nullptr, 3000, 120000, 8, 10);
+    // The fake tool can wait up to five seconds for its cross-process trace
+    // lock. Its command budget must exceed that instrumentation cost, rather
+    // than turn a slow CI writer into a simulated device retry.
+    InspectionRunner queued(client(), nullptr, 10000, 120000, 8, 10);
     bool nextStarted = false;
     QObject::connect(&queued, &InspectionRunner::finished, &queued, [&](bool stopped) {
         if (stopped && !nextStarted) {
@@ -212,7 +215,12 @@ static void testSynchronousStopAndRestart() {
     check(queued.results().size() == 12, "old queued start changed the restarted batch");
     int connections = 0;
     for (const auto& args : calls()) if (args.first() == "tconn" && !args.contains("-remove")) ++connections;
-    check(connections == 12, "queued start from the stopped batch initialized a second worker pool");
+    if (connections != 12) {
+        std::cerr << "queued restart observed connections=" << connections << '\n';
+        for (const auto& row : queued.results())
+            std::cerr << row.target.endpoint().toStdString() << " status=" << int(row.status) << " " << row.notes.toStdString() << '\n';
+    }
+    check(connections == 12, "queued restart did not connect exactly once per target");
 
     reset("normal");
     InspectionRunner onCompleted(client(), nullptr, 3000, 120000, 8, 10);
@@ -233,7 +241,10 @@ static int fakeTool(int argc, char** argv) {
     const auto args = app.arguments().mid(1);
     {
         QLockFile lock(qEnvironmentVariable("HC_CONCURRENCY_LOG") + ".lock");
-        if (!lock.tryLock(5000)) { std::cerr << "fake HDC command trace lock failed\n"; return 1; }
+        QElapsedTimer waiting; waiting.start();
+        bool locked = lock.tryLock();
+        while (!locked && waiting.elapsed() < 5000) { QThread::msleep(1); locked = lock.tryLock(); }
+        if (!locked) { std::cerr << "fake HDC command trace lock failed\n"; return 1; }
         QFile log(qEnvironmentVariable("HC_CONCURRENCY_LOG"));
         const auto record = QJsonDocument(QJsonArray::fromStringList(args)).toJson(QJsonDocument::Compact) + '\n';
         if (!log.open(QIODevice::WriteOnly | QIODevice::Append) || log.write(record) != record.size() || !log.flush()) {

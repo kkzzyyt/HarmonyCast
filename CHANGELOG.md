@@ -12,7 +12,7 @@ Format adheres to [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and 
 
 ---
 
-## [2.6.2] - 2026-11-17
+## [2.6.3] - 2026-11-17
 
 ### Added / 新增
 - [连接] 只读巡检最多 8 台并发，连接失败最多尝试 3 次，并严格校验设备健康探测回包；安装、卸载和清理仍逐台执行。
