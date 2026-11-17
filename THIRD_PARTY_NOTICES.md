@@ -31,6 +31,12 @@ and `NOTICE`. The files below retain their original licenses and attribution.
 - Android SDK Platform Tools 37.0.1 supplies the unmodified macOS universal ADB and Windows standalone ADB/DLLs. Source: https://android.googlesource.com/platform/packages/modules/adb/. Upstream component notices and source package version are retained in each `resources/adb/<host>/` directory.
 - Download provenance and source file SHA-256 values are recorded in `resources/adb/README.md`, `resources/adb/checksums.json`, and `resources/servers/android/README.md`.
 
+## miniz 3.0.2
+
+- Source: https://github.com/richgel999/miniz, tag `3.0.2`, commit `293d4db1b7d0ffee9756d035b9ac6f7431ef8492`.
+- Copyright (c) 2013-2014 RAD Game Tools and Valve Software; copyright (c) 2010-2014 Rich Geldreich and Tenacious Software LLC. Licensed under the MIT license; retained in `third_party/miniz/LICENSE` and `licenses/miniz-LICENSE.txt`.
+- The native device inventory importer uses only in-memory ZIP reading/decompression for XLSX. Compression, archive writing, stdio and zlib-compatible APIs are disabled. The static `miniz_export.h` matches the upstream generated export configuration; all other vendored files are unmodified.
+
 ## Runtime dependencies
 
 - PyQt5 5.15.11 — Riverbank Computing Limited, GPL v3. https://www.riverbankcomputing.com/software/pyqt/

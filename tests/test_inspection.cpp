@@ -47,19 +47,16 @@ model: "YH-H36M01"
 Version: "MCU-1.9.3"
 <<<HC_INSPECTION:SERIAL>>>
 SN-0007
+<<<HC_INSPECTION:SOFTWARE>>>
+YH-H35MS01_v1.0
 <<<HC_INSPECTION:SYSTEM>>>
-OpenHarmony 5.0.1
-<<<HC_INSPECTION:API>>>
-13
+OpenHarmony-4.0.10.13
 <<<HC_INSPECTION:UPTIME>>>
 90061.75 120000.0
 <<<HC_INSPECTION:MEMORY>>>
 MemTotal:        2097152 kB
 MemFree:          131072 kB
 MemAvailable:     524288 kB
-<<<HC_INSPECTION:STORAGE>>>
-Filesystem 1K-blocks Used Available Use% Mounted on
-/dev/block/by-name/userdata 8388608 2097152 6291456 25% /data
 <<<HC_INSPECTION:IP>>>
 1: lo    inet 127.0.0.1/8 scope host lo
 2: eth0    inet 192.0.2.1/24 brd 192.0.2.255 scope global eth0
@@ -68,14 +65,8 @@ Filesystem 1K-blocks Used Available Use% Mounted on
 lo 00:00:00:00:00:00
 eth0 aa:bb:cc:dd:ee:01
 wlan0 aa:bb:cc:dd:ee:02
-<<<HC_INSPECTION:ARCH>>>
-aarch64
-<<<HC_INSPECTION:KERNEL>>>
-5.10.184
 <<<HC_INSPECTION:LOAD>>>
 0.15 0.25 0.35 1/101 2345
-<<<HC_INSPECTION:TIME>>>
-2026-11-11 12:34:56 +0800
 <<<HC_INSPECTION:END>>>
 )";
 
@@ -100,13 +91,23 @@ static void testParsing() {
           "uptime parsed incorrectly");
     check(row.memoryTotalKiB == 2097152 && row.memoryAvailableKiB == 524288,
           "memory must use MemAvailable instead of MemFree");
-    check(row.storageTotalKiB == 8388608 && row.storageAvailableKiB == 6291456,
-          "storage capacity units lost");
     check(row.networks.size() == 2 && InspectionReport::macs(row).contains("eth0: aa:bb:cc:dd:ee:01") &&
           !InspectionReport::ips(row).contains("127.0.0.1"), "network interfaces mismatched or loopback exported");
-    check(row.model == "YH-H36M01" && row.architecture == "aarch64" && row.cpuLoad == "0.15 / 0.25 / 0.35",
+    check(row.model == "YH-H36M01" && row.cpuLoad == "0.15 / 0.25 / 0.35",
           "common device information missing");
     check(row.mcuVersion == "MCU-1.9.3", "inspection loses the microcontroller firmware version");
+    check(row.status == InspectionStatus::Succeeded && row.notes.isEmpty(), "removed fields still downgrade inspection completeness");
+    check(row.systemVersion == "YH-H35MS01_v1.0", "product image version was not preferred");
+    const auto systemOnly = InspectionReport::parseSnapshot(target, QString::fromUtf8(snapshot).replace("YH-H35MS01_v1.0", ""));
+    check(systemOnly.systemVersion == "OpenHarmony-4.0.10.13", "OS version fallback was truncated or fabricated");
+    const auto duplicateVersion = InspectionReport::parseSnapshot(target, QString::fromUtf8(snapshot).replace("YH-H35MS01_v1.0", "OpenHarmony-4.0.10.13"));
+    check(duplicateVersion.systemVersion == "OpenHarmony-4.0.10.13", "identical product and OS versions duplicated");
+    const auto deniedProduct = InspectionReport::parseSnapshot(target, QString::fromUtf8(snapshot).replace("YH-H35MS01_v1.0", "[Fail] permission denied"));
+    check(deniedProduct.systemVersion == "OpenHarmony-4.0.10.13", "product query error overwrote the OS version");
+    const auto script = InspectionReport::collectionScript();
+    check(!script.contains("const.ohos.apiversion") && !script.contains("uname -m") && !script.contains("uname -r") &&
+          !script.contains("df -k") && !script.contains("date '+"), "removed inspection fields are still queried");
+
     const auto alternateVersion = InspectionReport::parseSnapshot(target, QString::fromUtf8(snapshot)
         .replace("Version: \"MCU-1.9.3\"", "Version: fail\nMCU_Version: 'V2.1'\nversion: lower-priority"));
     check(alternateVersion.mcuVersion == "V2.1", "MCU aliases or priority are incorrect");
@@ -140,7 +141,7 @@ static void testParsing() {
     withoutUnusedFields.replace("6291456 25% /data", "6291456 - /data");
     auto noIpOrStoragePercent = InspectionReport::parseSnapshot(target, withoutUnusedFields);
     check(noIpOrStoragePercent.status == InspectionStatus::Succeeded && noIpOrStoragePercent.notes.isEmpty() &&
-          noIpOrStoragePercent.storageTotalKiB == 8388608 && noIpOrStoragePercent.storageAvailableKiB == 6291456,
+          !noIpOrStoragePercent.systemVersion.isEmpty(),
           "removed IP or storage usage fields must not be required for a complete inspection");
     auto partial = InspectionReport::parseSnapshot(target,
         "<<<HC_INSPECTION:BEGIN>>>\n<<<HC_INSPECTION:UPTIME>>>\n0.05 0\n"
@@ -171,7 +172,10 @@ static void testExport(const QString& directory) {
     auto row = InspectionReport::parseSnapshot({"192.0.2.1", 8710}, QString::fromUtf8(snapshot));
     const auto headers = InspectionReport::headers();
     const auto values = InspectionReport::cells(row);
-    check(headers.size() == 23 && headers.size() == values.size(), "CSV columns do not match headers");
+    check(headers.size() == 22 && headers.size() == values.size(), "CSV columns do not match headers");
+    for (const auto* name : {"API 版本", "CPU 架构", "/data 总容量（GiB）", "/data 可用容量（GiB）", "内核版本", "设备时间"})
+        check(!headers.contains(QString::fromUtf8(name)), "unused field remains in CSV");
+
     check(!headers.contains("设备 IP") && !headers.contains("/data 使用率（%）"),
           "removed inspection columns remain in CSV");
     auto field = [&](const QString& header) {
@@ -181,12 +185,11 @@ static void testExport(const QString& directory) {
     };
     check(field("目标 IP") == "192.0.2.1" && field("HDC 端口") == "8710" &&
           field("设备型号") == "YH-H36M01" && field("序列号") == "SN-0007" &&
-          field("系统版本") == "OpenHarmony 5.0.1" && field("CPU 架构") == "aarch64",
+          field("系统镜像版本") == "YH-H35MS01_v1.0",
           "removing columns shifted target or system values");
     check(field("总内存（MiB）") == "2048.00" && field("已用内存（MiB）") == "1536.00" &&
           field("可用内存（MiB）") == "512.00" && field("内存使用率（%）") == "75.0" &&
-          field("/data 总容量（GiB）") == "8.00" && field("/data 可用容量（GiB）") == "6.00" &&
-          field("内核版本") == "5.10.184" && field("设备时间") == "2026-11-11 12:34:56 +0800",
+          field("单片机版本") == "MCU-1.9.3" && !field("巡检时间").isEmpty(),
           "removing columns shifted capacity or time values");
     row.model = "=HYPERLINK(\"http://example.invalid\",\"open\")";
     row.notes = "quote \" and comma,\nnext line 中文";
@@ -214,7 +217,7 @@ static void testExport(const QString& directory) {
 
 static void testRunner(const QString& log) {
     auto hdc = std::make_shared<HdcClient>(QCoreApplication::applicationFilePath().toStdString());
-    InspectionRunner runner(hdc, nullptr, 1000);
+    InspectionRunner runner(hdc, nullptr, 1000, 120000, 1, 10);
     auto targets = InspectionReport::parseTargets("192.0.2.1\n192.0.2.2:9000\n192.0.2.3\n192.0.2.4\n192.0.2.5\n192.0.2.6\n192.0.2.7\n192.0.2.8").targets;
     check(runner.start(targets), "batch refused valid input");
     check(!runner.start(targets), "concurrent inspection accepted");
@@ -254,13 +257,13 @@ static void testRunner(const QString& log) {
 
     const auto destructionStart = readFile(log).size();
     {
-        InspectionRunner closing(hdc, nullptr, 1000);
+        InspectionRunner closing(hdc, nullptr, 1000, 120000, 1, 10);
         check(closing.start({{"192.0.2.3", 8710}}), "destruction setup failed");
         waitUntil([&] { return closing.results()[0].status == InspectionStatus::Collecting; });
     }
     check(readFile(log).mid(destructionStart).contains("tconn 192.0.2.3:8710 -remove"), "closing left target connected");
 
-    InspectionRunner missing(std::make_shared<HdcClient>("/missing/hdc"), nullptr, 300);
+    InspectionRunner missing(std::make_shared<HdcClient>("/missing/hdc"), nullptr, 300, 120000, 1, 10);
     check(missing.start({{"192.0.2.1", 8710}}), "missing executable setup failed");
     waitUntil([&] { return !missing.isRunning(); });
     check(missing.results()[0].status == InspectionStatus::Failed, "missing HDC left batch running");
@@ -384,7 +387,7 @@ static void testCleanupPage(const QString& log, const QString& directory) {
         check(page.grab().save(artifacts + "/batch-application-cleanup.png"), "cleanup UI preview unavailable");
     }
     task->setCurrentIndex(task->findData(int(InspectionTask::Inspect)));
-    check(table->columnCount() == 11 && page.exportCsv(directory + "/cleanup-after-mode-switch.csv") &&
+    check(table->columnCount() == 16 && page.exportCsv(directory + "/cleanup-after-mode-switch.csv") &&
           readFile(directory + "/cleanup-after-mode-switch.csv").contains("清理结果"),
           "changing the next task corrupts the previous cleanup export");
 }
@@ -440,11 +443,11 @@ static void testPage(const QString& directory) {
     check(!start->isEnabled() && input->isReadOnly(), "running batch inputs not locked");
     waitUntil([&] { return !page.isRunning(); });
     check(table->rowCount() == 2 && exportButton->isEnabled(), "UI results or export state missing");
-    check(table->columnCount() == 11 && table->item(0, 6)->text() == "YH-H36M01" &&
-          table->item(0, 7)->text() == "MCU-1.9.3", "inspection columns or MCU firmware are incorrect");
-    check(table->item(0, 3)->text() == "aa:bb:cc:dd:ee:01" && table->item(0, 4)->text() == "1536 / 2048" &&
-          table->item(0, 5)->text() == "75.0%" && table->item(0, 8)->text() == "OpenHarmony 5.0.1" &&
-          !table->item(0, 9)->text().isEmpty() && table->item(0, 10)->text().isEmpty(),
+    check(table->columnCount() == 16 && table->item(0, 11)->text() == "YH-H36M01" &&
+          table->item(0, 12)->text() == "MCU-1.9.3", "inspection columns or MCU firmware are incorrect");
+    check(table->item(0, 8)->text() == "aa:bb:cc:dd:ee:01" && table->item(0, 9)->text() == "1536 / 2048" &&
+          table->item(0, 10)->text() == "75.0%" && table->item(0, 13)->text() == "YH-H35MS01_v1.0" &&
+          !table->item(0, 14)->text().isEmpty() && table->item(0, 15)->text().isEmpty(),
           "removing columns shifted inspection table values");
     for (int column = 0; column < table->columnCount(); ++column) {
         const QString header = table->horizontalHeaderItem(column)->text();
@@ -454,7 +457,7 @@ static void testPage(const QString& directory) {
     if (!mcuArtifacts.isEmpty()) {
         page.resize(1320, 760); page.setStyleSheet(IconManager::getAppStyleSheet()); page.setPalette(IconManager::getAppPalette());
         page.show(); QCoreApplication::processEvents();
-        table->scrollToItem(table->item(0, 7), QAbstractItemView::PositionAtCenter);
+        table->scrollToItem(table->item(0, 12), QAbstractItemView::PositionAtCenter);
         QCoreApplication::processEvents();
         check(page.grab().save(mcuArtifacts + "/inspection-mcu-version.png"), "MCU version preview unavailable");
     }
@@ -506,6 +509,41 @@ static void testPage(const QString& directory) {
     }
 }
 
+static void testInventoryPage(const QString& directory) {
+    const auto csvPath = directory + "/inventory.csv";
+    QFile file(csvPath); check(file.open(QIODevice::WriteOnly), "inventory fixture unavailable");
+    file.write(QString("ip,devicetype,devicemodel,deptname,bedname,roomname\n"
+        "192.0.2.1,wnBedHeadExtension,LIST-H36,内科,001,101\n"
+        "192.0.2.1,wnBedHeadExtension,LIST-H36,外科,002,102\n").toUtf8());
+    file.close();
+    auto hdc = std::make_shared<HdcClient>(QCoreApplication::applicationFilePath().toStdString());
+    InspectionPage page(hdc);
+    QString error;
+    check(page.importFile(csvPath, &error), "inventory CSV could not be imported");
+    auto* table = page.findChild<QTableWidget*>("InspectionResults");
+    auto* task = page.findChild<QComboBox*>("InspectionTask");
+    check(table->rowCount() == 2 && table->item(0, 3)->text() == "内科" && table->item(1, 4)->text() == "002",
+          "inventory metadata not synchronized in preview");
+    page.findChild<QPushButton*>("InspectionStart")->click();
+    waitUntil([&] { return !page.isRunning(); });
+    check(table->item(0, 1)->text() == "床头分机" && table->item(0, 2)->text() == "LIST-H36" &&
+          table->item(0, 11)->text() == "YH-H36M01", "inventory model overwrites real hardware model");
+    check(table->item(0, 3)->text() == "内科" && table->item(1, 3)->text() == "外科" &&
+          table->item(1, 5)->text() == "102", "reused device result overwrites per-bed metadata");
+    check(page.exportCsv(directory + "/inventory-result.csv", &error), "inventory export unavailable");
+    const auto csv = readFile(directory + "/inventory-result.csv");
+    check(csv.contains("科室") && csv.contains("内科") && csv.contains("外科") && csv.contains("002"), "CSV loses inventory metadata");
+    task->setCurrentIndex(task->findData(int(InspectionTask::UninstallApplications)));
+    check(table->rowCount() == 1, "duplicate inventory rows would uninstall the same device twice");
+    const auto artifacts = qEnvironmentVariable("HC_INSPECTION_ARTIFACTS");
+    if (!artifacts.isEmpty()) {
+        task->setCurrentIndex(task->findData(int(InspectionTask::Inspect)));
+        page.resize(1440, 760); page.setStyleSheet(IconManager::getAppStyleSheet()); page.setPalette(IconManager::getAppPalette());
+        page.show(); QCoreApplication::processEvents();
+        check(page.grab().save(artifacts + "/inspection-inventory.png"), "inventory preview unavailable");
+    }
+}
+
 static int fakeHdc(int argc, char** argv) {
     QStringList args;
     for (int i = 1; i < argc; ++i) args << QString::fromUtf8(argv[i]);
@@ -532,6 +570,8 @@ static int fakeHdc(int argc, char** argv) {
         } else {
             std::cout << ((args[1].startsWith("192.0.2.2:") || args[1].startsWith("192.0.2.14:")) ? "[Fail]The device unauthorized.\n" : "Connect OK\n");
         }
+    } else if (args.contains("__HC_INSPECTION_READY__")) {
+        std::cout << "__HC_INSPECTION_READY__\n";
     } else if (args.contains("shell")) {
         if (args.value(1).startsWith("192.0.2.3:")) {
             QThread::msleep(4500);
@@ -575,6 +615,7 @@ int main(int argc, char** argv) {
         testRunner(temporary.filePath("commands.log"));
         testBatchApplicationCleanup(temporary.filePath("commands.log"), temporary.path());
         testPage(temporary.path());
+        testInventoryPage(temporary.path());
         testCleanupPage(temporary.filePath("commands.log"), temporary.path());
         testCleanupLiveStatus();
         std::cout << "Inspection tests passed\n";

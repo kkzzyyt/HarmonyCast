@@ -360,8 +360,9 @@ static void testAndroidInspection() {
     check(imported.errors.isEmpty() && imported.targets[0].port == 5555 && imported.targets[1].port == 6000,
           "Android inspection uses HDC ports");
     const auto script = InspectionReport::collectionScript(DevicePlatform::Android);
-    check(script.contains("getprop ro.build.version.sdk") && !script.contains("param get"), "Android inspection sends Harmony commands");
-    InspectionRunner runner(fakeClient(), nullptr, 1500);
+    check(script.contains("getprop ro.build.display.id") && script.contains("getprop ro.build.version.release") &&
+          !script.contains("param get") && !script.contains("getprop ro.build.version.sdk"), "Android image version or removed API query is incorrect");
+    InspectionRunner runner(fakeClient(), nullptr, 1500, 120000, 1, 10);
     check(runner.start({imported.targets[0]}), "Android inspection did not start");
     waitUntil([&] { return !runner.isRunning(); });
     check(runner.results().size() == 1 && runner.results()[0].systemVersion == "Android 8.0" &&
@@ -447,6 +448,7 @@ static int fakeAdb(int argc, char** argv) {
         if (!qgetenv("HC_ANDROID_TEST_NETWORK").isEmpty()) std::cout << qgetenv("HC_ANDROID_TEST_NETWORK").constData() << " device model:Network_Android_8\n";
     }
     else if (args.contains("targets")) std::cout << "android-test USB Connected Harmony_Board\n";
+    else if (args.contains("__HC_INSPECTION_READY__")) std::cout << "__HC_INSPECTION_READY__\n";
     else if (args.contains("getprop")) std::cout << (qgetenv("HC_ANDROID_TEST_MODE") == "sdk-old" ? "25\n" : "26\n");
     else if (args.contains("test-timeout")) QThread::sleep(2);
     else if (args.contains("logcat")) {

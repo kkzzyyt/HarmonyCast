@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(HarmonyCast VERSION 2.5.1 LANGUAGES CXX)
+project(HarmonyCast VERSION 2.6.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -91,6 +91,7 @@ set(CORE_HEADERS
     include/harmonycast/DeviceCatalog.h
     include/harmonycast/DeviceSelector.h
     include/harmonycast/DeviceInspection.h
+    include/harmonycast/InspectionInventory.h
     include/harmonycast/InspectionPage.h
     include/harmonycast/PacketDemuxer.h
     include/harmonycast/VideoDecoder.h
@@ -125,6 +126,7 @@ set(CORE_SOURCES
     src/DeviceCatalog.cpp
     src/DeviceSelector.cpp
     src/DeviceInspection.cpp
+    src/InspectionInventory.cpp
     src/InspectionPage.cpp
     src/PacketDemuxer.cpp
     src/VideoDecoder.cpp
@@ -149,6 +151,12 @@ set(CORE_SOURCES
 )
 
 add_library(harmonycast_core STATIC ${CORE_SOURCES} ${CORE_HEADERS})
+set(MINIZ_SOURCES third_party/miniz/miniz.c third_party/miniz/miniz_tinfl.c third_party/miniz/miniz_zip.c)
+set_source_files_properties(${MINIZ_SOURCES} PROPERTIES LANGUAGE CXX)
+add_library(harmonycast_zip STATIC ${MINIZ_SOURCES})
+target_include_directories(harmonycast_zip PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/third_party/miniz)
+target_compile_definitions(harmonycast_zip PUBLIC MINIZ_NO_STDIO MINIZ_NO_TIME MINIZ_NO_DEFLATE_APIS MINIZ_NO_ZLIB_APIS)
+target_link_libraries(harmonycast_core PRIVATE harmonycast_zip)
 target_compile_definitions(harmonycast_core PUBLIC HARMONYCAST_VERSION="${PROJECT_VERSION}")
 
 target_include_directories(harmonycast_core
@@ -303,6 +311,14 @@ add_test(NAME ConnectionRegressionTests COMMAND test_harmonycast_connections)
 add_executable(test_harmonycast_inspection tests/test_inspection.cpp)
 target_link_libraries(test_harmonycast_inspection PRIVATE harmonycast_core)
 add_test(NAME InspectionTests COMMAND test_harmonycast_inspection)
+add_executable(test_harmonycast_inspection_inventory tests/test_inspection_inventory.cpp)
+target_link_libraries(test_harmonycast_inspection_inventory PRIVATE harmonycast_core)
+add_test(NAME InspectionInventoryTests COMMAND test_harmonycast_inspection_inventory)
+set_tests_properties(InspectionInventoryTests PROPERTIES TIMEOUT 60 WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+add_executable(test_harmonycast_inspection_concurrency tests/test_inspection_concurrency.cpp)
+target_link_libraries(test_harmonycast_inspection_concurrency PRIVATE harmonycast_core)
+add_test(NAME InspectionConcurrencyTests COMMAND test_harmonycast_inspection_concurrency)
+set_tests_properties(InspectionConcurrencyTests PROPERTIES TIMEOUT 60 WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 add_executable(test_harmonycast_batch_applications tests/test_batch_applications.cpp)
 target_link_libraries(test_harmonycast_batch_applications PRIVATE harmonycast_core)
 add_test(NAME BatchApplicationTests COMMAND test_harmonycast_batch_applications)

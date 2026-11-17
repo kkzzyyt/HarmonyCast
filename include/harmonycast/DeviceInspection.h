@@ -7,6 +7,7 @@
 #include <QStringList>
 #include <QMap>
 #include <QTemporaryDir>
+#include <QTimer>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -18,7 +19,13 @@ struct InspectionTarget {
     QString ip;
     int port{8710};
     DevicePlatform platform{DevicePlatform::OpenHarmony};
+    QString deviceType;
+    QString inventoryModel;
+    QString department;
+    QString bed;
+    QString room;
     [[nodiscard]] QString endpoint() const { return ip + ":" + QString::number(port); }
+    bool operator==(const InspectionTarget&) const = default;
 };
 
 struct InspectionImport {
@@ -52,16 +59,10 @@ struct InspectionResult {
     QString mcuVersion;
     QString serial;
     QString systemVersion;
-    QString apiVersion;
-    QString architecture;
-    QString kernel;
     QString cpuLoad;
-    QString deviceTime;
     std::optional<qint64> uptimeSeconds;
     std::optional<quint64> memoryTotalKiB;
     std::optional<quint64> memoryAvailableKiB;
-    std::optional<quint64> storageTotalKiB;
-    std::optional<quint64> storageAvailableKiB;
     std::vector<InspectionNetwork> networks;
     QString notes;
     InspectionTask task{InspectionTask::Inspect};
@@ -89,13 +90,14 @@ public:
     static bool writeCsv(const QString& path, const std::vector<InspectionResult>& results, QString* error = nullptr);
 };
 
-// All HDC processes run asynchronously on the owning Qt event loop. Only the
-// current target is removed, including after failures, timeouts and cancellation.
+// HDC processes run asynchronously on the owning Qt event loop. Read-only
+// inspection can overlap targets; application mutations stay serial. Cleanup
+// removes only connections attempted by this batch, including after cancellation.
 class InspectionRunner : public QObject {
     Q_OBJECT
 public:
     explicit InspectionRunner(std::shared_ptr<DeviceClient> hdc, QObject* parent = nullptr, int commandTimeoutMs = 15000,
-                              int installationTimeoutMs = 120000);
+                              int installationTimeoutMs = 120000, int maxConcurrency = 8, int retryDelayMs = 2000);
     void setClient(std::shared_ptr<DeviceClient> client) { if (!m_running) m_hdc = std::move(client); }
     ~InspectionRunner() override;
     bool start(const std::vector<InspectionTarget>& targets);
@@ -117,6 +119,12 @@ private:
     bool startBatch(const std::vector<InspectionTarget>& targets, InspectionTask task, const QStringList& packages);
     bool startSelectedApplications(const std::vector<InspectionTarget>& targets, InspectionTask task, const QStringList& packages);
     void nextTarget();
+    void connectCurrent();
+    void verifyConnection();
+    void connectionFailed(const CommandResult& result, const QString& stage);
+    void startParallelInspection();
+    void dispatchParallel();
+    void finishParallelInspection();
     void collectCurrent();
     void queryApplications();
     void executeNextApplication();
@@ -124,6 +132,8 @@ private:
     void finishApplications();
     void disconnectCurrent();
     void finishBatch();
+    void queueAction(std::function<void()> action);
+    [[nodiscard]] bool currentBatch(quint64 generation) const { return m_running && m_batch_generation == generation; }
     void runCommand(const std::vector<std::string>& args, const QString& serial, int timeoutMs,
                     std::function<void(CommandResult)> callback);
     void completeCommand(QProcess* process, int exitCode, const QString& error = {});
@@ -140,6 +150,19 @@ private:
     int m_index{0};
     int m_command_timeout_ms;
     int m_installation_timeout_ms;
+    int m_max_concurrency;
+    int m_retry_delay_ms;
+    QTimer* m_retry_timer{nullptr};
+    quint64 m_batch_generation{0};
+    quint64 m_retry_generation{0};
+    int m_connect_attempt{0};
+    bool m_retry_after_disconnect{false};
+    struct WorkerSlot { InspectionRunner* runner; int index{-1}; };
+    std::vector<WorkerSlot> m_workers;
+    std::vector<bool> m_assigned;
+    std::vector<std::vector<int>> m_target_groups;
+    int m_completed{0};
+    bool m_parallel{false};
     std::shared_ptr<QTemporaryDir> m_install_directory;
     QMap<QString, QString> m_prepared_installations;
     InspectionTask m_task{InspectionTask::Inspect};

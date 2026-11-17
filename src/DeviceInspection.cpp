@@ -3,6 +3,7 @@
 #include "harmonycast/AdbClient.h"
 #include <QFileInfo>
 #include <QElapsedTimer>
+#include <QPointer>
 #include <QDir>
 #include <QMap>
 #include <QRegularExpression>
@@ -118,25 +119,21 @@ QString InspectionReport::collectionScript(DevicePlatform platform) {
         "for f in model Model MODEL Version version mcu_version MCU_Version mcuVersion MCUVersion MCU icu_version; do "
         "if [ -r \"$dir/$f\" ]; then echo \"$f: $(cat \"$dir/$f\" 2>/dev/null)\"; fi; done; done; "
         "echo '<<<HC_INSPECTION:SERIAL>>>'; param get ohos.boot.sn 2>/dev/null; "
+        "echo '<<<HC_INSPECTION:SOFTWARE>>>'; param get const.product.software.version 2>/dev/null; "
         "echo '<<<HC_INSPECTION:SYSTEM>>>'; param get const.ohos.fullname 2>/dev/null; "
-        "echo '<<<HC_INSPECTION:API>>>'; param get const.ohos.apiversion 2>/dev/null; "
         "echo '<<<HC_INSPECTION:UPTIME>>>'; cat /proc/uptime 2>/dev/null; "
         "echo '<<<HC_INSPECTION:MEMORY>>>'; cat /proc/meminfo 2>/dev/null; "
-        "echo '<<<HC_INSPECTION:STORAGE>>>'; df -k /data 2>/dev/null; "
         "echo '<<<HC_INSPECTION:IP>>>'; ip -o -4 addr show 2>/dev/null; "
         "echo '<<<HC_INSPECTION:IFCONFIG>>>'; ifconfig 2>/dev/null; "
         "echo '<<<HC_INSPECTION:MAC>>>'; "
         "for i in /sys/class/net/*; do [ -r \"$i/address\" ] && "
         "echo \"$(basename \"$i\") $(cat \"$i/address\" 2>/dev/null)\"; done; "
-        "echo '<<<HC_INSPECTION:ARCH>>>'; uname -m 2>/dev/null; "
-        "echo '<<<HC_INSPECTION:KERNEL>>>'; uname -r 2>/dev/null; "
         "echo '<<<HC_INSPECTION:LOAD>>>'; cat /proc/loadavg 2>/dev/null; "
-        "echo '<<<HC_INSPECTION:TIME>>>'; date '+%Y-%m-%d %H:%M:%S %z' 2>/dev/null; "
         "echo '<<<HC_INSPECTION:END>>>'");
     if (platform == DevicePlatform::Android) {
         script.replace("param get ohos.boot.sn", "getprop ro.serialno");
         script.replace("param get const.ohos.fullname", "echo Android $(getprop ro.build.version.release)");
-        script.replace("param get const.ohos.apiversion", "getprop ro.build.version.sdk");
+        script.replace("param get const.product.software.version", "getprop ro.build.display.id");
         script.replace("echo '<<<HC_INSPECTION:ICU>>>';", "echo '<<<HC_INSPECTION:ICU>>>'; echo model: $(getprop ro.product.model);");
     }
     return script;
@@ -176,11 +173,8 @@ InspectionResult InspectionReport::parseSnapshot(const InspectionTarget& target,
         if (!row.model.isEmpty() && !row.mcuVersion.isEmpty()) break;
     }
     row.serial = cleanValue(sections["SERIAL"]);
-    row.systemVersion = cleanValue(sections["SYSTEM"]);
-    row.apiVersion = cleanValue(sections["API"]);
-    row.architecture = cleanValue(sections["ARCH"]);
-    row.kernel = cleanValue(sections["KERNEL"]);
-    row.deviceTime = cleanValue(sections["TIME"]);
+    row.systemVersion = cleanValue(sections["SOFTWARE"]);
+    if (row.systemVersion.isEmpty()) row.systemVersion = cleanValue(sections["SYSTEM"]);
     bool ok = false;
     double seconds = sections["UPTIME"].simplified().section(' ', 0, 0).toDouble(&ok);
     if (ok && std::isfinite(seconds) && seconds >= 0 && seconds < static_cast<double>(std::numeric_limits<qint64>::max()))
@@ -198,17 +192,6 @@ InspectionResult InspectionReport::parseSnapshot(const InspectionTarget& target,
     if (!row.memoryTotalKiB || (row.memoryAvailableKiB && *row.memoryAvailableKiB > *row.memoryTotalKiB))
         row.memoryAvailableKiB.reset();
 
-    const auto storage = QRegularExpression(R"((\d+)\s+\d+\s+(\d+)\s+\S+\s+/data(?:\s|$))")
-        .match(sections["STORAGE"]);
-    if (storage.hasMatch()) {
-        bool totalOk, availableOk;
-        const auto total = storage.captured(1).toULongLong(&totalOk);
-        const auto available = storage.captured(2).toULongLong(&availableOk);
-        if (totalOk && availableOk && total > 0 && available <= total) {
-            row.storageTotalKiB = total;
-            row.storageAvailableKiB = available;
-        }
-    }
     const auto loads = sections["LOAD"].simplified().split(' ', Qt::SkipEmptyParts);
     if (loads.size() >= 3) {
         bool valid = true;
@@ -260,11 +243,9 @@ InspectionResult InspectionReport::parseSnapshot(const InspectionTarget& target,
     if (!row.memoryTotalKiB) missing << "总内存";
     if (!row.memoryAvailableKiB) missing << "可用内存";
     if (macs(row).isEmpty()) missing << "MAC 地址";
-    if (!row.storageTotalKiB || !row.storageAvailableKiB) missing << "/data 容量";
     if (row.model.isEmpty()) missing << (target.platform == DevicePlatform::Android ? "设备型号" : "看门狗硬件型号");
     if (target.platform == DevicePlatform::OpenHarmony && row.mcuVersion.isEmpty()) missing << "单片机版本";
     if (row.systemVersion.isEmpty()) missing << "系统版本";
-    if (row.architecture.isEmpty()) missing << "CPU 架构";
     if (row.cpuLoad.isEmpty()) missing << "CPU 负载";
     row.status = missing.isEmpty() && ended ? InspectionStatus::Succeeded : InspectionStatus::Partial;
     if (!missing.isEmpty()) appendNote(row, "未读取到：" + missing.join("、"));
@@ -369,9 +350,9 @@ QStringList InspectionReport::headers(InspectionTask task) {
         return columns;
     }
     return {"目标 IP", "HDC 端口", "巡检结果", "运行时间", "运行秒数", "MAC 地址", "设备型号",
-            "序列号", "系统版本", "API 版本", "CPU 架构", "CPU 负载（1/5/15 分钟）", "总内存（MiB）",
-            "已用内存（MiB）", "可用内存（MiB）", "内存使用率（%）", "/data 总容量（GiB）",
-            "/data 可用容量（GiB）", "内核版本", "设备时间", "巡检时间", "单片机版本", "备注"};
+            "序列号", "系统镜像版本", "CPU 负载（1/5/15 分钟）", "总内存（MiB）",
+            "已用内存（MiB）", "可用内存（MiB）", "内存使用率（%）", "巡检时间", "单片机版本",
+            "设备类型", "清单型号", "科室", "床位", "房间", "备注"};
 }
 
 QStringList InspectionReport::cells(const InspectionResult& row) {
@@ -400,11 +381,10 @@ QStringList InspectionReport::cells(const InspectionResult& row) {
         used = *row.memoryTotalKiB - *row.memoryAvailableKiB;
     return {row.target.ip, QString::number(row.target.port), statusText(row.status), uptime(row),
             row.uptimeSeconds ? QString::number(*row.uptimeSeconds) : QString{}, macs(row), row.model,
-            row.serial, row.systemVersion, row.apiVersion, row.architecture, row.cpuLoad,
+            row.serial, row.systemVersion, row.cpuLoad,
             amount(row.memoryTotalKiB, 1024), amount(used, 1024), amount(row.memoryAvailableKiB, 1024), memoryPercent(row),
-            amount(row.storageTotalKiB, 1048576), amount(row.storageAvailableKiB, 1048576),
-            row.kernel,
-            row.deviceTime, row.inspectedAt.toString("yyyy-MM-dd HH:mm:ss"), row.mcuVersion, row.notes};
+            row.inspectedAt.toString("yyyy-MM-dd HH:mm:ss"), row.mcuVersion,
+            row.target.deviceType, row.target.inventoryModel, row.target.department, row.target.bed, row.target.room, row.notes};
 }
 
 bool InspectionReport::writeCsv(const QString& path, const std::vector<InspectionResult>& results, QString* error) {
@@ -425,11 +405,23 @@ bool InspectionReport::writeCsv(const QString& path, const std::vector<Inspectio
     return true;
 }
 
-InspectionRunner::InspectionRunner(std::shared_ptr<DeviceClient> hdc, QObject* parent, int commandTimeoutMs, int installationTimeoutMs)
+InspectionRunner::InspectionRunner(std::shared_ptr<DeviceClient> hdc, QObject* parent, int commandTimeoutMs,
+                                   int installationTimeoutMs, int maxConcurrency, int retryDelayMs)
     : QObject(parent), m_hdc(std::move(hdc)), m_command_timeout_ms(std::max(100, commandTimeoutMs)),
-      m_installation_timeout_ms(std::max(100, installationTimeoutMs)) {}
+      m_installation_timeout_ms(std::max(100, installationTimeoutMs)),
+      m_max_concurrency(std::clamp(maxConcurrency, 1, 8)), m_retry_delay_ms(std::max(0, retryDelayMs)),
+      m_retry_timer(new QTimer(this)) {
+    m_retry_timer->setSingleShot(true);
+    connect(m_retry_timer, &QTimer::timeout, this, [this] {
+        if (currentBatch(m_retry_generation) && !m_stopping) connectCurrent();
+    });
+}
 
 InspectionRunner::~InspectionRunner() {
+    for (auto& worker : m_workers) {
+        worker.runner->disconnect(this);
+        delete worker.runner;
+    }
     if (m_process) {
         m_process->disconnect(this);
         m_process->kill();
@@ -473,7 +465,10 @@ bool InspectionRunner::startSelectedApplications(const std::vector<InspectionTar
 
 bool InspectionRunner::startBatch(const std::vector<InspectionTarget>& targets, InspectionTask task, const QStringList& packages) {
     if (m_running || !m_hdc || targets.empty() || targets.size() > InspectionReport::MaxTargets) return false;
+    QSet<QString> uniqueTargets;
     for (const auto& target : targets) {
+        if (task != InspectionTask::Inspect && uniqueTargets.contains(target.endpoint())) return false;
+        uniqueTargets.insert(target.endpoint());
         if (target.platform != m_hdc->platform()) return false;
         const auto parsed = InspectionReport::parseTargets(target.endpoint(), target.platform);
         if (!parsed.errors.isEmpty() || parsed.targets.size() != 1 || parsed.targets.front().endpoint() != target.endpoint()) return false;
@@ -507,22 +502,211 @@ bool InspectionRunner::startBatch(const std::vector<InspectionTarget>& targets, 
     m_stopping = false;
     m_connection_attempted = false;
     m_disconnecting = false;
+    m_connect_attempt = 0;
+    m_retry_after_disconnect = false;
+    m_retry_timer->stop();
+    m_parallel = task == InspectionTask::Inspect && m_max_concurrency > 1 && targets.size() > 1;
+    m_completed = 0;
+    m_assigned.assign(targets.size(), false);
+    m_target_groups.assign(targets.size(), {});
+    QMap<QString, int> representatives;
+    for (int index = 0; index < static_cast<int>(targets.size()); ++index) {
+        const auto endpoint = targets[index].endpoint();
+        if (!representatives.contains(endpoint)) representatives.insert(endpoint, index);
+        m_target_groups[representatives.value(endpoint)].push_back(index);
+    }
+    const auto generation = ++m_batch_generation;
     m_running = true;
+    QPointer<InspectionRunner> guard(this);
     emit runningChanged(true);
+    if (!guard || !currentBatch(generation)) return true;
     emit progressChanged(0, static_cast<int>(m_results.size()));
-    QTimer::singleShot(0, this, &InspectionRunner::nextTarget);
+    if (!guard || !currentBatch(generation)) return true;
+    if (m_parallel) queueAction([this] { startParallelInspection(); });
+    else queueAction([this] { nextTarget(); });
     return true;
+}
+
+void InspectionRunner::queueAction(std::function<void()> action) {
+    const auto generation = m_batch_generation;
+    QTimer::singleShot(0, this, [this, generation, action = std::move(action)] {
+        if (currentBatch(generation)) action();
+    });
 }
 
 void InspectionRunner::stop() {
     if (!m_running || m_stopping) return;
+    const auto generation = m_batch_generation;
+    QPointer<InspectionRunner> guard(this);
     m_stopping = true;
+    if (m_parallel) {
+        std::vector<QPointer<InspectionRunner>> workers;
+        for (const auto& worker : m_workers) if (worker.index >= 0) workers.emplace_back(worker.runner);
+        emit activityChanged("正在停止，断开所有当前巡检设备后结束");
+        if (!guard || !currentBatch(generation)) return;
+        // stop() can synchronously emit finished and clear the parent's slots.
+        // Iterate owned QPointers, never references into the mutable slot vector.
+        for (const auto& worker : workers) {
+            if (worker) worker->stop();
+            if (!guard || !currentBatch(generation)) return;
+        }
+        if (std::none_of(m_workers.begin(), m_workers.end(), [](const WorkerSlot& slot) { return slot.index >= 0; }))
+            finishParallelInspection();
+        return;
+    }
+    if (m_retry_timer->isActive()) {
+        m_retry_timer->stop();
+        const auto members = m_target_groups[m_index];
+        for (const int member : members) {
+            auto& row = m_results[member];
+            row.status = InspectionStatus::Cancelled; row.notes = "用户停止，未继续重连"; row.activity.clear();
+        }
+        m_completed += static_cast<int>(members.size());
+        ++m_index;
+        for (const int member : members) {
+            emit targetChanged(member);
+            if (!guard || !currentBatch(generation)) return;
+        }
+        emit progressChanged(m_completed, static_cast<int>(m_results.size()));
+        if (!guard || !currentBatch(generation)) return;
+        finishBatch();
+        return;
+    }
     if (m_index < static_cast<int>(m_results.size()) && !m_disconnecting) {
         m_results[m_index].activity = "停止中";
         emit targetChanged(m_index);
+        if (!guard || !currentBatch(generation)) return;
     }
     emit activityChanged("正在停止，断开当前设备后结束");
+    if (!guard || !currentBatch(generation)) return;
     if (m_process && !m_disconnecting) m_process->kill();
+}
+
+void InspectionRunner::startParallelInspection() {
+    if (!m_running || !m_parallel || !m_workers.empty()) return;
+    if (m_stopping) { finishParallelInspection(); return; }
+    const auto generation = m_batch_generation;
+    const int count = std::min(m_max_concurrency, static_cast<int>(m_results.size()));
+    m_workers.reserve(count);
+    for (int slot = 0; slot < count; ++slot) {
+        auto* worker = new InspectionRunner(m_hdc, this, m_command_timeout_ms, m_installation_timeout_ms, 1, m_retry_delay_ms);
+        m_workers.push_back({worker, -1});
+        connect(worker, &InspectionRunner::targetChanged, this, [this, slot, generation](int) {
+            if (!currentBatch(generation) || !m_parallel || slot >= static_cast<int>(m_workers.size())) return;
+            const auto index = m_workers[slot].index;
+            QPointer<InspectionRunner> worker = m_workers[slot].runner;
+            if (index < 0 || !worker || worker->results().empty()) return;
+            const auto snapshot = worker->results().front();
+            const auto members = m_target_groups[index];
+            // Commit all aliases before emitting any public callback. A direct
+            // targetChanged slot is allowed to stop or restart the whole batch.
+            for (const int member : members) {
+                const auto target = m_results[member].target;
+                m_results[member] = snapshot;
+                m_results[member].target = target;
+            }
+            QPointer<InspectionRunner> guard(this);
+            for (const int member : members) {
+                emit targetChanged(member);
+                if (!guard || !currentBatch(generation)) return;
+            }
+        });
+        connect(worker, &InspectionRunner::activityChanged, this, [this, generation](const QString& activity) {
+            if (currentBatch(generation)) emit activityChanged(activity);
+        });
+        connect(worker, &InspectionRunner::finished, this, [this, slot, generation](bool) {
+            if (!currentBatch(generation) || !m_parallel || slot >= static_cast<int>(m_workers.size())) return;
+            const auto index = m_workers[slot].index;
+            QPointer<InspectionRunner> worker = m_workers[slot].runner;
+            if (index < 0 || !worker || worker->results().empty()) return;
+            const auto snapshot = worker->results().front();
+            const auto members = m_target_groups[index];
+            m_workers[slot].index = -1;
+            for (const int member : members) {
+                const auto target = m_results[member].target;
+                m_results[member] = snapshot;
+                m_results[member].target = target;
+            }
+            m_completed += static_cast<int>(members.size());
+            QPointer<InspectionRunner> guard(this);
+            for (const int member : members) {
+                emit targetChanged(member);
+                if (!guard || !currentBatch(generation)) return;
+            }
+            emit progressChanged(m_completed, static_cast<int>(m_results.size()));
+            if (!guard || !currentBatch(generation)) return;
+            queueAction([this] { dispatchParallel(); });
+        });
+    }
+    dispatchParallel();
+}
+
+void InspectionRunner::dispatchParallel() {
+    if (!m_running || !m_parallel) return;
+    const auto generation = m_batch_generation;
+    QPointer<InspectionRunner> guard(this);
+    if (!m_stopping) {
+        const int workerCount = static_cast<int>(m_workers.size());
+        for (int slot = 0; slot < workerCount; ++slot) {
+            if (m_workers[slot].index >= 0) continue;
+            for (int index = 0; index < static_cast<int>(m_results.size()); ++index) {
+                if (m_assigned[index]) continue;
+                const auto members = m_target_groups[index];
+                const auto target = m_results[index].target;
+                for (const int member : members) m_assigned[member] = true;
+                m_workers[slot].index = index;
+                QPointer<InspectionRunner> worker = m_workers[slot].runner;
+                const bool started = worker && worker->start({target});
+                if (!guard || !currentBatch(generation)) return;
+                if (!started) {
+                    m_workers[slot].index = -1;
+                    for (const int member : members) {
+                        m_results[member].status = InspectionStatus::Failed;
+                        m_results[member].notes = "无法启动巡检任务";
+                    }
+                    m_completed += static_cast<int>(members.size());
+                    for (const int member : members) {
+                        emit targetChanged(member);
+                        if (!guard || !currentBatch(generation)) return;
+                    }
+                    emit progressChanged(m_completed, static_cast<int>(m_results.size()));
+                    if (!guard || !currentBatch(generation)) return;
+                }
+                break;
+            }
+        }
+    }
+    const bool idle = std::none_of(m_workers.begin(), m_workers.end(), [](const WorkerSlot& slot) { return slot.index >= 0; });
+    if (idle && (m_stopping || m_completed == static_cast<int>(m_results.size()))) finishParallelInspection();
+}
+
+void InspectionRunner::finishParallelInspection() {
+    if (!m_running || !m_parallel) return;
+    const auto generation = m_batch_generation;
+    const bool stopped = m_stopping;
+    std::vector<int> cancelled;
+    for (int index = 0; index < static_cast<int>(m_results.size()); ++index) {
+        if (m_assigned[index]) continue;
+        auto& row = m_results[index];
+        row.status = InspectionStatus::Cancelled; row.notes = "用户停止，未执行"; row.activity.clear();
+        cancelled.push_back(index);
+    }
+    const auto workers = std::move(m_workers);
+    m_workers.clear();
+    m_parallel = false;
+    QPointer<InspectionRunner> guard(this);
+    for (const auto& slot : workers) {
+        slot.runner->disconnect(this);
+        slot.runner->deleteLater();
+    }
+    for (const int index : cancelled) {
+        emit targetChanged(index);
+        if (!guard || !currentBatch(generation)) return;
+    }
+    m_running = false;
+    emit runningChanged(false);
+    if (!guard || m_batch_generation != generation) return;
+    emit finished(stopped);
 }
 
 void InspectionRunner::nextTarget() {
@@ -530,38 +714,87 @@ void InspectionRunner::nextTarget() {
         finishBatch();
         return;
     }
+    while (m_index < static_cast<int>(m_results.size()) && m_assigned[m_index]) ++m_index;
+    if (m_index >= static_cast<int>(m_results.size())) { finishBatch(); return; }
+    m_connect_attempt = 0;
+    for (const int member : m_target_groups[m_index]) m_assigned[member] = true;
+    m_results[m_index].inspectedAt = QDateTime::currentDateTime();
+    connectCurrent();
+}
+
+void InspectionRunner::connectCurrent() {
+    const auto generation = m_batch_generation;
+    QPointer<InspectionRunner> guard(this);
+    if (!m_running || m_stopping) { if (m_running) finishBatch(); return; }
     auto& row = m_results[m_index];
+    ++m_connect_attempt;
     row.status = InspectionStatus::Connecting;
-    row.activity = "连接中";
-    row.inspectedAt = QDateTime::currentDateTime();
+    row.activity = m_connect_attempt == 1 ? QStringLiteral("连接中") : QString("重连中（%1/3）").arg(m_connect_attempt);
     emit targetChanged(m_index);
-    emit activityChanged("正在连接 " + row.target.endpoint());
+    if (!guard || !currentBatch(generation)) return;
+    emit activityChanged(QString("正在连接 %1（第 %2 次）").arg(row.target.endpoint()).arg(m_connect_attempt));
+    if (!guard || !currentBatch(generation)) return;
     if (m_stopping) { finishBatch(); return; }
     m_connection_attempted = true;
-    runCommand({m_hdc->platform() == DevicePlatform::Android ? "connect" : "tconn", row.target.endpoint().toStdString()}, "", std::min(10000, m_command_timeout_ms), [this](CommandResult result) {
-        auto& row = m_results[m_index];
-        if (m_stopping || commandFailed(result)) {
-            row.status = m_stopping ? InspectionStatus::Cancelled : InspectionStatus::Failed;
-            row.notes = m_stopping ? "用户停止" : "连接失败：" + commandDetail(result);
-            disconnectCurrent();
+    runCommand({m_hdc->platform() == DevicePlatform::Android ? "connect" : "tconn", row.target.endpoint().toStdString()}, "",
+        std::min(8000, m_command_timeout_ms), [this, generation, guard](CommandResult result) {
+        if (m_stopping || commandFailed(result)) { connectionFailed(result, "连接失败"); return; }
+        if (m_task == InspectionTask::Inspect) verifyConnection();
+        else if (m_task == InspectionTask::InstallApplications) { m_application_index = 0; executeNextApplication(); }
+        else queryApplications();
+    });
+}
+
+void InspectionRunner::verifyConnection() {
+    const auto generation = m_batch_generation;
+    QPointer<InspectionRunner> guard(this);
+    auto& row = m_results[m_index];
+    row.activity = "验证连接";
+    emit targetChanged(m_index);
+    if (!guard || !currentBatch(generation)) return;
+    emit activityChanged("正在验证设备连接 " + row.target.endpoint());
+    if (!guard || !currentBatch(generation)) return;
+    if (m_stopping) { connectionFailed({}, "连接探测已停止"); return; }
+    runCommand({"shell", "echo", "__HC_INSPECTION_READY__"}, row.target.endpoint(), std::min(6000, m_command_timeout_ms),
+        [this, generation, guard](CommandResult result) {
+        const auto lines = QString::fromStdString(result.out).replace('\r', "").split('\n');
+        if (m_stopping || commandFailed(result) || !lines.contains("__HC_INSPECTION_READY__")) {
+            connectionFailed(result, "连接探测失败，未收到设备回执");
         } else {
-            if (m_task == InspectionTask::InstallApplications) {
-                m_application_index = 0;
-                executeNextApplication();
-            } else if (m_task != InspectionTask::Inspect) queryApplications();
-            else collectCurrent();
+            m_results[m_index].notes.clear();
+            collectCurrent();
         }
     });
 }
 
+void InspectionRunner::connectionFailed(const CommandResult& result, const QString& stage) {
+    auto& row = m_results[m_index];
+    m_retry_after_disconnect = !m_stopping && m_task == InspectionTask::Inspect && m_connect_attempt < 3;
+    row.status = m_stopping ? InspectionStatus::Cancelled :
+        m_retry_after_disconnect ? InspectionStatus::Connecting : InspectionStatus::Failed;
+    row.notes = m_stopping ? QStringLiteral("用户停止") : stage + "：" + commandDetail(result);
+    if (!m_retry_after_disconnect && !m_stopping && m_task == InspectionTask::Inspect)
+        appendNote(row, "已尝试 3 次连接");
+    disconnectCurrent();
+}
+
 void InspectionRunner::collectCurrent() {
+    const auto generation = m_batch_generation;
+    QPointer<InspectionRunner> guard(this);
     auto& row = m_results[m_index];
     row.status = InspectionStatus::Collecting;
     row.activity = "采集中";
     emit targetChanged(m_index);
+    if (!guard || !currentBatch(generation)) return;
     emit activityChanged("正在读取 " + row.target.endpoint());
+    if (!guard || !currentBatch(generation)) return;
+    if (m_stopping) {
+        row.status = InspectionStatus::Cancelled; row.notes = "用户停止，未执行采集";
+        disconnectCurrent();
+        return;
+    }
     runCommand({"shell", InspectionReport::collectionScript(row.target.platform).toStdString()}, row.target.endpoint(), m_command_timeout_ms,
-               [this](CommandResult result) {
+               [this, generation, guard](CommandResult result) {
         auto& row = m_results[m_index];
         if (m_stopping) {
             row.status = InspectionStatus::Cancelled;
@@ -582,13 +815,17 @@ void InspectionRunner::collectCurrent() {
 }
 
 void InspectionRunner::queryApplications() {
+    const auto generation = m_batch_generation;
+    QPointer<InspectionRunner> guard(this);
     auto& row = m_results[m_index];
     row.status = m_task == InspectionTask::UninstallApplications ? InspectionStatus::Uninstalling : InspectionStatus::Cleaning;
     row.activity = "查询应用";
     emit targetChanged(m_index);
+    if (!guard || !currentBatch(generation)) return;
     emit activityChanged("正在查询已安装应用 " + row.target.endpoint());
+    if (!guard || !currentBatch(generation)) return;
     if (m_stopping) { finishApplications(); return; }
-    runCommand({"shell", "bm", "dump", "-a"}, row.target.endpoint(), m_command_timeout_ms, [this](CommandResult result) {
+    runCommand({"shell", "bm", "dump", "-a"}, row.target.endpoint(), m_command_timeout_ms, [this, generation, guard](CommandResult result) {
         auto& row = m_results[m_index];
         const CommandResult transport{result.exit_code, {}, result.err};
         static const QRegularExpression failedLine(
@@ -610,6 +847,8 @@ void InspectionRunner::queryApplications() {
 }
 
 void InspectionRunner::executeNextApplication() {
+    const auto generation = m_batch_generation;
+    QPointer<InspectionRunner> guard(this);
     auto& row = m_results[m_index];
     if (m_stopping) { finishApplications(); return; }
     while (m_application_index < row.applications.size() &&
@@ -622,7 +861,9 @@ void InspectionRunner::executeNextApplication() {
     const auto action = InspectionReport::taskName(m_task);
     row.activity = action + "中";
     emit targetChanged(m_index);
+    if (!guard || !currentBatch(generation)) return;
     emit activityChanged(QString("正在%1 %2 · %3").arg(action, row.target.endpoint(), app.package));
+    if (!guard || !currentBatch(generation)) return;
     if (m_stopping) {
         app.status = ApplicationCleanupStatus::Cancelled; app.detail = "用户停止，未执行";
         finishApplications(); return;
@@ -631,7 +872,9 @@ void InspectionRunner::executeNextApplication() {
         !m_prepared_installations.contains(app.sourcePath)) {
         row.activity = "准备安装包";
         emit targetChanged(m_index);
-        prepareInstallation(app.sourcePath, [this](QString filename, QString error) {
+        if (!guard || !currentBatch(generation)) return;
+        prepareInstallation(app.sourcePath, [this, generation, guard](QString filename, QString error) {
+            if (!guard || !currentBatch(generation)) return;
             auto& app = m_results[m_index].applications[m_application_index];
             if (m_stopping) {
                 app.status = ApplicationCleanupStatus::Cancelled;
@@ -640,12 +883,14 @@ void InspectionRunner::executeNextApplication() {
             }
             if (filename.isEmpty()) {
                 app.status = ApplicationCleanupStatus::Failed; app.detail = error;
-                emit targetChanged(m_index); ++m_application_index;
+                emit targetChanged(m_index);
+                if (!guard || !currentBatch(generation)) return;
+                ++m_application_index;
             } else {
                 m_prepared_installations.insert(app.sourcePath, filename);
                 app.status = ApplicationCleanupStatus::Pending;
             }
-            QTimer::singleShot(0, this, &InspectionRunner::executeNextApplication);
+            queueAction([this] { executeNextApplication(); });
         });
         return;
     }
@@ -654,8 +899,10 @@ void InspectionRunner::executeNextApplication() {
         QString error;
         if (InspectionReport::installationFiles({app.sourcePath}, row.target.platform, &error).isEmpty()) {
             app.status = ApplicationCleanupStatus::Failed; app.detail = error;
-            emit targetChanged(m_index); ++m_application_index;
-            QTimer::singleShot(0, this, &InspectionRunner::executeNextApplication);
+            emit targetChanged(m_index);
+            if (!guard || !currentBatch(generation)) return;
+            ++m_application_index;
+            queueAction([this] { executeNextApplication(); });
             return;
         }
         command = row.target.platform == DevicePlatform::Android ?
@@ -664,7 +911,7 @@ void InspectionRunner::executeNextApplication() {
     } else if (m_task == InspectionTask::UninstallApplications) command = {"uninstall", app.package.toStdString()};
     else command = {"shell", "bm", "clean", "-d", "-n", app.package.toStdString()};
     runCommand(command, row.target.endpoint(),
-        m_task == InspectionTask::InstallApplications ? m_installation_timeout_ms : m_command_timeout_ms, [this](CommandResult result) {
+        m_task == InspectionTask::InstallApplications ? m_installation_timeout_ms : m_command_timeout_ms, [this, generation, guard](CommandResult result) {
             auto& app = m_results[m_index].applications[m_application_index];
             auto checked = result;
             if (m_task == InspectionTask::InstallApplications) {
@@ -704,12 +951,14 @@ void InspectionRunner::executeNextApplication() {
                 app.detail = QString::fromStdString(result.out).trimmed().left(1024);
             }
             emit targetChanged(m_index);
+            if (!guard || !currentBatch(generation)) return;
             ++m_application_index;
-            QTimer::singleShot(0, this, &InspectionRunner::executeNextApplication);
+            queueAction([this] { executeNextApplication(); });
         });
 }
 
 void InspectionRunner::prepareInstallation(const QString& source, std::function<void(QString, QString)> callback) {
+    const auto generation = m_batch_generation;
     const auto directory = m_install_directory;
     if (!directory || !directory->isValid()) { callback({}, "无法创建安装包临时目录"); return; }
     const auto filename = QString("package_%1.%2").arg(m_prepared_installations.size() + 1)
@@ -721,7 +970,8 @@ void InspectionRunner::prepareInstallation(const QString& source, std::function<
     // Copy in bounded event-loop slices so large packages remain cancellable.
     auto step = std::make_shared<std::function<void()>>();
     std::weak_ptr<std::function<void()>> weak = step;
-    *step = [this, directory, input, output, filename, callback = std::move(callback), weak] {
+    *step = [this, generation, directory, input, output, filename, callback = std::move(callback), weak] {
+        if (!currentBatch(generation)) return;
         auto finish = [&](const QString& error) {
             input->close(); output->close();
             if (!error.isEmpty()) { output->remove(); callback({}, error); }
@@ -748,6 +998,8 @@ void InspectionRunner::prepareInstallation(const QString& source, std::function<
 }
 
 void InspectionRunner::finishApplications() {
+    const auto generation = m_batch_generation;
+    QPointer<InspectionRunner> guard(this);
     auto& row = m_results[m_index];
     int succeeded = 0, failed = 0;
     for (auto& app : row.applications) {
@@ -762,18 +1014,23 @@ void InspectionRunner::finishApplications() {
         succeeded ? InspectionStatus::Succeeded : InspectionStatus::Skipped;
     if (m_stopping) appendNote(row, "用户停止，已完成的操作不会撤销");
     emit targetChanged(m_index);
+    if (!guard || !currentBatch(generation)) return;
     disconnectCurrent();
 }
 
 void InspectionRunner::disconnectCurrent() {
+    const auto generation = m_batch_generation;
+    QPointer<InspectionRunner> guard(this);
     m_disconnecting = true;
     m_results[m_index].activity = "断开中";
     emit targetChanged(m_index);
+    if (!guard || !currentBatch(generation)) return;
     emit activityChanged("正在断开 " + m_results[m_index].target.endpoint());
+    if (!guard || !currentBatch(generation)) return;
     const auto endpoint = m_results[m_index].target.endpoint().toStdString();
     runCommand(m_hdc->platform() == DevicePlatform::Android ? std::vector<std::string>{"disconnect", endpoint} :
                std::vector<std::string>{"tconn", endpoint, "-remove"}, "", std::min(5000, m_command_timeout_ms),
-               [this](CommandResult result) {
+               [this, generation, guard](CommandResult result) {
         auto& row = m_results[m_index];
         if (commandFailed(result)) {
             appendNote(row, "断开失败：" + commandDetail(result));
@@ -781,16 +1038,52 @@ void InspectionRunner::disconnectCurrent() {
         }
         m_connection_attempted = false;
         m_disconnecting = false;
+        if (m_retry_after_disconnect && !m_stopping) {
+            m_retry_after_disconnect = false;
+            row.status = InspectionStatus::Connecting;
+            row.activity = "等待重连";
+            m_retry_generation = generation;
+            m_retry_timer->start(m_retry_delay_ms);
+            emit targetChanged(m_index);
+            if (!guard || !currentBatch(generation)) return;
+            emit activityChanged("稍后重试连接 " + row.target.endpoint());
+            if (!guard || !currentBatch(generation)) return;
+            return;
+        }
+        m_retry_after_disconnect = false;
+        if (m_stopping && row.status == InspectionStatus::Connecting) {
+            row.status = InspectionStatus::Cancelled; appendNote(row, "用户停止，未继续重连");
+        }
         row.activity.clear();
-        emit targetChanged(m_index);
+        const auto members = m_target_groups[m_index];
+        for (const int member : members) {
+            if (member != m_index) {
+                const auto target = m_results[member].target;
+                m_results[member] = row;
+                m_results[member].target = target;
+            }
+            emit targetChanged(member);
+            if (!guard || !currentBatch(generation)) return;
+        }
+        m_completed += static_cast<int>(members.size());
         ++m_index;
-        emit progressChanged(m_index, static_cast<int>(m_results.size()));
-        QTimer::singleShot(0, this, &InspectionRunner::nextTarget);
+        emit progressChanged(m_completed, static_cast<int>(m_results.size()));
+        if (!guard || !currentBatch(generation)) return;
+        queueAction([this] { nextTarget(); });
     });
 }
 
 void InspectionRunner::finishBatch() {
+    if (!m_running) return;
+    const auto generation = m_batch_generation;
+    const bool stopped = m_stopping;
+    QPointer<InspectionRunner> guard(this);
+    m_retry_timer->stop();
+    m_retry_after_disconnect = false;
     for (int i = m_index; i < static_cast<int>(m_results.size()); ++i) {
+        const auto status = m_results[i].status;
+        if (status == InspectionStatus::Succeeded || status == InspectionStatus::Partial || status == InspectionStatus::Failed ||
+            status == InspectionStatus::Cancelled || status == InspectionStatus::Skipped) continue;
         m_results[i].status = InspectionStatus::Cancelled;
         m_results[i].activity.clear();
         m_results[i].notes = "用户停止，未执行";
@@ -798,19 +1091,24 @@ void InspectionRunner::finishBatch() {
             app.status = ApplicationCleanupStatus::Cancelled; app.detail = "用户停止，未执行";
         }
         emit targetChanged(i);
+        if (!guard || !currentBatch(generation)) return;
     }
     m_running = false;
     m_prepared_installations.clear();
     m_install_directory.reset();
     emit runningChanged(false);
-    emit finished(m_stopping);
+    if (!guard || m_batch_generation != generation) return;
+    emit finished(stopped);
 }
 
 void InspectionRunner::runCommand(const std::vector<std::string>& args, const QString& serial, int timeoutMs,
                                   std::function<void(CommandResult)> callback) {
     auto* process = new QProcess(this);
     m_process = process;
-    m_callback = std::move(callback);
+    const auto generation = m_batch_generation;
+    m_callback = [this, generation, callback = std::move(callback)](CommandResult result) mutable {
+        if (currentBatch(generation)) callback(std::move(result));
+    };
     m_output.clear();
     m_errors.clear();
     m_command_error.clear();

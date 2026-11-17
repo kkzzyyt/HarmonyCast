@@ -1,0 +1,3 @@
+ip,devicetype,devicemodel,deptname,bedname,roomname
+192.0.2.10,wnBedHeadExtension,H36,示例科室,001,101
+192.0.2.11,wnDoorWayExtension,H35,示例科室,,101

@@ -54,6 +54,7 @@ private:
     InspectionTask m_table_task{InspectionTask::Inspect};
     QLabel* m_port_hint;
     InspectionImport m_import;
+    std::vector<InspectionTarget> m_inventory_targets;
     QPlainTextEdit* m_input;
     QLabel* m_file_label;
     QLabel* m_input_summary;
