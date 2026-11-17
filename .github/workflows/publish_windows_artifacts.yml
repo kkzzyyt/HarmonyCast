@@ -1,4 +1,4 @@
-name: Publish verified Windows artifacts
+name: Publish verified native artifacts
 
 on:
   workflow_dispatch:
@@ -11,6 +11,11 @@ on:
         description: Successful Windows build run for the tag commit
         required: true
         type: string
+      include_macos:
+        description: Include the successful macOS build from the same run
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   actions: read
@@ -24,6 +29,7 @@ jobs:
       GH_REPO: ${{ github.repository }}
       RELEASE_TAG: ${{ inputs.tag }}
       BUILD_RUN: ${{ inputs.run_id }}
+      INCLUDE_MACOS: ${{ inputs.include_macos }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -42,6 +48,8 @@ jobs:
           version = re.search(r'project\(HarmonyCast VERSION ([0-9.]+)', Path('CMakeLists.txt').read_text()).group(1)
           assert os.environ['RELEASE_TAG'] == 'v' + version
           required = {'Build Windows x64 Executable & Single EXE', 'Build Windows Server 2012 compatibility edition'}
+          if os.environ['INCLUDE_MACOS'] == 'true':
+              required.add('Build macOS DMG (Universal/Apple Silicon)')
           passed = {job['name'] for job in run['jobs'] if job['conclusion'] == 'success'}
           assert required <= passed, 'Both Windows jobs must pass before publication'
           PY
@@ -52,4 +60,8 @@ jobs:
           gh run download "$BUILD_RUN" --name HarmonyCast-Windows-x64 --dir windows
           gh run download "$BUILD_RUN" --name HarmonyCast-Windows-Server2012-x64 --dir server2012
           gh release upload "$RELEASE_TAG" windows/* server2012/* --clobber
+          if [ "$INCLUDE_MACOS" = true ]; then
+            gh run download "$BUILD_RUN" --name HarmonyCast-macOS-arm64 --dir macos
+            gh release upload "$RELEASE_TAG" macos/* --clobber
+          fi
           gh release edit "$RELEASE_TAG" --draft=false --latest
