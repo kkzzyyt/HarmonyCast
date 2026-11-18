@@ -12,6 +12,13 @@ Format adheres to [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and 
 
 ---
 
+## [2.7.1] - 2026-11-18
+
+### Changed / 变更
+- [巡检] 表格及 CSV 将设备类型、清单型号、科室、床位、房间移至末尾，优先显示巡检状态、运行时间、内存、版本与备注。
+
+---
+
 ## [2.7.0] - 2026-11-18
 
 ### Added / 新增

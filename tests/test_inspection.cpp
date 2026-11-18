@@ -443,11 +443,11 @@ static void testPage(const QString& directory) {
     check(!start->isEnabled() && input->isReadOnly(), "running batch inputs not locked");
     waitUntil([&] { return !page.isRunning(); });
     check(table->rowCount() == 2 && exportButton->isEnabled(), "UI results or export state missing");
-    check(table->columnCount() == 16 && table->item(0, 11)->text() == "YH-H36M01" &&
-          table->item(0, 12)->text() == "MCU-1.9.3", "inspection columns or MCU firmware are incorrect");
-    check(table->item(0, 8)->text() == "aa:bb:cc:dd:ee:01" && table->item(0, 9)->text() == "1536 / 2048" &&
-          table->item(0, 10)->text() == "75.0%" && table->item(0, 13)->text() == "YH-H35MS01_v1.0" &&
-          !table->item(0, 14)->text().isEmpty() && table->item(0, 15)->text().isEmpty(),
+    check(table->columnCount() == 16 && table->item(0, 6)->text() == "YH-H36M01" &&
+          table->item(0, 7)->text() == "MCU-1.9.3", "inspection columns or MCU firmware are incorrect");
+    check(table->item(0, 3)->text() == "aa:bb:cc:dd:ee:01" && table->item(0, 4)->text() == "1536 / 2048" &&
+          table->item(0, 5)->text() == "75.0%" && table->item(0, 8)->text() == "YH-H35MS01_v1.0" &&
+          !table->item(0, 9)->text().isEmpty() && table->item(0, 10)->text().isEmpty(),
           "removing columns shifted inspection table values");
     for (int column = 0; column < table->columnCount(); ++column) {
         const QString header = table->horizontalHeaderItem(column)->text();
@@ -457,7 +457,7 @@ static void testPage(const QString& directory) {
     if (!mcuArtifacts.isEmpty()) {
         page.resize(1320, 760); page.setStyleSheet(IconManager::getAppStyleSheet()); page.setPalette(IconManager::getAppPalette());
         page.show(); QCoreApplication::processEvents();
-        table->scrollToItem(table->item(0, 12), QAbstractItemView::PositionAtCenter);
+        table->scrollToItem(table->item(0, 7), QAbstractItemView::PositionAtCenter);
         QCoreApplication::processEvents();
         check(page.grab().save(mcuArtifacts + "/inspection-mcu-version.png"), "MCU version preview unavailable");
     }
@@ -522,14 +522,14 @@ static void testInventoryPage(const QString& directory) {
     check(page.importFile(csvPath, &error), "inventory CSV could not be imported");
     auto* table = page.findChild<QTableWidget*>("InspectionResults");
     auto* task = page.findChild<QComboBox*>("InspectionTask");
-    check(table->rowCount() == 2 && table->item(0, 3)->text() == "内科" && table->item(1, 4)->text() == "002",
+    check(table->rowCount() == 2 && table->item(0, 13)->text() == "内科" && table->item(1, 14)->text() == "002",
           "inventory metadata not synchronized in preview");
     page.findChild<QPushButton*>("InspectionStart")->click();
     waitUntil([&] { return !page.isRunning(); });
-    check(table->item(0, 1)->text() == "床头分机" && table->item(0, 2)->text() == "LIST-H36" &&
-          table->item(0, 11)->text() == "YH-H36M01", "inventory model overwrites real hardware model");
-    check(table->item(0, 3)->text() == "内科" && table->item(1, 3)->text() == "外科" &&
-          table->item(1, 5)->text() == "102", "reused device result overwrites per-bed metadata");
+    check(table->item(0, 11)->text() == "床头分机" && table->item(0, 12)->text() == "LIST-H36" &&
+          table->item(0, 6)->text() == "YH-H36M01", "inventory model overwrites real hardware model");
+    check(table->item(0, 13)->text() == "内科" && table->item(1, 13)->text() == "外科" &&
+          table->item(1, 15)->text() == "102", "reused device result overwrites per-bed metadata");
     check(page.exportCsv(directory + "/inventory-result.csv", &error), "inventory export unavailable");
     const auto csv = readFile(directory + "/inventory-result.csv");
     check(csv.contains("科室") && csv.contains("内科") && csv.contains("外科") && csv.contains("002"), "CSV loses inventory metadata");

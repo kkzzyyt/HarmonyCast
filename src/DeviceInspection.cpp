@@ -351,8 +351,8 @@ QStringList InspectionReport::headers(InspectionTask task) {
     }
     return {"目标 IP", "HDC 端口", "巡检结果", "运行时间", "运行秒数", "MAC 地址", "设备型号",
             "序列号", "系统镜像版本", "CPU 负载（1/5/15 分钟）", "总内存（MiB）",
-            "已用内存（MiB）", "可用内存（MiB）", "内存使用率（%）", "巡检时间", "单片机版本",
-            "设备类型", "清单型号", "科室", "床位", "房间", "备注"};
+            "已用内存（MiB）", "可用内存（MiB）", "内存使用率（%）", "巡检时间", "单片机版本", "备注",
+            "设备类型", "清单型号", "科室", "床位", "房间"};
 }
 
 QStringList InspectionReport::cells(const InspectionResult& row) {
@@ -383,8 +383,8 @@ QStringList InspectionReport::cells(const InspectionResult& row) {
             row.uptimeSeconds ? QString::number(*row.uptimeSeconds) : QString{}, macs(row), row.model,
             row.serial, row.systemVersion, row.cpuLoad,
             amount(row.memoryTotalKiB, 1024), amount(used, 1024), amount(row.memoryAvailableKiB, 1024), memoryPercent(row),
-            row.inspectedAt.toString("yyyy-MM-dd HH:mm:ss"), row.mcuVersion,
-            row.target.deviceType, row.target.inventoryModel, row.target.department, row.target.bed, row.target.room, row.notes};
+            row.inspectedAt.toString("yyyy-MM-dd HH:mm:ss"), row.mcuVersion, row.notes,
+            row.target.deviceType, row.target.inventoryModel, row.target.department, row.target.bed, row.target.room};
 }
 
 bool InspectionReport::writeCsv(const QString& path, const std::vector<InspectionResult>& results, QString* error) {
