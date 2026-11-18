@@ -124,7 +124,7 @@ def inspect_bundle(root, architecture, minimum_os=None):
             return (loader.parent / value[len("@loader_path/"):]).resolve()
         if value.startswith("@executable_path/"):
             return (executable.parent / value[len("@executable_path/"):]).resolve()
-        return Path(value).resolve() if value.startswith("/") else None
+        return Path(value).resolve() if Path(value).is_absolute() else None
 
     main = (root / "Contents/MacOS/HarmonyCast").resolve()
     main_paths = []
