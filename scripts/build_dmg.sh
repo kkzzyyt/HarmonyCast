@@ -1,161 +1,82 @@
 #!/bin/bash
-set -eo pipefail
+set -euo pipefail
 
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$DIR"
+TASK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$TASK_ROOT"
+BUILD_DIR="${HARMONYCAST_BUILD_DIR:-build}"
+QT_PREFIX="${HARMONYCAST_QT_PREFIX:-${QT_ROOT_DIR:-}}"
+if [ -z "$QT_PREFIX" ]; then QT_PREFIX="$(brew --prefix qt)"; fi
+FFMPEG_PREFIX="${HARMONYCAST_FFMPEG_PREFIX:-}"
+if [ -z "$FFMPEG_PREFIX" ]; then FFMPEG_PREFIX="$(brew --prefix ffmpeg)"; fi
+MACDEPLOYQT_BIN="$QT_PREFIX/bin/macdeployqt"
+QT_PATHS="$QT_PREFIX/bin/qtpaths"
+if [ ! -x "$QT_PATHS" ]; then QT_PATHS="$QT_PREFIX/bin/qtpaths6"; fi
+[ -x "$MACDEPLOYQT_BIN" ] && [ -x "$QT_PATHS" ] || { echo "Qt deployment tools missing under $QT_PREFIX" >&2; exit 1; }
 
-echo "=== 1. Building HarmonyCast.app ==="
-cmake --build build --target HarmonyCast
+cmake --build "$BUILD_DIR" --target HarmonyCast
+APP_BINARY="$BUILD_DIR/HarmonyCast.app/Contents/MacOS/HarmonyCast"
+MAC_ARCH="${HARMONYCAST_MAC_ARCH:-$(lipo -archs "$APP_BINARY")}"
+case "$MAC_ARCH" in arm64|x86_64) ;; *) echo "Expected a native arm64 or x86_64 app, found $MAC_ARCH" >&2; exit 1 ;; esac
+lipo "$APP_BINARY" -verify_arch "$MAC_ARCH"
 
-echo "=== 2. Generating DMG background ==="
-if [ ! -f "resources/dmg_background.png" ]; then
-    python3 scripts/generate_dmg_background.py resources/dmg_background.png || true
+if [ ! -f resources/dmg_background.png ]; then
+    python3 scripts/generate_dmg_background.py resources/dmg_background.png
 fi
-
-echo "=== 3. Preparing DMG staging folder & deploying standalone frameworks ==="
-STAGING_DIR="build/dmg_pack"
-python3 -c "import shutil, os; shutil.rmtree('$STAGING_DIR', ignore_errors=True)"
+STAGING_DIR="$BUILD_DIR/dmg_pack"
+python3 -c 'import shutil,sys; shutil.rmtree(sys.argv[1], ignore_errors=True)' "$STAGING_DIR"
 mkdir -p "$STAGING_DIR"
-cp -R "build/HarmonyCast.app" "$STAGING_DIR/"
-
+cp -R "$BUILD_DIR/HarmonyCast.app" "$STAGING_DIR/"
 APP_IN_STAGING="$STAGING_DIR/HarmonyCast.app"
-
-echo "=== 4. Running macdeployqt to bundle Qt and FFmpeg dependencies ==="
-MACDEPLOYQT_BIN="/opt/homebrew/bin/macdeployqt"
-if [ ! -x "$MACDEPLOYQT_BIN" ]; then
-    MACDEPLOYQT_BIN="$(which macdeployqt || true)"
-fi
-
-if [ -x "$MACDEPLOYQT_BIN" ]; then
-    QT_PLUGIN_ROOT="$(/opt/homebrew/bin/qtpaths --query QT_INSTALL_PLUGINS)"
-    PLUGIN_ARGS=()
-    # This is a Widgets app. Deploy its platform, image, icon and TLS plugins
-    # explicitly so unrelated PDF/QML plugins do not add unresolved frameworks.
-    for plugin in \
-        platforms/libqcocoa.dylib \
-        platforms/libqoffscreen.dylib \
-        imageformats/libqjpeg.dylib \
-        imageformats/libqsvg.dylib \
-        iconengines/libqsvgicon.dylib \
-        styles/libqmacstyle.dylib \
-        tls/libqsecuretransportbackend.dylib \
-        tls/libqcertonlybackend.dylib \
-        networkinformation/libqapplenetworkinformation.dylib; do
-        if [ -f "$QT_PLUGIN_ROOT/$plugin" ]; then
-            mkdir -p "$APP_IN_STAGING/Contents/PlugIns/$(dirname "$plugin")"
-            cp -L "$QT_PLUGIN_ROOT/$plugin" "$APP_IN_STAGING/Contents/PlugIns/$plugin"
-            PLUGIN_ARGS+=("-executable=$APP_IN_STAGING/Contents/PlugIns/$plugin")
-        fi
-    done
-    for required in platforms/libqcocoa.dylib imageformats/libqjpeg.dylib tls/libqsecuretransportbackend.dylib; do
-        if [ ! -f "$APP_IN_STAGING/Contents/PlugIns/$required" ]; then
-            echo "ERROR: Missing required Qt plugin: $required" >&2
-            exit 1
-        fi
-    done
-    "$MACDEPLOYQT_BIN" "$APP_IN_STAGING" \
-        -no-plugins \
-        "${PLUGIN_ARGS[@]}" \
-        -always-overwrite \
-        -verbose=1 \
-        -libpath=/opt/homebrew/opt/ffmpeg/lib \
-        -libpath=/opt/homebrew/opt/qt/lib 2>&1 | tee build/macdeployqt.log
-    python3 -c "
+QT_PLUGIN_ROOT="$("$QT_PATHS" --query QT_INSTALL_PLUGINS)"
+PLUGIN_ARGS=()
+for plugin in \
+    platforms/libqcocoa.dylib \
+    platforms/libqoffscreen.dylib \
+    imageformats/libqjpeg.dylib \
+    imageformats/libqsvg.dylib \
+    iconengines/libqsvgicon.dylib \
+    styles/libqmacstyle.dylib \
+    tls/libqsecuretransportbackend.dylib \
+    tls/libqcertonlybackend.dylib \
+    networkinformation/libqapplenetworkinformation.dylib; do
+    if [ -f "$QT_PLUGIN_ROOT/$plugin" ]; then
+        mkdir -p "$APP_IN_STAGING/Contents/PlugIns/$(dirname "$plugin")"
+        cp -L "$QT_PLUGIN_ROOT/$plugin" "$APP_IN_STAGING/Contents/PlugIns/$plugin"
+        PLUGIN_ARGS+=("-executable=$APP_IN_STAGING/Contents/PlugIns/$plugin")
+    fi
+done
+"$MACDEPLOYQT_BIN" "$APP_IN_STAGING" -no-plugins "${PLUGIN_ARGS[@]}" \
+    -always-overwrite -verbose=1 \
+    "-libpath=$FFMPEG_PREFIX/lib" "-libpath=$QT_PREFIX/lib" 2>&1 | tee "$BUILD_DIR/macdeployqt.log"
+python3 - "$BUILD_DIR/macdeployqt.log" <<'PYCODE'
 from pathlib import Path
 import sys
-errors = [line for line in Path('build/macdeployqt.log').read_text().splitlines() if line.startswith('ERROR:')]
+errors = [line for line in Path(sys.argv[1]).read_text().splitlines() if line.startswith('ERROR:')]
 if errors:
-    print('Qt deployment failed; refusing to package incomplete dependencies.', file=sys.stderr)
-    sys.exit(1)
-"
-else
-    echo "ERROR: macdeployqt not found!"
-    exit 1
-fi
-
-echo "=== 5. Configuring standalone qt.conf ==="
-cat << 'EOF' > "$APP_IN_STAGING/Contents/Resources/qt.conf"
+    raise SystemExit('Qt deployment failed: ' + '\n'.join(errors))
+PYCODE
+cat > "$APP_IN_STAGING/Contents/Resources/qt.conf" <<'QTCONF'
 [Paths]
 Plugins = PlugIns
-EOF
+QTCONF
 
-echo "=== 6. Sanitizing library IDs and references ==="
-python3 -c "
-import os, subprocess
-
-app_path = '$APP_IN_STAGING'
-for root, dirs, files in os.walk(app_path):
-    for f in files:
-        p = os.path.join(root, f)
-        if os.path.islink(p): continue
-        try:
-            res = subprocess.run(['otool', '-D', p], capture_output=True, text=True)
-            if res.returncode == 0 and res.stdout.strip():
-                lines = res.stdout.strip().splitlines()
-                if len(lines) >= 2:
-                    cur_id = lines[1].strip()
-                    if '/opt/homebrew' in cur_id:
-                        new_id = '@rpath/' + os.path.basename(cur_id)
-                        subprocess.run(['install_name_tool', '-id', new_id, p], check=False)
-        except Exception:
-            pass
-"
-
-echo "=== 7. Re-signing application bundle with ad-hoc signature ==="
+# Check every Mach-O, including helper executables and plugins, before signing.
+CHECK_ARGS=("$APP_IN_STAGING" --arch "$MAC_ARCH" --write-minimum)
+if [ -n "${MACOSX_DEPLOYMENT_TARGET:-}" ]; then CHECK_ARGS+=(--minimum-os "$MACOSX_DEPLOYMENT_TARGET"); fi
+python3 scripts/check_macos_bundle.py "${CHECK_ARGS[@]}"
 codesign --force --deep --sign - "$APP_IN_STAGING"
 codesign --verify --deep --strict "$APP_IN_STAGING"
 
-echo "=== 8. Verifying zero /opt/homebrew dependency ==="
-python3 -c "
-import subprocess, os, sys
-
-app = '$APP_IN_STAGING'
-bad = []
-for root, dirs, files in os.walk(app):
-    for f in files:
-        p = os.path.join(root, f)
-        if os.path.islink(p): continue
-        try:
-            res = subprocess.run(['otool', '-L', p], capture_output=True, text=True)
-            if res.returncode == 0:
-                for line in res.stdout.splitlines()[1:]:
-                    dep = line.strip().split()[0]
-                    if '/opt/homebrew' in dep:
-                        bad.append((p, dep))
-        except Exception:
-            pass
-
-if bad:
-    print(f'ERROR: Found {len(bad)} unbundled references to /opt/homebrew:')
-    for p, dep in bad:
-        print(f'  {p} -> {dep}')
-    sys.exit(1)
-else:
-    print('SUCCESS: Application bundle is 100% self-contained! 0 external homebrew dependencies.')
-"
-
-VERSION=$(grep -m1 "project(HarmonyCast VERSION" CMakeLists.txt | sed -E 's/.*VERSION ([0-9.]+).*/\1/')
-DMG_OUTPUT="build/HarmonyCast-${VERSION}-macOS-arm64.dmg"
-python3 -c "import os; os.remove('$DMG_OUTPUT') if os.path.exists('$DMG_OUTPUT') else None"
-
-echo "=== 9. Creating fancy DMG with create-dmg ==="
+VERSION="$(python3 -c 'from pathlib import Path; import re; print(re.search(r"project\(HarmonyCast VERSION ([0-9.]+)", Path("CMakeLists.txt").read_text()).group(1))')"
+DMG_OUTPUT="$BUILD_DIR/HarmonyCast-$VERSION-macOS-$MAC_ARCH.dmg"
 create-dmg \
-  --volname "HarmonyCast" \
-  --volicon "resources/app-icon.icns" \
-  --background "resources/dmg_background.png" \
-  --window-pos 200 120 \
-  --window-size 660 400 \
-  --icon-size 128 \
-  --icon "HarmonyCast.app" 170 190 \
-  --app-drop-link 490 190 \
-  --hide-extension "HarmonyCast.app" \
-  --format UDZO \
-  --overwrite \
-  "$DMG_OUTPUT" \
-  "$STAGING_DIR"
-
-python3 -c "import shutil, os; shutil.rmtree('$STAGING_DIR', ignore_errors=True)"
-python3 -c "import shutil, os; shutil.rmtree('build/test_bundle', ignore_errors=True)"
-
-echo "=== DMG Build Succeeded: $DMG_OUTPUT ==="
+    --volname HarmonyCast --volicon resources/app-icon.icns \
+    --background resources/dmg_background.png \
+    --window-pos 200 120 --window-size 660 400 --icon-size 128 \
+    --icon HarmonyCast.app 170 190 --app-drop-link 490 190 \
+    --hide-extension HarmonyCast.app --format UDZO --overwrite \
+    "$DMG_OUTPUT" "$STAGING_DIR"
+hdiutil verify -quiet "$DMG_OUTPUT"
+python3 -c 'import shutil,sys; shutil.rmtree(sys.argv[1], ignore_errors=True)' "$STAGING_DIR"
+echo "DMG build succeeded: $DMG_OUTPUT"
 ls -lh "$DMG_OUTPUT"

@@ -37,6 +37,11 @@ and `NOTICE`. The files below retain their original licenses and attribution.
 - Copyright (c) 2013-2014 RAD Game Tools and Valve Software; copyright (c) 2010-2014 Rich Geldreich and Tenacious Software LLC. Licensed under the MIT license; retained in `third_party/miniz/LICENSE` and `licenses/miniz-LICENSE.txt`.
 - The native device inventory importer uses only in-memory ZIP reading/decompression for XLSX. Compression, archive writing, stdio and zlib-compatible APIs are disabled. The static `miniz_export.h` matches the upstream generated export configuration; all other vendored files are unmodified.
 
+## macOS Intel runtime
+
+- macOS ARM64 and Intel packages use Qt 6.6.3 and FFmpeg 6.1.3 decoder libraries. FFmpeg source is pinned to upstream commit `01d3f764f79b2f571174a4cec855e651258f20ec`; the macOS build enables H.264 decoding and VideoToolbox without external codec dependencies or GPL options.
+- The universal macOS HDC and libusb preserve the existing ARM64 slices and add Intel slices from the official OpenHarmony 5.0.0.71 SDK. Source archive and derived hashes are recorded in `resources/hdc/checksums.json`; original source and license notices above continue to apply.
+
 ## Runtime dependencies
 
 - PyQt5 5.15.11 — Riverbank Computing Limited, GPL v3. https://www.riverbankcomputing.com/software/pyqt/

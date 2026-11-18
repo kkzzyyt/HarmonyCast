@@ -12,6 +12,7 @@
 #include <QPointer>
 #include <QTemporaryDir>
 #include <QSettings>
+#include <QSysInfo>
 #include <functional>
 #include <iostream>
 #include <stdexcept>
@@ -244,21 +245,22 @@ int main(int argc, char** argv) {
         testTimeoutFallback();
         const QString compat = "HarmonyCast-99.0.0-Windows-Server2012-x64.zip";
         const QString windows = "HarmonyCast-99.0.0-Windows-x64.zip";
-        const QString mac = "HarmonyCast-99.0.0-macOS-arm64.dmg";
+        const QString macArm = "HarmonyCast-99.0.0-macOS-arm64.dmg";
+        const QString macIntel = "HarmonyCast-99.0.0-macOS-x86_64.dmg";
 #if defined(HARMONYCAST_SERVER2012_COMPAT)
         const QString expected = compat;
 #elif defined(Q_OS_WIN)
         const QString expected = windows;
 #elif defined(Q_OS_MACOS)
-        const QString expected = mac;
+        const QString expected = QSysInfo::buildCpuArchitecture() == "arm64" ? macArm : macIntel;
 #else
         const QString expected;
 #endif
         const QString expectedUrl = expected.isEmpty() ? "https://example.test/release" : "https://example.test/" + expected;
-        for (const QStringList& order : {QStringList{compat, windows, mac}, QStringList{mac, windows, compat}}) {
+        for (const QStringList& order : {QStringList{compat, windows, macIntel, macArm}, QStringList{macArm, macIntel, windows, compat}}) {
             if (checkRelease(order) != expectedUrl) throw std::runtime_error("selected an incompatible update package");
         }
-        QStringList wrongPlatforms{compat, windows, mac};
+        QStringList wrongPlatforms{compat, windows, macIntel, macArm};
         wrongPlatforms.removeAll(expected);
         if (checkRelease(wrongPlatforms) != "https://example.test/release") {
             throw std::runtime_error("must use release page when no matching package exists");

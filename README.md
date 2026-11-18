@@ -1,4 +1,4 @@
-# HarmonyCast 2.6.3 · 鸿蒙投屏工作台
+# HarmonyCast 2.7.0 · 鸿蒙投屏工作台
 
 <p align="center">
   <img src="resources/app-icon.svg" width="96" height="96" alt="HarmonyCast Logo"/>
@@ -105,9 +105,12 @@ Download pre-compiled binaries from [GitHub Releases](https://github.com/kkzzyyt
 
 | Platform / 平台 | Package Format / 格式 | Target Architecture / 架构 | Description / 说明 |
 | :--- | :--- | :--- | :--- |
-| **macOS** | `.dmg` | Apple Silicon (M1/M2/M3/M4) & Intel | Self-contained, drag-and-drop installer / 开箱即用，双击拖拽至 Applications 目录 |
+| **macOS Apple Silicon** | `macOS-arm64.dmg` | M 系列，macOS 15+ | 独立 ARM64 安装包，拖拽至 Applications |
+| **macOS Intel** | `macOS-x86_64.dmg` | Intel 64 位，macOS 15+ | 原生 x86_64 安装包，随包 HDC/ADB 支持 Intel |
 | **Windows** | `.exe` / `.zip` | Windows 10 / 11 / 12 x64 | Portable single-exe, installer, or zip / 单文件绿色版、安装包或绿色压缩包 |
 | **Windows Server 2012** | `.exe` / `.zip` | Server 2012 / 2012 R2 x64 | Qt 5.15 compatibility edition / 专用 Qt5 兼容构建，见 [Server 2012 说明](docs/windows-server2012.md) |
+
+Mac 两种架构的依赖、打包检查与本地构建参数见 [macOS Intel 说明](docs/macos-intel.md)。
 
 > [!NOTE]
 > **macOS Security Gate / macOS 首次打开拦截？**

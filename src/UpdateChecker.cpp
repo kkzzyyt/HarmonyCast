@@ -6,6 +6,7 @@
 #include <QSettings>
 #include <QRegularExpression>
 #include <QTimer>
+#include <QSysInfo>
 
 namespace harmonycast {
 
@@ -202,8 +203,9 @@ UpdateInfo UpdateChecker::parseManifest(const QByteArray& data) const {
 #elif defined(Q_OS_WIN)
             matches = name.endsWith("-Windows-x64.zip", Qt::CaseInsensitive);
 #elif defined(Q_OS_MACOS)
-            matches = name.endsWith(".dmg", Qt::CaseInsensitive) ||
-                      (name.contains("macOS", Qt::CaseInsensitive) && name.endsWith(".zip", Qt::CaseInsensitive));
+            const auto architecture = QSysInfo::buildCpuArchitecture() == "arm64" ? "arm64" : "x86_64";
+            matches = name.endsWith(QString("-macOS-%1.dmg").arg(architecture), Qt::CaseInsensitive) ||
+                      name.endsWith(QString("-macOS-%1.zip").arg(architecture), Qt::CaseInsensitive);
 #endif
             if (matches) {
                 info.downloadUrl = assetObj["browser_download_url"].toString();

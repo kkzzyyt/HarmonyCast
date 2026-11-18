@@ -49,7 +49,7 @@ jobs:
           assert os.environ['RELEASE_TAG'] == 'v' + version
           required = {'Build Windows x64 Executable & Single EXE', 'Build Windows Server 2012 compatibility edition'}
           if os.environ['INCLUDE_MACOS'] == 'true':
-              required.add('Build macOS DMG (Universal/Apple Silicon)')
+              required.update({'Build macOS DMG (arm64)', 'Build macOS DMG (x86_64)'})
           passed = {job['name'] for job in run['jobs'] if job['conclusion'] == 'success'}
           assert required <= passed, 'Both Windows jobs must pass before publication'
           PY
@@ -62,6 +62,7 @@ jobs:
           gh release upload "$RELEASE_TAG" windows/* server2012/* --clobber
           if [ "$INCLUDE_MACOS" = true ]; then
             gh run download "$BUILD_RUN" --name HarmonyCast-macOS-arm64 --dir macos
+            gh run download "$BUILD_RUN" --name HarmonyCast-macOS-x86_64 --dir macos
             gh release upload "$RELEASE_TAG" macos/* --clobber
           fi
           gh release edit "$RELEASE_TAG" --draft=false --latest

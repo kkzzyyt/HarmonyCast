@@ -1,0 +1,14 @@
+{
+  "macos_architectures": [
+    "arm64",
+    "x86_64"
+  ],
+  "intel_source": "https://repo.huaweicloud.com/openharmony/os/5.0.0-Release/ohos-sdk-mac-public.tar.gz",
+  "intel_sdk_version": "5.0.0.71",
+  "intel_sdk_sha256": "863abc8e47acd760a42921a96bd1e36a857593801ce6f90ed3044a77fdbab6c6",
+  "arm64_source_commit": "4e2c1e1",
+  "files": {
+    "hdc": "ba19b93822e503963da63cf3682cc7023a43014eba56d0a8360deac63db2a55c",
+    "libusb_shared.dylib": "40456946eec0657c9625bcd825f4ea1a85a776c551db3f558ddb385564430454"
+  }
+}

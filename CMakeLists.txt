@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(HarmonyCast VERSION 2.6.3 LANGUAGES CXX)
+project(HarmonyCast VERSION 2.7.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -14,7 +14,7 @@ if(WIN32)
 endif()
 
 if(APPLE)
-    list(APPEND CMAKE_PREFIX_PATH "/opt/homebrew/opt/qt" "/opt/homebrew/opt/ffmpeg")
+    list(APPEND CMAKE_PREFIX_PATH "/opt/homebrew/opt/qt" "/opt/homebrew/opt/ffmpeg" "/usr/local/opt/qt" "/usr/local/opt/ffmpeg")
 endif()
 
 # The Server 2012 build uses Qt 5: Qt 6 requires Windows 10 or newer, and
@@ -211,9 +211,11 @@ if(APPLE)
         ${APP_RESOURCES}
     )
     set_source_files_properties(${APP_RESOURCES} PROPERTIES MACOSX_PACKAGE_LOCATION "Resources")
+    get_filename_component(MACOS_FFMPEG_LIB_DIR "${AVCODEC_LIBRARY}" DIRECTORY)
+    get_filename_component(MACOS_QT_LIB_DIR "${Qt${HARMONYCAST_QT_MAJOR_VERSION}_DIR}/../.." ABSOLUTE)
     set_target_properties(HarmonyCast PROPERTIES
         BUILD_WITH_INSTALL_RPATH TRUE
-        INSTALL_RPATH "@executable_path/../Frameworks;@loader_path/../Frameworks;/opt/homebrew/opt/qt/lib;/opt/homebrew/opt/ffmpeg/lib;/opt/homebrew/lib"
+        INSTALL_RPATH "@executable_path/../Frameworks;@loader_path/../Frameworks;${MACOS_QT_LIB_DIR};${MACOS_FFMPEG_LIB_DIR}"
     )
     add_custom_command(TARGET HarmonyCast POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/resources" "$<TARGET_BUNDLE_DIR:HarmonyCast>/Contents/Resources"
@@ -356,6 +358,8 @@ set_tests_properties(AndroidCompatibilityTests PROPERTIES TIMEOUT 60)
 
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
+    add_test(NAME MacOSBundleTests COMMAND ${Python3_EXECUTABLE} -m unittest discover -s tests -p test_macos_bundle.py)
+    set_tests_properties(MacOSBundleTests PROPERTIES TIMEOUT 60 WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
     add_test(NAME Api10CaptureTests COMMAND ${Python3_EXECUTABLE} -m unittest discover -s tests -p test_capture_api10.py)
     set_tests_properties(Api10CaptureTests PROPERTIES TIMEOUT 60 WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 endif()

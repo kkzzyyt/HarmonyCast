@@ -12,6 +12,19 @@ Format adheres to [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and 
 
 ---
 
+## [2.7.0] - 2026-11-18
+
+### Added / 新增
+- [macOS Intel] 增加 x86_64 原生 DMG，支持 macOS 15 及以上，与 Apple Silicon 安装包分别发布。
+- [设备工具] macOS HDC 与 libusb 增加官方 Intel 架构切片，ADB 保持官方通用二进制，支持对应芯片直接运行。
+- [打包] 两种 Mac 架构均检查主程序、插件、媒体库与设备工具的架构、依赖闭包和最低系统要求；Qt 与 FFmpeg 固定版本构建。
+
+### Fixed / 修复
+- [更新] macOS 自动更新按当前应用编译架构选择 DMG/ZIP，避免 Intel 下载 ARM64 包或相反。
+- [构建] macOS 部署工具、Qt 插件路径、FFmpeg 路径和 DMG 文件名不再固定为 Apple Silicon 的 Homebrew 路径。
+
+---
+
 ## [2.6.3] - 2026-11-17
 
 ### Added / 新增
