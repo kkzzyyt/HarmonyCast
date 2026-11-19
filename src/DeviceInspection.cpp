@@ -349,10 +349,9 @@ QStringList InspectionReport::headers(InspectionTask task) {
         columns << "备注";
         return columns;
     }
-    return {"目标 IP", "HDC 端口", "巡检结果", "运行时间", "运行秒数", "MAC 地址", "设备型号",
-            "序列号", "系统镜像版本", "CPU 负载（1/5/15 分钟）", "总内存（MiB）",
-            "已用内存（MiB）", "可用内存（MiB）", "内存使用率（%）", "巡检时间", "单片机版本", "备注",
-            "设备类型", "清单型号", "科室", "床位", "房间"};
+    return {"目标 IP", "巡检结果", "运行时间", "科室", "床位", "房间", "运行秒数", "设备型号", "系统镜像版本",
+            "MAC 地址", "CPU 负载（1/5/15 分钟）", "总内存（MiB）", "已用内存（MiB）", "可用内存（MiB）",
+            "内存使用率（%）", "巡检时间", "单片机版本", "序列号"};
 }
 
 QStringList InspectionReport::cells(const InspectionResult& row) {
@@ -379,12 +378,11 @@ QStringList InspectionReport::cells(const InspectionResult& row) {
     std::optional<quint64> used;
     if (row.memoryTotalKiB && row.memoryAvailableKiB && *row.memoryAvailableKiB <= *row.memoryTotalKiB)
         used = *row.memoryTotalKiB - *row.memoryAvailableKiB;
-    return {row.target.ip, QString::number(row.target.port), statusText(row.status), uptime(row),
-            row.uptimeSeconds ? QString::number(*row.uptimeSeconds) : QString{}, macs(row), row.model,
-            row.serial, row.systemVersion, row.cpuLoad,
+    const auto result = statusText(row.status) + (row.notes.isEmpty() ? QString{} : "：" + row.notes);
+    return {row.target.ip, result, uptime(row), row.target.department, row.target.bed, row.target.room,
+            row.uptimeSeconds ? QString::number(*row.uptimeSeconds) : QString{}, row.model, row.systemVersion, macs(row), row.cpuLoad,
             amount(row.memoryTotalKiB, 1024), amount(used, 1024), amount(row.memoryAvailableKiB, 1024), memoryPercent(row),
-            row.inspectedAt.toString("yyyy-MM-dd HH:mm:ss"), row.mcuVersion, row.notes,
-            row.target.deviceType, row.target.inventoryModel, row.target.department, row.target.bed, row.target.room};
+            row.inspectedAt.toString("yyyy-MM-dd HH:mm:ss"), row.mcuVersion, row.serial};
 }
 
 bool InspectionReport::writeCsv(const QString& path, const std::vector<InspectionResult>& results, QString* error) {

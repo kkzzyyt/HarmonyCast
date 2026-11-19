@@ -168,23 +168,17 @@ InspectionPage::InspectionPage(std::shared_ptr<DeviceClient> hdc, QWidget* paren
     results->addWidget(m_progress);
     m_table = new QTableWidget;
     m_table->setObjectName("InspectionResults");
-    m_table->setColumnCount(16);
-    m_table->setHorizontalHeaderLabels({"IP / 端口", "状态", "运行时间", "MAC 地址", "内存（MiB）", "内存使用率", "硬件型号",
-        "单片机版本", "系统镜像版本", "巡检时间", "备注", "设备类型", "清单型号", "科室", "床位", "房间"});
-    m_table->horizontalHeaderItem(6)->setToolTip("设备实际读取的 ICU 硬件型号，与清单型号分开保留");
+    configureResults(InspectionTask::Inspect);
     m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_table->setWordWrap(false);
     m_table->setShowGrid(false);
     m_table->setAlternatingRowColors(true);
     m_table->setStyleSheet("QTableWidget { border: none; border-radius: 0; } QTableWidget::item { border-bottom: 1px solid #d4dbe5; }");
-    m_table->horizontalHeaderItem(4)->setToolTip("已用内存 / 总内存（MiB）");
     m_table->verticalHeader()->setVisible(false);
     m_table->verticalHeader()->setDefaultSectionSize(36);
     m_table->horizontalHeader()->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     m_table->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
-    const int widths[] = {148, 88, 128, 164, 144, 112, 120, 136, 352, 176, 320, 112, 112, 160, 80, 80};
-    for (int i = 0; i < 16; ++i) m_table->setColumnWidth(i, widths[i]);
     results->addWidget(m_table, 1);
     m_summary = IconManager::label("采集运行时长、网络、内存、型号、单片机和系统版本", "Muted", true);
     results->addWidget(m_summary);
@@ -407,13 +401,12 @@ void InspectionPage::configureResults(InspectionTask task) {
             m_table->horizontalHeaderItem(i)->setToolTip(i >= 3 && i <= 5 ? InspectionReport::cleanupPackages()[i - 3] : columns[i]);
         }
     } else {
-        m_table->setColumnCount(16);
-        m_table->setHorizontalHeaderLabels({"IP / 端口", "状态", "运行时间", "MAC 地址", "内存（MiB）", "内存使用率", "硬件型号",
-            "单片机版本", "系统镜像版本", "巡检时间", "备注", "设备类型", "清单型号", "科室", "床位", "房间"});
-        const int widths[] = {148, 88, 128, 164, 144, 112, 120, 136, 352, 176, 320, 112, 112, 160, 80, 80};
-        for (int i = 0; i < 16; ++i) m_table->setColumnWidth(i, widths[i]);
-        m_table->horizontalHeaderItem(4)->setToolTip("已用内存 / 总内存（MiB）");
-        m_table->horizontalHeaderItem(6)->setToolTip("设备实际读取的 ICU 硬件型号，与清单型号分开保留");
+        const auto columns = InspectionReport::headers(task);
+        m_table->setColumnCount(columns.size());
+        m_table->setHorizontalHeaderLabels(columns);
+        const int widths[] = {148, 128, 192, 160, 80, 80, 112, 144, 352, 200, 176, 128, 128, 128, 144, 176, 144, 160};
+        for (int i = 0; i < columns.size(); ++i) m_table->setColumnWidth(i, widths[i]);
+        m_table->horizontalHeaderItem(7)->setToolTip("设备实际读取的 ICU 硬件型号");
     }
 }
 
@@ -529,25 +522,7 @@ void InspectionPage::renderRow(int index, const InspectionResult& row) {
                 visible[3 + appIndex] = "待执行";
         }
     } else {
-        const auto headers = InspectionReport::headers();
-        const auto field = [&](const QString& name) { return cells.value(headers.indexOf(name)); };
-        const auto totalMemory = field("总内存（MiB）"), usedMemory = field("已用内存（MiB）");
-        const QString memory = totalMemory.isEmpty() ? QString{} :
-            (usedMemory.isEmpty() ? "—" : QString::number(usedMemory.toDouble(), 'f', 0)) + " / " + QString::number(totalMemory.toDouble(), 'f', 0);
-        QString runtime;
-        if (row.uptimeSeconds) {
-            const auto seconds = *row.uptimeSeconds;
-            runtime = QString("%1天 %2:%3:%4").arg(seconds / 86400)
-                .arg(seconds / 3600 % 24, 2, 10, QChar('0')).arg(seconds / 60 % 60, 2, 10, QChar('0')).arg(seconds % 60, 2, 10, QChar('0'));
-        }
-        QString mac = cells[5];
-        for (const auto& net : row.networks) {
-            if (net.ips.contains(row.target.ip) && !net.mac.isEmpty()) { mac = net.mac; break; }
-        }
-        visible = QStringList{row.target.endpoint(), cells[2], runtime, mac, memory,
-            field("内存使用率（%）").isEmpty() ? QString{} : field("内存使用率（%）") + "%",
-            row.model, row.mcuVersion, row.systemVersion, field("巡检时间"), row.notes,
-            row.target.deviceType, row.target.inventoryModel, row.target.department, row.target.bed, row.target.room};
+        visible = cells;
     }
     const int statusColumn = 1;
     if (!row.activity.isEmpty()) visible[statusColumn] = row.activity;
@@ -560,9 +535,11 @@ void InspectionPage::renderRow(int index, const InspectionResult& row) {
         item->setText(visible[column]);
         item->setToolTip(visible[column]);
         if (row.task == InspectionTask::Inspect) {
-            if (column == 2) item->setToolTip(cells[3]);
-            if (column == 3) item->setToolTip(cells[5]);
-            if (column == 4 || column == 5) item->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            if (column == 0) item->setToolTip(row.target.endpoint());
+            if (column == 1 && !row.activity.isEmpty() && !row.notes.isEmpty())
+                item->setToolTip(row.activity + "\n" + row.notes);
+            if (column == 6 || (column >= 11 && column <= 14))
+                item->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
         }
         if (column == statusColumn) {
             const char* color = row.status == InspectionStatus::Succeeded ? "#4b6585" :
