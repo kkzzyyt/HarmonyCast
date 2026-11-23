@@ -150,8 +150,10 @@ static void testOnlineSelectionAndPort() {
     check(found != saved.end() && found->port == 9000, "device refresh replaced the custom port with 8710");
 }
 
-static void testConnectionFailure(const QByteArray& mode, const QString& expected) {
+static void testConnectionFailure(const QByteArray& mode, const QString& expected, bool expectProbe = false) {
     qputenv("HC_CONNECTION_TEST_MODE", mode);
+    const auto logPath = QString::fromUtf8(qgetenv("HC_CONNECTION_TEST_LOG"));
+    const auto previousProbes = readFile(logPath).count("echo __HC_CONNECTION_READY__");
     QSettings("HarmonyCast", "HarmonyCast").setValue("auto_start_mirror", false);
     MainWindow window(nullptr, false, QCoreApplication::applicationFilePath().toStdString(), "/missing/adb");
     check(QMetaObject::invokeMethod(&window, "switchModule", Qt::DirectConnection, Q_ARG(int, 1)), "mirror navigation unavailable");
@@ -171,6 +173,8 @@ static void testConnectionFailure(const QByteArray& mode, const QString& expecte
     processFor(350);
     check(screen->statusMessage().contains(expected), "connection failure reason was hidden by device refresh");
     check(!window.isProjecting(), "failed connection started mirroring");
+    check(readFile(logPath).count("echo __HC_CONNECTION_READY__") == previousProbes + (expectProbe ? 1 : 0),
+          "connection shell probe ran for an offline/unauthorized target or skipped a missing target");
     HdcClient hdc(QCoreApplication::applicationFilePath().toStdString());
     const auto devices = hdc.listDevices();
     check(QMetaObject::invokeMethod(&window, "onDevicesUpdated", Qt::DirectConnection,
@@ -184,6 +188,20 @@ static void testConnectionFailure(const QByteArray& mode, const QString& expecte
         processFor(50);
         check(window.grab().save(artifacts + "/" + QString::fromUtf8(mode) + ".png"), "failure screenshot could not be saved");
     }
+}
+
+static void testConnectedWithMissingList() {
+    qputenv("HC_CONNECTION_TEST_MODE", "connected-missing-list");
+    QSettings("HarmonyCast", "HarmonyCast").setValue("auto_start_mirror", false);
+    MainWindow window(nullptr, false, QCoreApplication::applicationFilePath().toStdString(), "/missing/adb");
+    const std::string endpoint = "192.0.2.55:9000";
+    check(QMetaObject::invokeMethod(&window, "switchToSingleDevice", Qt::DirectConnection,
+                                   Q_ARG(std::string, endpoint)), "connection slot unavailable");
+    auto* screen = window.findChild<ScreenView*>();
+    waitUntil([&] { return !screen->statusMessage().contains("正在连接设备"); }, 15000);
+    check(screen->statusMessage().contains("已连接"), "healthy shell with a missing HDC target was reported as a connection failure");
+    check(readFile(QString::fromUtf8(qgetenv("HC_CONNECTION_TEST_LOG"))).contains("echo __HC_CONNECTION_READY__"),
+          "connection recovery did not verify the target shell");
 }
 
 int main(int argc, char** argv) {
@@ -202,10 +220,17 @@ int main(int argc, char** argv) {
             else if (mode == "denied") std::cout << "192.0.2.55:9000 TCP Unauthorized HR36\n";
             else if (mode == "online") std::cout << "192.0.2.55:9000 TCP Connected HR36\n";
             else if (mode == "offline") std::cout << "192.0.2.55:9000 TCP Offline HR36\n";
+            else if (mode == "connected-offline") std::cout << "192.0.2.55:9000 TCP Offline HR36\n";
             else std::cout << "[Empty]\n";
         } else if (std::string(argv[1]) == "tconn") {
             if (mode == "unauthorized") std::cout << "[E000002] The device unauthorized.\n";
+            else if (mode.startsWith("connected-")) std::cout << "[Info]Target is connected, repeat operation\n";
             else std::cerr << "connect failed status:-4078\n";
+        } else if (argc > 4 && std::string(argv[3]) == "shell" &&
+                   std::string(argv[4]) == "echo __HC_CONNECTION_READY__") {
+            if (mode == "connected-missing-list") std::cout << "__HC_CONNECTION_READY__\n";
+            else if (mode == "connected-probe-error") std::cout << "[Fail] Device not found\n__HC_CONNECTION_READY__\n";
+            else std::cout << "[Fail][E001005] Device not found or connected\n";
         }
         return 0;
     }
@@ -231,6 +256,10 @@ int main(int argc, char** argv) {
         testOfflineDoesNotReconnect(commandLog);
         testWirelessDebounce();
         testOnlineSelectionAndPort();
+        testConnectedWithMissingList();
+        testConnectionFailure("connected-probe-failed", "Target is connected", true);
+        testConnectionFailure("connected-probe-error", "Target is connected", true);
+        testConnectionFailure("connected-offline", "Target is connected");
         testConnectionFailure("connect-failure", "connect failed status:-4078");
         testConnectionFailure("unauthorized", "E000002");
         std::cout << "Connection regression tests passed\n";

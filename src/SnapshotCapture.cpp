@@ -83,8 +83,9 @@ SnapshotResult SnapshotCapture::receiveText(const std::string& path) {
     for (const auto& encoder : {m_encoder, alternate}) {
         if (m_cancelled.load()) return result;
         m_progress("兼容截图传输中（文本通道）");
+        // HDC 3.2 strips a terminal quote; keep the terminator outside the quotes.
         const std::string command = "printf '__HC_IMAGE_BEGIN__\\n'; " + encoder + " " + path +
-            " && printf '\\n__HC_IMAGE_END__\\n'";
+            " && printf '\\n__HC_IMAGE_END__\\n';";
         const auto response = m_client->runWithOutputLimit({"shell", command}, m_serial, 8000, 48 * 1024 * 1024);
         if (m_cancelled.load()) return result;
         const auto bytes = QByteArray::fromStdString(response.out);

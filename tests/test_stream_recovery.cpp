@@ -376,6 +376,18 @@ static void testApi10NativeLaunch(const char* mode, const char* binary, bool leg
     session.stop();
 }
 
+static void testInvalidApi10DisplayTable() {
+    resetCommands("api10-display-table-zero");
+    StreamSession session(fakeClient(), testDevice());
+    QStringList statuses;
+    QObject::connect(&session, &StreamSession::statusChanged, &session, [&](const QString& text) { statuses << text; });
+    session.start();
+    waitUntil([&] { return session.isFallbackSnapshot(); });
+    check(statuses.join('\n').contains("无法读取有效屏幕尺寸") && !commandLog().contains("nohup"),
+          "invalid display table launched native capture with unusable dimensions");
+    session.stop();
+}
+
 static int fakeHdc(int argc, char** argv) {
     QStringList args;
     for (int i = 1; i < argc; ++i) args << QString::fromUtf8(argv[i]);
@@ -385,6 +397,10 @@ static int fakeHdc(int argc, char** argv) {
         if (file.open(QIODevice::WriteOnly | QIODevice::Append)) file.write(args.join(' ').toUtf8() + '\n');
     }
     if (args.join(' ').contains("base64") && mode.startsWith("snapshot-text-")) {
+        // HDC 3.2.0c strips the last quote when a shell command ends in a quote.
+        if (mode == "snapshot-text-trailing-quote" && args.last().endsWith('\'')) {
+            std::cerr << "/bin/sh: no closing quote\n"; return 1;
+        }
         if (mode == "snapshot-text-toybox" && !args.join(' ').contains("toybox base64")) {
             std::cerr << "base64: not found\n"; return 127;
         }
@@ -407,7 +423,14 @@ static int fakeHdc(int argc, char** argv) {
         else std::cout << "FileTransfer finish\n";
     } else if (args.contains("uname")) std::cout << (mode == "api10-riscv64" ? "riscv64\n" : mode == "api10-armv7" ? "armv7l\n" : "aarch64\n");
     else if (args.join(' ').contains("const.ohos.apiversion")) std::cout << (mode == "api-unknown-legacy" ? "unknown\n" : mode == "api11-arm64" ? "11\n" : mode.startsWith("api10-") ? "10\n" : "12\n");
-    else if (args.join(' ').contains("DisplayManagerService")) std::cout << "displayId: 0, width=720, height=1280, rotation=0\n";
+    else if (args.join(' ').contains("DisplayManagerService")) {
+        if (mode.startsWith("api10-display-table")) {
+            if (args.last().contains("\"-d -a\";")) {
+                std::cout << "DisplayId ScreenId RefreshRate VPR Rotation Orientation DisplayOrientation FreezeFlag [ x y w h ]\n"
+                             "0 0 59 1.343751 2 1 1 [ 0 0 " << (mode.endsWith("-zero") ? "0" : "720") << " 1280 ]\n";
+            } else std::cout << "The arguments are illegal and you can enter '-h' for help.\n";
+        } else std::cout << "displayId: 0, width=720, height=1280, rotation=0\n";
+    }
     else if (args.contains("recv") && mode.startsWith("snapshot-")) {
         const int index = args.indexOf("recv");
         if (index + 2 >= args.size()) return 1;
@@ -465,6 +488,9 @@ int main(int argc, char** argv) {
     check(fixture.save(QString::fromUtf8(qgetenv("HC_STREAM_TEST_PNG")), "PNG"), "PNG snapshot fixture unavailable");
     Logger::init(temporary.filePath("logs"));
     try {
+        testApi10NativeLaunch("api10-display-table", "harmonycast_capture_api10_arm64");
+        testInvalidApi10DisplayTable();
+        testAdditionalSnapshotRecovery("snapshot-text-trailing-quote");
         testSoftwareMode();
         testLocalProxyBypass();
         testSilentConnection();

@@ -38,6 +38,18 @@ QString fallbackSummary(const QString& detail) {
     return detail.section('\n', 0, 0).section(QChar(0xff1a), 0, 0).left(120);
 }
 
+QSize displaySize(const std::string& output) {
+    const auto text = QString::fromStdString(output);
+    const auto width = QRegularExpression(R"(\bwidth\s*[:=]?\s*(\d+))", QRegularExpression::CaseInsensitiveOption).match(text);
+    const auto height = QRegularExpression(R"(\bheight\s*[:=]?\s*(\d+))", QRegularExpression::CaseInsensitiveOption).match(text);
+    int w = width.captured(1).toInt(), h = height.captured(1).toInt();
+    if ((w < 1 || h < 1) && text.contains("DisplayId") && text.contains("ScreenId")) {
+        const auto bounds = QRegularExpression(R"((?:^|\n)\s*\d+[^\n]*\[\s*-?\d+\s+-?\d+\s+(\d+)\s+(\d+)\s*\])").match(text);
+        w = bounds.captured(1).toInt(); h = bounds.captured(2).toInt();
+    }
+    return w > 0 && h > 0 && w <= 8192 && h <= 8192 ? QSize(w, h) : QSize{};
+}
+
 } // namespace
 
 StreamSession::StreamSession(std::shared_ptr<DeviceClient> hdc,
@@ -146,17 +158,21 @@ bool StreamSession::launchServerAsync(const std::shared_ptr<DeviceClient>& hdc,
 
         QString geometry;
         if (legacy) {
-            const auto display = hdc->run({"shell", "hidumper", "-s", "DisplayManagerService", "-a", "-a"}, serial, 3000);
+            auto display = hdc->run({"shell", "hidumper", "-s", "DisplayManagerService", "-a", "-a"}, serial, 3000);
             if (cancelled->load()) return false;
-            const auto text = QString::fromStdString(display.out);
-            const auto width = QRegularExpression(R"(\bwidth\s*[:=]?\s*(\d+))", QRegularExpression::CaseInsensitiveOption).match(text);
-            const auto height = QRegularExpression(R"(\bheight\s*[:=]?\s*(\d+))", QRegularExpression::CaseInsensitiveOption).match(text);
-            const int w = width.captured(1).toInt(), h = height.captured(1).toInt();
-            if (commandFailed(display) || w < 1 || h < 1 || w > 8192 || h > 8192) {
+            auto size = displaySize(display.out);
+            if (commandFailed(display) || size.isEmpty()) {
+                // API 10 expects the display selector together with -a. The
+                // semicolon also prevents HDC 3.2 from stripping the final quote.
+                display = hdc->run({"shell", "hidumper -s DisplayManagerService -a \"-d -a\";"}, serial, 3000);
+                if (cancelled->load()) return false;
+                size = displaySize(display.out);
+            }
+            if (commandFailed(display) || size.isEmpty()) {
                 error = "API 10 兼容采屏无法读取有效屏幕尺寸：" + commandDetail(display);
                 return false;
             }
-            geometry = QString(" -w %1 -h %2").arg(w).arg(h);
+            geometry = QString(" -w %1 -h %2").arg(size.width()).arg(size.height());
         }
         const std::string remote_bin = legacy ? "/data/local/tmp/harmonycast_capture_api10" : "/data/local/tmp/harmonycast_capture";
         QFile binary(local_bin);

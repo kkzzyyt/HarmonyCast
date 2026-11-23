@@ -2929,6 +2929,25 @@ void MainWindow::switchToSingleDevice(const std::string& endpoint) {
 
         if (cancelled->load()) return;
         QString detail = QString::fromStdString(connection_result.out + "\n" + connection_result.err).trimmed();
+        // A running HDC daemon can acknowledge an existing connection while
+        // temporarily omitting it from its target list. Verify the actual shell
+        // before treating that acknowledgement as a usable connection.
+        if (!is_online && !android && networkTarget && dev_state == DeviceState::Disconnected &&
+            connection_result.success() &&
+            (detail.contains("Connect OK", Qt::CaseInsensitive) || detail.contains("Target is connected", Qt::CaseInsensitive))) {
+            const auto probe = hdc->run({"shell", "echo __HC_CONNECTION_READY__"}, target, 2000);
+            if (cancelled->load()) return;
+            if (probe.success() && QString::fromStdString(probe.out).trimmed() == "__HC_CONNECTION_READY__" &&
+                probe.err.empty()) {
+                const auto verified = HdcClient::parseDeviceList(target + " TCP Connected\n");
+                fresh_devs.insert(fresh_devs.end(), verified.begin(), verified.end());
+                is_online = !verified.empty();
+                if (is_online) {
+                    dev_state = DeviceState::Connected;
+                    HC_LOG_INFO("HDC target shell verified despite missing target-list entry: " + QString::fromStdString(target));
+                }
+            }
+        }
         if (!is_online) {
             HC_LOG_WARN(QString("HDC connection failed for %1 (state=%2, exit=%3): %4")
                 .arg(QString::fromStdString(target)).arg(static_cast<int>(dev_state))

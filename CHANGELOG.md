@@ -12,6 +12,15 @@ Format adheres to [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and 
 
 ---
 
+## [2.7.3] - 2026-11-23
+
+### Fixed / 修复
+- [连接] HDC 返回已连接但设备列表缺少目标时，通过实际 Shell 回包验证连接；未授权、明确离线及探测失败仍按连接失败处理。
+- [投屏] 兼容 API 10 的 DisplayManagerService 参数及表格形式的屏幕尺寸输出，避免因尺寸查询失败直接回退截图。
+- [截图] 避免 HDC 3.2 处理命令末尾引号时破坏 Base64 截图备用通道。
+
+---
+
 ## [2.7.2] - 2026-11-19
 
 ### Changed / 变更
